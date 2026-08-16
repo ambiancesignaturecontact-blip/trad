@@ -756,7 +756,16 @@
                     `;
                 } else {
                     orders.forEach(o => {
-                        const date = o.timestamp ? new Date(o.timestamp * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
+                        let date;
+                        if (o.timestamp) {
+                            if (typeof o.timestamp === 'string') {
+                                date = new Date(o.timestamp).toLocaleTimeString();
+                            } else {
+                                date = new Date(o.timestamp * 1000).toLocaleTimeString();
+                            }
+                        } else {
+                            date = new Date().toLocaleTimeString();
+                        }
                         const statusUpper = (o.status || "").toUpperCase();
                         const statusColor = statusUpper === "FILLED" ? "text-emerald-400 font-black" : statusUpper === "REJECTED" ? "text-rose-500 font-bold" : "text-slate-400";
                         const sideUpper = (o.side || "").toUpperCase();

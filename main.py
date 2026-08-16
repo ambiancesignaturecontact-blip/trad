@@ -1170,6 +1170,20 @@ async def live_trading_loop():
         await asyncio.sleep(2.5) # Loop tick pause
 
 
+def serialize_helper(obj):
+    """
+    Safely converts any datetime or non-serializable database object into standard string/types
+    before sending over WebSockets or JSON responses.
+    """
+    if isinstance(obj, dict):
+        return {k: serialize_helper(v) for k, v in obj.items()}
+    elif isinstance(obj, list):
+        return [serialize_helper(i) for i in obj]
+    elif hasattr(obj, "isoformat"):  # Matches datetime.datetime, date, etc.
+        return obj.isoformat()
+    return obj
+
+
 def compile_telemetry_data(consensus_signals=None) -> dict:
     """
     Compiles and returns the unified telemetry payload.
@@ -1197,7 +1211,7 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
     live_pnl_usd = current_eq - initial_cap if initial_cap > 0 else 0.0
     live_pnl_pct = (live_pnl_usd / initial_cap) * 100.0 if initial_cap > 0 else 0.0
     
-    # Packaged JSON
+    # Packaged JSON (Passed through serialize_helper to resolve any PostgreSQL datetime serialization mismatches!)
     telemetry = {
         "mode": STATE["mode"],
         "is_running": STATE["is_running"],
@@ -1215,9 +1229,9 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "ml_prediction_pct": STATE["ml_prediction_pct"],
         "ppo_action": STATE["ppo_action"],
         "consensus": consensus_signals,
-        "positions": positions,
-        "orders": orders[:15],
-        "audit_logs": audit_logs[:15],
+        "positions": serialize_helper(positions),
+        "orders": serialize_helper(orders[:15]),
+        "audit_logs": serialize_helper(audit_logs[:15]),
         
         # ADVANCED TELEMETRY EXPOSURE
         "sentiment_index": STATE["sentiment_index"],
