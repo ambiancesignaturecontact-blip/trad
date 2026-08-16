@@ -1049,29 +1049,29 @@ async def live_trading_loop():
                             trade_reason = ""
                             if side == "BUY":
                                 trade_reason = (
-                                    "✨ <b>Pourquoi cet achat ?</b> Nos algorithmes de suivi de tendance ont détecté "
+                                    "✨ *Pourquoi cet achat ?* Nos algorithmes de suivi de tendance ont détecté "
                                     "une accélération haussière prometteuse. J'en profite pour accumuler de l'actif "
                                     "afin de maximiser nos gains !"
                                 )
                             else:
                                 trade_reason = (
-                                    "🔒 <b>Pourquoi cette vente ?</b> Nos modèles de protection de capital ont détecté "
+                                    "🔒 *Pourquoi cette vente ?* Nos modèles de protection de capital ont détecté "
                                     "un essoufflement ou un risque de retournement. Je vends pour sécuriser vos bénéfices "
                                     "au chaud et mettre notre capital à l'abri !"
                                 )
                                 
                             telegram_msg = (
-                                f"🔔 <b>EXÉCUTION D'ORDRE ({active_mode})</b>\n"
+                                f"🔔 *EXÉCUTION D'ORDRE ({active_mode})*\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"📝 Actif : <code>{symbol}</code>\n"
-                                f"🚀 Action : <b>{side == 'BUY' and '🟢 ACHAT' or '🔴 VENTE'}</b>\n"
-                                f"📊 Quantité : <code>{trade_qty_formatted:.5f}</code>\n"
-                                f"💵 Prix d'exécution : <b>${execution_price:,.2f} USD</b>\n"
+                                f"📝 Actif : `{symbol}`\n"
+                                f"🚀 Action : *{side == 'BUY' and '🟢 ACHAT' or '🔴 VENTE'}*\n"
+                                f"📊 Quantité : `{trade_qty_formatted:.5f}`\n"
+                                f"💵 Prix d'exécution : *${execution_price:,.2f} USD*\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"🌦️ Météo Marché : <b>{translated_regime}</b>\n\n"
+                                f"🌦️ Météo Marché : *{translated_regime}*\n\n"
                                 f"{trade_reason}\n"
                                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"🖥️ <i>Terminal Web mis à jour. Cliquez ci-dessous pour piloter :</i>"
+                                f"🖥️ _Terminal Web mis à jour. Cliquez ci-dessous pour piloter :_"
                             )
                             
                             # Standard buttons layout (Like a Telegram Web App)

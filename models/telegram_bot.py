@@ -105,31 +105,36 @@ class TelegramBotManager:
         """
         Safely converts basic markdown (*bold*, _italic_, `code`) to valid HTML,
         while escaping HTML special characters to prevent Telegram parse crashes (HTTP 400).
+        Supports both raw HTML messages (preserving tags) and plain markdown messages.
         """
         if not text:
             return ""
             
-        # 1. Escape HTML entities safely
-        text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        # Detect if the input already contains HTML tags to avoid double-escaping
+        has_html = "<b>" in text or "<code>" in text or "<i>" in text or "<strong>" in text or "<a>" in text
         
-        # 2. Convert bold (`*text*`) to `<b>text</b>`
-        parts = text.split("*")
-        for i in range(1, len(parts), 2):
-            parts[i] = f"<b>{parts[i]}</b>"
-        text = "".join(parts)
-        
-        # 3. Convert code (`` `text` ``) to `<code>text</code>`
-        parts = text.split("`")
-        for i in range(1, len(parts), 2):
-            parts[i] = f"<code>{parts[i]}</code>"
-        text = "".join(parts)
-        
-        # 4. Convert italic (`_text_`) to `<i>text</i>`
-        parts = text.split("_")
-        for i in range(1, len(parts), 2):
-            parts[i] = f"<i>{parts[i]}</i>"
-        text = "".join(parts)
-        
+        if not has_html:
+            # 1. Escape HTML entities safely
+            text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+            
+            # 2. Convert bold (`*text*`) to `<b>text</b>`
+            parts = text.split("*")
+            for i in range(1, len(parts), 2):
+                parts[i] = f"<b>{parts[i]}</b>"
+            text = "".join(parts)
+            
+            # 3. Convert code (`` `text` ``) to `<code>text</code>`
+            parts = text.split("`")
+            for i in range(1, len(parts), 2):
+                parts[i] = f"<code>{parts[i]}</code>"
+            text = "".join(parts)
+            
+            # 4. Convert italic (`_text_`) to `<i>text</i>`
+            parts = text.split("_")
+            for i in range(1, len(parts), 2):
+                parts[i] = f"<i>{parts[i]}</i>"
+            text = "".join(parts)
+            
         return text
 
     async def poll_telegram_commands_loop(self):
