@@ -314,6 +314,35 @@
                     </table>
                 </div>
             </div>
+
+            <!-- RECENT TRADES & ORDERS -->
+            <div class="bg-slate-900/30 backdrop-blur-sm rounded-xl p-5 border border-slate-900 mt-4">
+                <h3 class="font-bold text-slate-100 mb-4 flex items-center text-xs uppercase tracking-wider">
+                    <i data-lucide="list-ordered" class="w-4 h-4 mr-2 text-cyan-400"></i>
+                    <span>HISTORIQUE DES ORDRES & EXECUTION (OMS/EMS)</span>
+                </h3>
+                <div class="overflow-x-auto max-h-60 overflow-y-auto">
+                    <table class="w-full text-left border-collapse text-xs">
+                        <thead>
+                            <tr class="text-slate-500 border-b border-slate-900 text-[10px] uppercase font-bold tracking-wider">
+                                <th class="py-3">Heure</th>
+                                <th>Actif</th>
+                                <th>Sens</th>
+                                <th>Type</th>
+                                <th>Prix</th>
+                                <th>Quantité</th>
+                                <th>Statut</th>
+                            </tr>
+                        </thead>
+                        <tbody id="tbl-orders" class="divide-y divide-slate-900">
+                            <!-- Filled dynamically -->
+                            <tr class="text-slate-500">
+                                <td class="py-4 text-center" colspan="7">Aucune transaction enregistrée.</td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
 
         <!-- RIGHT COLUMN (Strategies, Wallet, MLOps, Audit) - 4 Cols -->
@@ -691,6 +720,40 @@
                                     <td class="${pnl >= 0 ? 'text-emerald-400' : 'text-rose-500'} font-black">
                                         $${pnl.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)
                                     </td>
+                                </tr>
+                            `;
+                        });
+                    }
+                }
+
+                // Render Recent Orders Table
+                const tblOrders = document.getElementById('tbl-orders');
+                if (tblOrders) {
+                    tblOrders.innerHTML = '';
+                    const orders = data.orders || [];
+                    if (orders.length === 0) {
+                        tblOrders.innerHTML = `
+                            <tr class="text-slate-500">
+                                <td class="py-4 text-center" colspan="7">Aucune transaction enregistrée.</td>
+                            </tr>
+                        `;
+                    } else {
+                        orders.forEach(o => {
+                            const date = o.timestamp ? new Date(o.timestamp * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
+                            const statusUpper = (o.status || "").toUpperCase();
+                            const statusColor = statusUpper === "FILLED" ? "text-emerald-400 font-black" : statusUpper === "REJECTED" ? "text-rose-500 font-bold" : "text-slate-400";
+                            const sideUpper = (o.side || "").toUpperCase();
+                            const sideColor = sideUpper === "BUY" ? "text-emerald-400 font-bold" : "text-rose-500 font-bold";
+                            
+                            tblOrders.innerHTML += `
+                                <tr class="text-slate-200 border-b border-slate-900 py-2">
+                                    <td class="py-2 text-slate-500">${date}</td>
+                                    <td class="font-bold">${o.symbol}</td>
+                                    <td class="${sideColor}">${o.side}</td>
+                                    <td class="text-slate-400">${o.order_type || "MARKET"}</td>
+                                    <td>$${(o.price || 0.0).toFixed(2)}</td>
+                                    <td>${(o.qty || 0.0).toFixed(4)}</td>
+                                    <td class="${statusColor}">${o.status}</td>
                                 </tr>
                             `;
                         });

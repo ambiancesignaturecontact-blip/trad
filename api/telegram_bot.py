@@ -38,7 +38,7 @@ class TelegramBotManager:
                 "de crypto-monnaies, d'or et d'actions pour vous 24h/24 ! 🌤️"
             )
 
-    async def send_push_notification(self, text: str) -> bool:
+    async def send_push_notification(self, text: str, reply_markup: dict = None) -> bool:
         """
         Sends an instantaneous markdown-formatted push alert to the user's mobile.
         Automatically escapes HTML and converts standard markdown syntax to prevent Telegram crashes (HTTP 400).
@@ -53,6 +53,9 @@ class TelegramBotManager:
             "text": safe_html,
             "parse_mode": "HTML"
         }
+        if reply_markup is not None:
+            payload["reply_markup"] = reply_markup
+            
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.post(url, json=payload, timeout=5.0)
@@ -174,6 +177,27 @@ class TelegramBotManager:
     async def process_command(self, command: str):
         cmd_lower = command.lower()
         
+        # Standard buttons layout (Like a Telegram Web App)
+        keyboard = {
+            "inline_keyboard": [
+                [
+                    {"text": "📊 Rapport Status", "callback_data": "bot_status"},
+                    {"text": "📋 Historique", "callback_data": "bot_history"}
+                ],
+                [
+                    {"text": "🛡️ Risques", "callback_data": "bot_risk"},
+                    {"text": "⚖️ Modes", "callback_data": "bot_modes"}
+                ],
+                [
+                    {"text": "🟢 Activer", "callback_data": "bot_resume"},
+                    {"text": "⏸️ Pause", "callback_data": "bot_pause"}
+                ],
+                [
+                    {"text": "🚨 KILL SWITCH", "callback_data": "bot_kill"}
+                ]
+            ]
+        }
+        
         if cmd_lower in ["/start", "/help"]:
             welcome_msg = (
                 "👋 *BIENVENUE SUR VOTRE CONSOLE DE TRADING TACTILE !*\n\n"
@@ -187,7 +211,7 @@ class TelegramBotManager:
                 "🟢 `/resume` - Relancer le trading automatique.\n"
                 "🚨 `/kill` - URGENCE : Vendre immédiatement tous mes actifs et geler le robot."
             )
-            await self.send_push_notification(welcome_msg)
+            await self.send_push_notification(welcome_msg, reply_markup=keyboard)
             
         elif cmd_lower == "/status":
             mode = self.state.get("mode", "DEMO")
@@ -224,7 +248,7 @@ class TelegramBotManager:
                 f"📈 Valeur totale de votre tirelire : *${equity:,.2f}*\n"
                 f"{pos_msg}"
             )
-            await self.send_push_notification(status_msg)
+            await self.send_push_notification(status_msg, reply_markup=keyboard)
             
         elif cmd_lower == "/history":
             orders_msg = "📋 *HISTORIQUE DES 5 DERNIÈRES TRANSACTIONS :*\n-----------------------------------------"
@@ -242,7 +266,7 @@ class TelegramBotManager:
                     orders_msg += "\nAnalyse : Aucun ordre n'a encore été passé pour le moment."
             else:
                 orders_msg += "\nBase de données indisponible."
-            await self.send_push_notification(orders_msg)
+            await self.send_push_notification(orders_msg, reply_markup=keyboard)
             
         elif cmd_lower == "/modes":
             mode_msg = (
@@ -252,7 +276,7 @@ class TelegramBotManager:
                 "• *Mode RÉEL (Production)* : Le robot se connecte à vos clés API d'exchange cryptées pour placer de vrais investissements. L'accès est hautement sécurisé par votre connexion MetaMask.\n\n"
                 "💡 *Mode Actif Actuel* : " + f"*{self.state.get('mode', 'DEMO')}*"
             )
-            await self.send_push_notification(mode_msg)
+            await self.send_push_notification(mode_msg, reply_markup=keyboard)
             
         elif cmd_lower == "/risk":
             # Simple explanations of risk settings
@@ -263,15 +287,15 @@ class TelegramBotManager:
                 "• *Max Total Drawdown (8.0%)* : Si la perte historique cumulée atteint 8.0%, le robot se fige par sécurité.\n"
                 "• *Sizing à la volatilité* : Plus le vent souffle fort sur le marché (haute volatilité), plus je réduis la taille de mes transactions pour vous protéger !"
             )
-            await self.send_push_notification(risk_msg)
+            await self.send_push_notification(risk_msg, reply_markup=keyboard)
             
         elif cmd_lower == "/pause":
             self.state["is_running"] = False
-            await self.send_push_notification("⏸️ *TRADING MIS EN PAUSE !* J'ai arrêté toute prise de position automatique. Vos fonds actuels sont conservés au chaud.")
+            await self.send_push_notification("⏸️ *TRADING MIS EN PAUSE !* J'ai arrêté toute prise de position automatique. Vos fonds actuels sont conservés au chaud.", reply_markup=keyboard)
             
         elif cmd_lower == "/resume":
             self.state["is_running"] = True
-            await self.send_push_notification("🟢 *TRADING AUTOMATIQUE RELANCÉ !* Je reprends la surveillance active des marchés réels pour investir selon les meilleures opportunités.")
+            await self.send_push_notification("🟢 *TRADING AUTOMATIQUE RELANCÉ !* Je reprends la surveillance active des marchés réels pour investir selon les meilleures opportunités.", reply_markup=keyboard)
             
         elif cmd_lower == "/kill":
             self.state["kill_switch_active"] = True
@@ -314,13 +338,28 @@ class TelegramBotManager:
             await self.send_push_notification(
                 "🚨 *URGENCE : KILL SWITCH DÉCLENCHÉ VIA TELEGRAM !*\n\n"
                 "J'ai immédiatement bloqué le robot et vendu l'intégralité de nos investissements au prix du marché.\n"
-                "Tout votre capital est désormais sécurisé et à l'abri !"
+                "Tout votre capital est désormais sécurisé et à l'abri !",
+                reply_markup=keyboard
             )
 
     async def process_callback_query(self, callback_id: str, data: str):
         """
         Executes actions directly triggered by the user's tactile clicks!
         """
+        cmd_mapping = {
+            "bot_status": "/status",
+            "bot_history": "/history",
+            "bot_risk": "/risk",
+            "bot_modes": "/modes",
+            "bot_resume": "/resume",
+            "bot_pause": "/pause",
+            "bot_kill": "/kill"
+        }
+        
+        if data in cmd_mapping:
+            await self.process_command(cmd_mapping[data])
+            return
+            
         if data.startswith("macro_reduce_expo_"):
             event_name = data.replace("macro_reduce_expo_", "")
             self.state["macro_scale_factor_tactile"] = 0.40
