@@ -506,14 +506,6 @@
             tg.expand(); // Expand WebApp to maximum available height
             tg.headerColor = '#040815'; // Match our cyberDark bg color
             tg.backgroundColor = '#040815';
-            
-            // Hide header inside Telegram Mini App to maximize screen estate for charts!
-            document.addEventListener("DOMContentLoaded", () => {
-                const header = document.querySelector('header');
-                if (header) {
-                    header.style.display = 'none';
-                }
-            });
         }
 
         let liveChartInstance = null;
