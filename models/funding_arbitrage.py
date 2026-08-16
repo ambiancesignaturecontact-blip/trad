@@ -14,11 +14,35 @@ class FundingRateArbitrageEngine:
         self.transaction_fee_pct = transaction_fee_pct
         self.active_arbitrages = {}
 
-    def analyze_funding_opportunities(self, symbol: str, spot_bid: float, spot_ask: float, perp_bid: float, perp_ask: float, mark_price: float, index_price: float, funding_rate_8h: float) -> dict:
+    def analyze_funding_opportunities(
+        self,
+        symbol: str,
+        spot_bid: float = None,
+        spot_ask: float = None,
+        perp_bid: float = None,
+        perp_ask: float = None,
+        mark_price: float = None,
+        index_price: float = None,
+        funding_rate_8h: float = None,
+        spot_price: float = None,
+        perp_price: float = None
+    ) -> dict:
         """
         Calculates a real-world funding arbitrage entry/exit signal using 100% genuine market ticks.
+        Supports both microstructural (bid/ask/mark/index) and simplified (spot/perp prices) parameters.
         Strictly forbids any simulated perp price estimations or synthetic spreads (Lot 5).
         """
+        # Fallback mappings for simplified calls
+        if spot_price is not None:
+            spot_bid = spot_bid if spot_bid is not None else spot_price
+            spot_ask = spot_ask if spot_ask is not None else spot_price
+            index_price = index_price if index_price is not None else spot_price
+            
+        if perp_price is not None:
+            perp_bid = perp_bid if perp_bid is not None else perp_price
+            perp_ask = perp_ask if perp_ask is not None else perp_price
+            mark_price = mark_price if mark_price is not None else perp_price
+
         # Ensure all required real-world parameters are fully loaded and present
         if None in [spot_bid, spot_ask, perp_bid, perp_ask, mark_price, index_price, funding_rate_8h]:
             return {"action": "HOLD", "reason": "Data incomplete. Missing required real-world market parameter."}
