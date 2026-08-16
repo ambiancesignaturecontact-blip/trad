@@ -1030,14 +1030,59 @@ async def live_trading_loop():
                                 f"Executed {side} order of {trade_qty_formatted:.5f} {symbol} at {execution_price:.2f} USD."
                             )
                             
-                            await telegram_bot.send_push_notification(
-                                f"🔔 *EXÉCUTION D'ORDRE ({active_mode})*\n"
-                                f"-----------------------------------------\n"
-                                f"📝 Actif : `{symbol}`\n"
-                                f"🚀 Action : *{side}*\n"
-                                f"📊 Quantité : `{trade_qty_formatted:.5f}`\n"
-                                f"💵 Prix : `${execution_price:.2f} USD`"
+                            # Formulate a pedagogic and visual explanation of the trade!
+                            regime = STATE.get("regime_name", "Mean-Reverting Range")
+                            hmm_translation = {
+                                "Bull Trend (Low Vol)": "Soleil Haussier ☀️ (Mouvement de hausse calme)",
+                                "Bear Trend (High Vol)": "Tempête Baissière ⛈️ (Marché en baisse rapide)",
+                                "Mean-Reverting Range": "Temps Nuageux ⛅ (Marché stable qui oscille)",
+                                "Erratic High Volatility": "Volatilité Erratique 🌪️ (Marché agité et imprévisible)"
+                            }
+                            translated_regime = hmm_translation.get(regime, regime)
+                            
+                            trade_reason = ""
+                            if side == "BUY":
+                                trade_reason = (
+                                    "✨ <b>Pourquoi cet achat ?</b> Nos algorithmes de suivi de tendance ont détecté "
+                                    "une accélération haussière prometteuse. J'en profite pour accumuler de l'actif "
+                                    "afin de maximiser nos gains !"
+                                )
+                            else:
+                                trade_reason = (
+                                    "🔒 <b>Pourquoi cette vente ?</b> Nos modèles de protection de capital ont détecté "
+                                    "un essoufflement ou un risque de retournement. Je vends pour sécuriser vos bénéfices "
+                                    "au chaud et mettre notre capital à l'abri !"
+                                )
+                                
+                            telegram_msg = (
+                                f"🔔 <b>EXÉCUTION D'ORDRE ({active_mode})</b>\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"📝 Actif : <code>{symbol}</code>\n"
+                                f"🚀 Action : <b>{side == 'BUY' and '🟢 ACHAT' or '🔴 VENTE'}</b>\n"
+                                f"📊 Quantité : <code>{trade_qty_formatted:.5f}</code>\n"
+                                f"💵 Prix d'exécution : <b>${execution_price:,.2f} USD</b>\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"🌦️ Météo Marché : <b>{translated_regime}</b>\n\n"
+                                f"{trade_reason}\n"
+                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                f"🖥️ <i>Terminal Web mis à jour. Cliquez ci-dessous pour piloter :</i>"
                             )
+                            
+                            # Standard buttons layout (Like a Telegram Web App)
+                            keyboard = {
+                                "inline_keyboard": [
+                                    [
+                                        {"text": "📊 Rapport Status", "callback_data": "bot_status"},
+                                        {"text": "📋 Historique", "callback_data": "bot_history"}
+                                    ],
+                                    [
+                                        {"text": "⏸️ Pause le Bot", "callback_data": "bot_pause"},
+                                        {"text": "🚨 KILL SWITCH", "callback_data": "bot_kill"}
+                                    ]
+                                ]
+                            }
+                            
+                            await telegram_bot.send_push_notification(telegram_msg, reply_markup=keyboard)
                         except Exception as exc:
                             logger.error(f"DEX / CEX ORDER REJECTION: {str(exc)}")
                             db.add_audit_log(
