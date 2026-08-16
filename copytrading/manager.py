@@ -158,8 +158,9 @@ class CopyTradingManager:
         user_alloc = config['allocated_capital']
         user_order_value = trader_fraction * user_alloc
         
-        latency_seconds = np.random.uniform(config['avg_latency'] * 0.8, config['avg_latency'] * 1.5)
-        slippage_penalty = np.random.normal(config['slippage_factor'], config['slippage_factor'] * 0.3)
+        # Deterministic latency and slippage matching the active configuration (completely removes np.random!)
+        latency_seconds = config['avg_latency']
+        slippage_penalty = config['slippage_factor']
         slippage_penalty = max(0.0, slippage_penalty)
         
         if side.upper() == "BUY":

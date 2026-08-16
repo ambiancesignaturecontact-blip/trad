@@ -60,8 +60,9 @@ class DataQualityStatus:
     LIVE = "LIVE"
     DELAYED = "DELAYED"
     STALE = "STALE"
-    SYNTHETIC = "SYNTHETIC"
     INVALID = "INVALID"
+    DISCONNECTED = "DISCONNECTED"
+    UNAVAILABLE = "UNAVAILABLE"
 
 # Globals
 db = DBManager()
@@ -146,10 +147,10 @@ STATE = {
     "balance_demo": 100000.0,        # Configurable virtual capital
     "balance_real": 0.0,             # Real wallet balance (loaded from exchange)
     "current_equity": 100000.0,
-    "last_price": 60000.0,           # Latest active ticker price
-    "last_tick_volume": 15.0,        # Real transaction volume tracked from WebSocket
+    "last_price": None,              # No known price at startup
+    "last_tick_volume": None,        # No known volume at startup
     "price_history": [],             # Tick prices for live charts
-    "order_book": {"bids": [], "asks": []},
+    "order_book": None,              # No known order book at startup
     "regime_id": 2,                  # Initialized to Range
     "regime_name": "Mean-Reverting Range",
     "ml_prediction_pct": 0.0,
@@ -159,15 +160,15 @@ STATE = {
     "equity_history_real": [0.0],
     "historical_bars": None,         # Infilled during training
     
-    # MULTI-ASSET telemetry mapping (including Gold, Forex, and Stocks!)
+    # MULTI-ASSET telemetry mapping (Initial state: price and pnl are None)
     "assets": {
-        "BTCUSDT": {"price": 60000.0, "qty": 0.0, "pnl": 0.0, "class": "Crypto"},
-        "ETHUSDT": {"price": 2500.0, "qty": 0.0, "pnl": 0.0, "class": "Crypto"},
-        "SOLUSDT": {"price": 140.0, "qty": 0.0, "pnl": 0.0, "class": "Crypto"},
-        "XAUUSD": {"price": 2400.0, "qty": 0.0, "pnl": 0.0, "class": "Commodity (Gold)"},
-        "EURUSD": {"price": 1.09, "qty": 0.0, "pnl": 0.0, "class": "Forex (EUR/USD)"},
-        "AAPL": {"price": 220.0, "qty": 0.0, "pnl": 0.0, "class": "Stock (Apple)"},
-        "TSLA": {"price": 195.0, "qty": 0.0, "pnl": 0.0, "class": "Stock (Tesla)"}
+        "BTCUSDT": {"price": None, "qty": 0.0, "pnl": None, "class": "Crypto"},
+        "ETHUSDT": {"price": None, "qty": 0.0, "pnl": None, "class": "Crypto"},
+        "SOLUSDT": {"price": None, "qty": 0.0, "pnl": None, "class": "Crypto"},
+        "XAUUSD": {"price": None, "qty": 0.0, "pnl": None, "class": "Commodity (Gold)"},
+        "EURUSD": {"price": None, "qty": 0.0, "pnl": None, "class": "Forex (EUR/USD)"},
+        "AAPL": {"price": None, "qty": 0.0, "pnl": None, "class": "Stock (Apple)"},
+        "TSLA": {"price": None, "qty": 0.0, "pnl": None, "class": "Stock (Tesla)"}
     },
     
     # Advanced Signals Cache
@@ -177,7 +178,7 @@ STATE = {
     "defi_wallet_address": "Not Connected",
     "covariance_matrix": {},
     "options_strategy": {"strategy": "PASSIVE", "legs": [], "estimated_yield_pct": 0.0},
-    "data_quality_status": DataQualityStatus.LIVE
+    "data_quality_status": DataQualityStatus.UNAVAILABLE
 }
 
 telegram_bot = TelegramBotManager(state_dict=STATE, db_manager=db)
@@ -309,30 +310,11 @@ async def fetch_historical_market_data(symbol="BTCUSDT"):
                 logger.info(f"Successfully fetched {len(df)} real bars from Binance for training.")
                 return df
     except Exception as e:
-        logger.warning(f"Failed to fetch Binance historical data ({str(e)}). Generating defensive synthetic bars.")
-        
-    # High-fidelity synthetic fallback
-    np.random.seed(42)
-    start_time = pd.Timestamp.now() - pd.Timedelta(hours=120)
-    timestamps = [start_time + pd.Timedelta(hours=i) for i in range(120)]
-    prices = [60000.0]
-    for _ in range(1, 120):
-        ret = np.random.normal(0.0001, 0.005)
-        prices.append(prices[-1] * (1.0 + ret))
-        
-    bars = []
-    for idx, t in enumerate(timestamps):
-        p = prices[idx]
-        bars.append({
-            "timestamp": t,
-            "open": p * np.random.uniform(0.999, 1.001),
-            "high": p * np.random.uniform(1.000, 1.004),
-            "low": p * np.random.uniform(0.996, 1.000),
-            "close": p,
-            "volume": np.random.uniform(10.0, 50.0)
-        })
-    df = pd.DataFrame(bars).set_index("timestamp")
-    return df
+        logger.error(f"CRITICAL: Failed to fetch Binance historical data: {str(e)}")
+        raise HTTPException(
+            status_code=503, 
+            detail="Binance historical market data is currently offline. Automated trading halted for safety."
+        )
 
 
 def train_ai_models(df):
@@ -359,6 +341,45 @@ def train_ai_models(df):
     
     STATE["historical_bars"] = df
     logger.info("AI Models successfully fitted and deployed in-memory.")
+
+
+def evaluate_real_safety_gate(symbol: str) -> bool:
+    """
+    Sovereign Real Safety Gate (Phase 33).
+    Executes strict production-grade validations before allowing any real order routing.
+    Any single check failure -> Rejects order and suspends trading immediately!
+    """
+    # 1. Exchange Connection Check
+    client = get_ccxt_client()
+    if not client:
+        logger.error("SAFETY GATE: CCXT Exchange client offline or unauthenticated.")
+        return False
+        
+    # 2. Market Data Quality Check
+    if STATE["data_quality_status"] == DataQualityStatus.UNAVAILABLE:
+        logger.error("SAFETY GATE: Market data quality is UNAVAILABLE.")
+        return False
+        
+    # 3. Database Health Check
+    try:
+        db.get_connection().close()
+    except Exception as e:
+        logger.error(f"SAFETY GATE: Database connection is unhealthy: {str(e)}")
+        return False
+        
+    # 4. Risk Circuit Breakers Check
+    if risk_manager.circuit_breaker_active:
+        logger.error("SAFETY GATE: Risk circuit breaker is ACTIVE.")
+        return False
+        
+    # 5. Model Registry Approval Check
+    from models.mlops_pipeline import ModelStatus
+    if mlops_trainer.active_model_status != ModelStatus.DEPLOYED:
+        logger.error("SAFETY GATE: Active model in registry is frozen or not APPROVED.")
+        return False
+            
+    logger.info(f"SAFETY GATE PASSED: All validations successful for {symbol}!")
+    return True
 
 
 async def multi_exchange_websocket_listener():
@@ -549,15 +570,16 @@ async def live_trading_loop():
                 if not df_cache.empty and len(df_cache) >= 5:
                     real_returns_dict[asset] = df_cache['close'].pct_change().dropna().values
                 else:
-                    real_returns_dict[asset] = np.random.normal(0.00005, 0.002, 30)
+                    logger.warning(f"No historical candles available for {asset} to calculate covariance. Initializing with flat zeros.")
+                    real_returns_dict[asset] = np.zeros(30)
                     
             corr_df = covariance_engine.calculate_correlation_matrix(real_returns_dict)
             STATE["covariance_matrix"] = corr_df.to_dict()
             mock_returns_dict = real_returns_dict
         except Exception as e:
-            logger.warning(f"Failed to calculate covariance matrix: {str(e)}")
+            logger.error(f"Failed to calculate covariance matrix: {str(e)}")
             corr_df = pd.DataFrame()
-            mock_returns_dict = {asset: np.random.normal(0, 0.002, 30) for asset in STATE["assets"]}
+            mock_returns_dict = {asset: np.zeros(30) for asset in STATE["assets"]}
             
         # Calculate daily Portfolio VaR/CVaR dynamically before the asset loop!
         positions = db.get_positions()
@@ -602,10 +624,15 @@ async def live_trading_loop():
                             STATE["assets"][symbol]["price"] = float(df_y['close'].iloc[-1])
                             # Persist to database cache dynamically!
                             db.save_candles(symbol, df_y)
-            except Exception:
-                STATE["assets"][symbol]["price"] *= (1.0 + np.random.normal(0, 0.0002))
+            except Exception as e:
+                logger.error(f"Failed to fetch live price tick for {symbol}: {str(e)}")
+                # Price is marked as None (Unavailable), completely halting trading for this asset!
+                STATE["assets"][symbol]["price"] = None
                 
             current_price = STATE["assets"][symbol]["price"]
+            if current_price is None:
+                logger.warning(f"Skipping trade loop for {symbol} due to unavailable price feed.")
+                continue
             
             # EVALUATE GENUINE FUNDING RATE ARBITRAGE (100% Real-World API data from Binance Futures!)
             if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
@@ -619,7 +646,14 @@ async def live_trading_loop():
                     pass
                     
                 spot_p = current_price
-                perp_p = current_price * (1.0 + funding_8h * 5.0)
+                perp_p = current_price
+                try:
+                    async with httpx.AsyncClient() as http_client:
+                        resp_f = await http_client.get(f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}")
+                        if resp_f.status_code == 200:
+                            perp_p = float(resp_f.json().get("price", current_price))
+                except Exception as e:
+                    logger.error(f"Failed to fetch real-world perpetual price for {symbol}: {str(e)}")
                 
                 opportunities = funding_arb_engine.analyze_funding_opportunities(
                     symbol=symbol,
@@ -671,14 +705,18 @@ async def live_trading_loop():
             # EVALUATE GENUINE DEX-CEX CROSS-VENUE ARBITRAGE (100% Real-World spreads Bybit vs Binance!)
             if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
                 cex_p = current_price
-                bybit_p = current_price
+                bybit_p = None # Starts as None (Unavailable)
                 try:
                     async with httpx.AsyncClient() as http_client:
                         resp = await http_client.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}")
                         if resp.status_code == 200:
-                            bybit_p = float(resp.json().get("result", {}).get("list", [{}])[0].get("lastPrice", current_price))
-                except Exception:
-                    pass
+                            bybit_p = float(resp.json().get("result", {}).get("list", [{}])[0].get("lastPrice"))
+                except Exception as e:
+                    logger.error(f"Failed to fetch real-world secondary exchange price from Bybit for {symbol}: {str(e)}")
+                    
+                if bybit_p is None:
+                    logger.warning(f"Skipping arbitrage check for {symbol} due to unavailable Bybit secondary price feed.")
+                    continue
                     
                 arb_opp = dex_cex_arb_engine.detect_arbitrage_opportunities(
                     symbol=symbol,
@@ -845,6 +883,11 @@ async def live_trading_loop():
                     )
                     
                     if ok:
+                        # Enforce strict real safety gate in production before placing any real trade!
+                        if active_mode == "REAL" and not evaluate_real_safety_gate(symbol):
+                            logger.critical(f"REAL SAFETY GATE REJECTED: Real order blocked for {symbol} due to safety gate checks.")
+                            continue
+                            
                         try:
                             # EVM NON-CUSTODIAL EXECUTION ROUTER:
                             if active_mode == "REAL" and os.getenv("EVM_PRIVATE_KEY") and symbol == "ETHUSDT":
