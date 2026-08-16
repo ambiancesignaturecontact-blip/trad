@@ -138,7 +138,10 @@
                 <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
                     <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">BÉNÉFICES EN DIRECT (PnL)</p>
                     <h3 id="val-pnl" class="text-xl font-black mt-1 text-emerald-400 glow-text-green">+$0.00</h3>
-                    <p id="val-pnl-pct" class="text-[10px] text-slate-500 mt-0.5">Rendement: +0.00%</p>
+                    <div class="flex justify-between items-center mt-0.5 text-[10px] text-slate-500">
+                        <span id="val-pnl-pct">Rendement: +0.00%</span>
+                        <span id="val-initial-cap" class="text-slate-500 font-bold">Init: $0.00</span>
+                    </div>
                 </div>
 
                 <!-- Price ticker -->
@@ -619,12 +622,14 @@
             // PnL Cards update
             const pnlUsd = data.live_pnl_usd || 0.0;
             const pnlPct = data.live_pnl_pct || 0.0;
+            const initialCap = (data.current_equity || 100000.0) - pnlUsd;
             const pnlEl = document.getElementById('val-pnl');
             if (pnlEl) {
                 pnlEl.innerText = `${pnlUsd >= 0 ? '+' : ''}$${pnlUsd.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
                 pnlEl.className = `text-xl font-black mt-1 ${pnlUsd >= 0 ? 'text-emerald-400 glow-text-green' : 'text-rose-500'}`;
             }
             safeSetText('val-pnl-pct', `Rendement: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`);
+            safeSetText('val-initial-cap', `Init: $${initialCap.toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0})}`);
 
             safeSetText('val-price', `$${(data.last_price || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
             safeSetText('val-regime', data.regime_name || "N/A");
