@@ -198,6 +198,43 @@ class TelegramBotManager:
             ]
         }
         
+        if cmd_lower.startswith("/set "):
+            try:
+                amount_str = command.split(" ")[1]
+                amount = float(amount_str)
+                if amount <= 0:
+                    raise ValueError("Amount must be positive.")
+                    
+                self.state["balance_demo"] = amount
+                self.state["initial_capital_demo"] = amount
+                self.state["current_equity"] = amount
+                self.state["equity_history_demo"] = [amount]
+                
+                if self.db:
+                    self.db.add_audit_log(
+                        "DEMO_BALANCE_RESET_TELEGRAM", 
+                        "127.0.0.1", 
+                        f"Demo balance has been manually reset to {amount} USD via Telegram."
+                    )
+                    
+                await self.send_push_notification(
+                    f"💰 <b>SOLDE SIMULÉ RÉINITIALISÉ !</b>\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Le capital de votre portefeuille de démonstration a été réinitialisé à : <b>${amount:,.2f} USD</b>.\n\n"
+                    f"🌦️ <i>Toutes les métriques ont été resynchronisées en temps réel !</i>",
+                    reply_markup=keyboard
+                )
+                return
+            except Exception as e:
+                await self.send_push_notification(
+                    f"⚠️ <b>ERREUR DE COMMANDE :</b>\n"
+                    f"Format correct : <code>/set [montant]</code>\n"
+                    f"Exemple : <code>/set 150000</code>\n"
+                    f"Détails : {str(e)}",
+                    reply_markup=keyboard
+                )
+                return
+                
         if cmd_lower in ["/start", "/help"]:
             welcome_msg = (
                 "👋 *BIENVENUE SUR VOTRE CONSOLE DE TRADING TACTILE !*\n\n"
