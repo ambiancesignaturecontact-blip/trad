@@ -41,15 +41,17 @@ class TelegramBotManager:
     async def send_push_notification(self, text: str) -> bool:
         """
         Sends an instantaneous markdown-formatted push alert to the user's mobile.
+        Automatically escapes HTML and converts standard markdown syntax to prevent Telegram crashes (HTTP 400).
         """
         if not self.api_url or not self.chat_id:
             return False
             
         url = f"{self.api_url}/sendMessage"
+        safe_html = self._format_markdown_to_html(text)
         payload = {
             "chat_id": self.chat_id,
-            "text": text,
-            "parse_mode": "Markdown"
+            "text": safe_html,
+            "parse_mode": "HTML"
         }
         try:
             async with httpx.AsyncClient() as client:
@@ -67,16 +69,18 @@ class TelegramBotManager:
             return False
             
         url = f"{self.api_url}/sendMessage"
+        raw_text = (
+            f"⏰ *ATTENTION : TEMPÊTE MACROÉCONOMIQUE APPROCHE !*\n"
+            f"-----------------------------------------\n"
+            f"L'événement très important `{event_name}` est prévu dans *{time_to_event:.1f} minutes* !\n\n"
+            f"💡 *Explication simple* : Ces annonces provoquent souvent de fortes vagues sur les prix.\n"
+            f"Par sécurité, je vous recommande vivement de réduire temporairement nos investissements de 60%."
+        )
+        safe_html = self._format_markdown_to_html(raw_text)
         payload = {
             "chat_id": self.chat_id,
-            "text": (
-                f"⏰ *ATTENTION : TEMPÊTE MACROÉCONOMIQUE APPROCHE !*\n"
-                f"-----------------------------------------\n"
-                f"L'événement très important `{event_name}` est prévu dans *{time_to_event:.1f} minutes* !\n\n"
-                f"💡 *Explication simple* : Ces annonces provoquent souvent de fortes vagues sur les prix.\n"
-                f"Par sécurité, je vous recommande vivement de réduire temporairement nos investissements de 60%."
-            ),
-            "parse_mode": "Markdown",
+            "text": safe_html,
+            "parse_mode": "HTML",
             "reply_markup": {
                 "inline_keyboard": [
                     [
@@ -93,6 +97,37 @@ class TelegramBotManager:
         except Exception as e:
             logger.error(f"Failed to send interactive Telegram macro alert: {str(e)}")
             return False
+
+    def _format_markdown_to_html(self, text: str) -> str:
+        """
+        Safely converts basic markdown (*bold*, _italic_, `code`) to valid HTML,
+        while escaping HTML special characters to prevent Telegram parse crashes (HTTP 400).
+        """
+        if not text:
+            return ""
+            
+        # 1. Escape HTML entities safely
+        text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        
+        # 2. Convert bold (`*text*`) to `<b>text</b>`
+        parts = text.split("*")
+        for i in range(1, len(parts), 2):
+            parts[i] = f"<b>{parts[i]}</b>"
+        text = "".join(parts)
+        
+        # 3. Convert code (`` `text` ``) to `<code>text</code>`
+        parts = text.split("`")
+        for i in range(1, len(parts), 2):
+            parts[i] = f"<code>{parts[i]}</code>"
+        text = "".join(parts)
+        
+        # 4. Convert italic (`_text_`) to `<i>text</i>`
+        parts = text.split("_")
+        for i in range(1, len(parts), 2):
+            parts[i] = f"<i>{parts[i]}</i>"
+        text = "".join(parts)
+        
+        return text
 
     async def poll_telegram_commands_loop(self):
         if not self.api_url:

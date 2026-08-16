@@ -124,3 +124,37 @@ class DexCexArbitrageEngine:
             
         avg_price = spent_usd / filled_qty if filled_qty > 0 else 0.0
         return filled_qty, avg_price
+
+    def detect_arbitrage_opportunities(self, symbol: str, dex_price: float, cex_price: float, estimated_gas_usd: float = 0.05) -> dict:
+        """
+        Simplified price-based fallback for cross-venue spreads (DEX vs CEX).
+        Calculates spread and net profit after deducting fees and estimated gas.
+        """
+        if not dex_price or not cex_price:
+            return {"action": "HOLD", "reason": "Price feeds unavailable."}
+            
+        # Route 1: Buy DEX, Sell CEX
+        spread = (cex_price - dex_price) / dex_price
+        fee_pct = 0.002 # standard taker fee
+        net_profit_pct = spread - fee_pct - (estimated_gas_usd / dex_price)
+        
+        if net_profit_pct >= self.min_profit_spread_pct:
+            return {
+                "action": "EXECUTE_ARBITRAGE",
+                "route": "BUY_DEX_SELL_CEX",
+                "spread_pct": spread,
+                "net_profit_pct": net_profit_pct
+            }
+            
+        # Route 2: Buy CEX, Sell DEX
+        spread_rev = (dex_price - cex_price) / cex_price
+        net_profit_pct_rev = spread_rev - fee_pct - (estimated_gas_usd / cex_price)
+        if net_profit_pct_rev >= self.min_profit_spread_pct:
+            return {
+                "action": "EXECUTE_ARBITRAGE",
+                "route": "BUY_CEX_SELL_DEX",
+                "spread_pct": spread_rev,
+                "net_profit_pct": net_profit_pct_rev
+            }
+            
+        return {"action": "HOLD", "reason": "No profitable spread detected."}
