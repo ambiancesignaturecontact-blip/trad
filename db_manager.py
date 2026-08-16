@@ -173,6 +173,23 @@ class DBManager:
                         PRIMARY KEY (symbol, timestamp)
                     )
                 """)
+                
+                # Fills Table (Postgres)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS fills (
+                        fill_id VARCHAR(50) PRIMARY KEY,
+                        user_id INTEGER DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
+                        order_id VARCHAR(50),
+                        exchange_trade_id VARCHAR(50),
+                        price DOUBLE PRECISION,
+                        quantity DOUBLE PRECISION,
+                        fee DOUBLE PRECISION,
+                        fee_asset VARCHAR(10),
+                        side VARCHAR(10),
+                        liquidity VARCHAR(10),
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
             else:
                 # SQLite dialect
                 cursor.execute("""
@@ -241,6 +258,24 @@ class DBManager:
                         close REAL,
                         volume REAL,
                         PRIMARY KEY (symbol, timestamp)
+                    )
+                """)
+                
+                # Fills Table (SQLite)
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS fills (
+                        fill_id TEXT PRIMARY KEY,
+                        user_id INTEGER DEFAULT 1,
+                        order_id TEXT,
+                        exchange_trade_id TEXT,
+                        price REAL,
+                        quantity REAL,
+                        fee REAL,
+                        fee_asset TEXT,
+                        side TEXT,
+                        liquidity TEXT,
+                        timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
+                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                     )
                 """)
                 
@@ -450,6 +485,28 @@ class DBManager:
                 cursor.execute("SELECT * FROM copy_allocations WHERE user_id = ?", (user_id,))
             rows = cursor.fetchall()
             return {r['trader_id']: {"allocated_capital": r['allocated_capital'], "active": bool(r['active'])} for r in rows}
+
+    # Fills Cache API
+    def save_fill(self, fill_id: str, order_id: str, exchange_trade_id: str, price: float, quantity: float, fee: float, fee_asset: str, side: str, liquidity: str = "taker", user_id=1):
+        """
+        Saves a confirmed fill execution using a robust DELETE-then-INSERT transaction.
+        """
+        with self.get_connection() as conn:
+            cursor = conn.cursor()
+            if self.is_postgres:
+                cursor.execute("DELETE FROM fills WHERE user_id = %s AND fill_id = %s", (int(user_id), str(fill_id)))
+                cursor.execute("""
+                    INSERT INTO fills (fill_id, user_id, order_id, exchange_trade_id, price, quantity, fee, fee_asset, side, liquidity)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """, (str(fill_id), int(user_id), str(order_id), str(exchange_trade_id), float(price), float(quantity), float(fee), str(fee_asset), str(side), str(liquidity)))
+            else:
+                cursor.execute("DELETE FROM fills WHERE user_id = ? AND fill_id = ?", (int(user_id), str(fill_id)))
+                cursor.execute("""
+                    INSERT INTO fills (fill_id, user_id, order_id, exchange_trade_id, price, quantity, fee, fee_asset, side, liquidity)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, (str(fill_id), int(user_id), str(order_id), str(exchange_trade_id), float(price), float(quantity), float(fee), str(fee_asset), str(side), str(liquidity)))
+            conn.commit()
+            logger.info(f"Database: Saved confirmed fill {fill_id} for order {order_id}.")
 
     # Market Candles Cache API
     def save_candles(self, symbol: str, df_bars: pd.DataFrame):
