@@ -9,15 +9,16 @@ import pandas as pd
 logger = logging.getLogger("DBManager")
 
 DATABASE_URL = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
-DB_PATH = "/home/user/trading_platform.db"
-KEY_PATH = "/home/user/secret.key"
+# Highly portable paths, dynamically resolved relative to the current working directory or environment variables
+DB_PATH = os.getenv("SQLITE_DB_PATH", os.path.join(os.getcwd(), "trading_platform.db"))
+KEY_PATH = os.getenv("SECRET_KEY_PATH", os.path.join(os.getcwd(), "secret.key"))
 
 class DBManager:
     """
     Dual-dialect, Multi-User SaaS DB manager supporting SQLite for local runs,
     and PostgreSQL (Supabase) for production environments.
     
-    Ties positions, orders, configurations, and copytrades to unique user_id keys.
+    Includes a cryptographically chained double-audit ledger (Sovereign Blockchain-like chaining).
     """
     def __init__(self):
         self.initialize_key()
@@ -104,7 +105,7 @@ class DBManager:
                     ON CONFLICT (username) DO NOTHING
                 """)
                 
-                # Orders (including user_id)
+                # Orders
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS orders (
                         id SERIAL PRIMARY KEY,
@@ -121,7 +122,7 @@ class DBManager:
                     )
                 """)
                 
-                # Positions (user_id in primary key!)
+                # Positions
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS positions (
                         user_id INTEGER DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
@@ -133,7 +134,7 @@ class DBManager:
                     )
                 """)
                 
-                # System Settings (user_id in primary key!)
+                # System Settings
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS system_settings (
                         user_id INTEGER DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
@@ -143,7 +144,7 @@ class DBManager:
                     )
                 """)
                 
-                # Audit Logs
+                # Audit Logs (with cryptographically chained hashes)
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS audit_logs (
                         id SERIAL PRIMARY KEY,
@@ -151,7 +152,8 @@ class DBManager:
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         action VARCHAR(100),
                         user_ip VARCHAR(50),
-                        details TEXT
+                        details TEXT,
+                        hash VARCHAR(64)
                     )
                 """)
                 
@@ -237,6 +239,7 @@ class DBManager:
                         action TEXT,
                         user_ip TEXT,
                         details TEXT,
+                        hash TEXT,
                         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                     )
                 """)
@@ -369,21 +372,43 @@ class DBManager:
             rows = cursor.fetchall()
             return [dict(r) for r in rows]
 
-    # Audit Logs API
+    # Cryptographically Chained Audit Logs API
     def add_audit_log(self, action, user_ip, details, user_id=1):
+        """
+        Saves a new audit log with a SHA-256 cryptographic chain hash,
+        binding current log details to the previous log entry.
+        """
         with self.get_connection() as conn:
             cursor = conn.cursor()
+            
+            # Fetch the previous log's hash
+            prev_hash = "GENESIS_ROOT_HASH"
+            if self.is_postgres:
+                cursor.execute("SELECT hash FROM audit_logs WHERE user_id = %s ORDER BY id DESC LIMIT 1", (user_id,))
+            else:
+                cursor.execute("SELECT hash FROM audit_logs WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
+            
+            row = cursor.fetchone()
+            if row and row['hash']:
+                prev_hash = row['hash']
+                
+            # Compute current block hash (concatenating prev_hash + action + details + user_ip)
+            content_str = f"{prev_hash}_{action}_{details}_{user_ip}"
+            current_hash = hashlib.sha256(content_str.encode()).hexdigest()
+            
             if self.is_postgres:
                 cursor.execute("""
-                    INSERT INTO audit_logs (user_id, action, user_ip, details)
-                    VALUES (%s, %s, %s, %s)
-                """, (user_id, action, user_ip, details))
+                    INSERT INTO audit_logs (user_id, action, user_ip, details, hash)
+                    VALUES (%s, %s, %s, %s, %s)
+                """, (user_id, action, user_ip, details, current_hash))
             else:
                 cursor.execute("""
-                    INSERT INTO audit_logs (user_id, action, user_ip, details)
-                    VALUES (?, ?, ?, ?)
-                """, (user_id, action, user_ip, details))
+                    INSERT INTO audit_logs (user_id, action, user_ip, details, hash)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (user_id, action, user_ip, details, current_hash))
+                
             conn.commit()
+            logger.info(f"Cryptographically chained audit log created. Hash: {current_hash[:16]}...")
 
     def get_audit_logs(self, user_id=1):
         with self.get_connection() as conn:

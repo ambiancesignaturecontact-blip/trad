@@ -2,88 +2,217 @@ import numpy as np
 
 class LSTMLikePredictor:
     """
-    A lightweight, robust predictive model designed to simulate
-    LSTM temporal dependencies and non-linear patterns using an optimized 
-    Recursive Feature Ridge Regression structure.
+    A genuine, mathematically rigorous Long Short-Term Memory (LSTM) Neural Network 
+    implemented entirely in pure NumPy.
     
-    This avoids heavy framework overhead (PyTorch/TensorFlow) while providing
-    highly stable, online-trainable time-series predictions.
+    Contains an authentic LSTM Cell with Forget, Input, Output, and Candidate Cell Gates.
+    Includes forward propagation through time (BPTT) and online training gradient descents.
+    Requires no external heavy frameworks (PyTorch/TensorFlow).
     """
-    def __init__(self, input_dim=5, hidden_dim=8, l2_reg=1.0):
+    def __init__(self, input_dim=5, hidden_dim=8, output_dim=1, lr=0.01):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
-        self.l2_reg = l2_reg
+        self.output_dim = output_dim
+        self.lr = lr
         
-        # Initialize weight matrices (recurrent simulation)
-        # W_h: Hidden state transitions, W_x: Input mappings
+        # Combined dimension: [h_prev, x_t]
+        concat_dim = hidden_dim + input_dim
+        
+        # Initialize weight matrices with Xavier/Glorot Normal initialization
         np.random.seed(42)
-        self.W_x = np.random.normal(0, 1.0 / np.sqrt(input_dim), (hidden_dim, input_dim))
-        self.W_h = np.random.normal(0, 1.0 / np.sqrt(hidden_dim), (hidden_dim, hidden_dim))
-        self.b_h = np.zeros((hidden_dim, 1))
         
-        # Output weights (Ridge regression on hidden state)
-        self.W_out = np.zeros((1, hidden_dim))
-        self.b_out = 0.0
+        # Forget Gate
+        self.W_f = np.random.normal(0, np.sqrt(2.0 / concat_dim), (hidden_dim, concat_dim))
+        self.b_f = np.zeros((hidden_dim, 1))
+        
+        # Input Gate
+        self.W_i = np.random.normal(0, np.sqrt(2.0 / concat_dim), (hidden_dim, concat_dim))
+        self.b_i = np.zeros((hidden_dim, 1))
+        
+        # Candidate Cell State
+        self.W_c = np.random.normal(0, np.sqrt(2.0 / concat_dim), (hidden_dim, concat_dim))
+        self.b_c = np.zeros((hidden_dim, 1))
+        
+        # Output Gate
+        self.W_o = np.random.normal(0, np.sqrt(2.0 / concat_dim), (hidden_dim, concat_dim))
+        self.b_o = np.zeros((hidden_dim, 1))
+        
+        # Output Projection Layer (from hidden state to price prediction)
+        self.W_out = np.random.normal(0, np.sqrt(2.0 / hidden_dim), (output_dim, hidden_dim))
+        self.b_out = np.zeros((output_dim, 1))
+
+    def _sigmoid(self, x):
+        return 1.0 / (1.0 + np.exp(-np.clip(x, -500, 500)))
 
     def _tanh(self, x):
         return np.tanh(x)
 
-    def _extract_hidden_states(self, X_seq):
+    def forward(self, X_seq):
         """
-        Processes a temporal sequence of inputs and extracts the final hidden state.
+        Executes a complete forward pass through time over an input sequence.
         X_seq: shape (seq_len, input_dim)
+        
+        Returns:
+          - h_states: hidden states for all steps
+          - c_states: cell states for all steps
+          - f_gates, i_gates, c_bar_gates, o_gates: gate outputs for backprop
+          - final_prediction: float value
         """
-        h = np.zeros((self.hidden_dim, 1))
-        for t in range(X_seq.shape[0]):
+        seq_len = X_seq.shape[0]
+        
+        h_states = {}
+        c_states = {}
+        f_gates = {}
+        i_gates = {}
+        c_bar_gates = {}
+        o_gates = {}
+        
+        # Initialize hidden and cell states at t = -1 to 0
+        h_states[-1] = np.zeros((self.hidden_dim, 1))
+        c_states[-1] = np.zeros((self.hidden_dim, 1))
+        
+        for t in range(seq_len):
             x_t = X_seq[t].reshape(-1, 1)
-            h = self._tanh(np.dot(self.W_x, x_t) + np.dot(self.W_h, h) + self.b_h)
-        return h.flatten()
+            
+            # Concatenate h_{t-1} and x_t
+            concat = np.vstack((h_states[t-1], x_t))
+            
+            # Forget Gate
+            f_gates[t] = self._sigmoid(np.dot(self.W_f, concat) + self.b_f)
+            
+            # Input Gate
+            i_gates[t] = self._sigmoid(np.dot(self.W_i, concat) + self.b_i)
+            
+            # Candidate Cell State
+            c_bar_gates[t] = self._tanh(np.dot(self.W_c, concat) + self.b_c)
+            
+            # Update Cell State: C_t = f_t * C_{t-1} + i_t * C_tilde_t
+            c_states[t] = f_gates[t] * c_states[t-1] + i_gates[t] * c_bar_gates[t]
+            
+            # Output Gate
+            o_gates[t] = self._sigmoid(np.dot(self.W_o, concat) + self.b_o)
+            
+            # Update Hidden State: h_t = o_t * tanh(C_t)
+            h_states[t] = o_gates[t] * self._tanh(c_states[t])
+            
+        # Compute final output projection: y = W_out * h_last + b_out
+        final_prediction = np.dot(self.W_out, h_states[seq_len - 1]) + self.b_out
+        
+        return h_states, c_states, f_gates, i_gates, c_bar_gates, o_gates, float(final_prediction[0, 0])
 
-    def fit(self, X_sequences, y_targets):
+    def fit(self, X_sequences, y_targets, epochs=5):
         """
-        Trains the output layer via Ridge Regression using extracted recurrent features.
-        X_sequences: list or array of sequences, each shape (seq_len, input_dim)
-        y_targets: array of shape (N_samples,) containing future returns
+        Trains the entire LSTM network (including all gates) over multiple epochs
+        using backpropagation through time (BPTT).
         """
         N = len(X_sequences)
         if N < 5:
             return self
             
-        H = np.zeros((N, self.hidden_dim))
-        for i in range(N):
-            H[i] = self._extract_hidden_states(X_sequences[i])
-            
-        # Ridge regression closed-form solver: W = (H^T * H + lambda * I)^(-1) * H^T * y
-        I = np.eye(self.hidden_dim)
-        HT_H = np.dot(H.T, H) + self.l2_reg * I
-        HT_y = np.dot(H.T, y_targets)
-        
-        try:
-            self.W_out = np.linalg.solve(HT_H, HT_y).reshape(1, -1)
-            self.b_out = np.mean(y_targets - np.dot(H, self.W_out.T).flatten())
-        except np.linalg.LinAlgError:
-            # Fallback in case of singular matrix
-            self.W_out = np.zeros((1, self.hidden_dim))
-            self.b_out = float(np.mean(y_targets))
-            
+        for epoch in range(epochs):
+            for idx in range(N):
+                X_seq = np.array(X_sequences[idx])
+                y_target = y_targets[idx]
+                
+                # 1. Forward Pass
+                h_states, c_states, f_gates, i_gates, c_bar_gates, o_gates, pred = self.forward(X_seq)
+                
+                # 2. Backpropagation through time (BPTT)
+                seq_len = X_seq.shape[0]
+                dy = pred - y_target
+                
+                # Gradients for Output Projection Layer
+                dW_out = dy * h_states[seq_len - 1].T
+                db_out = dy
+                
+                # Initialize gradients for gates with zero
+                dW_f, dW_i, dW_c, dW_o = np.zeros_like(self.W_f), np.zeros_like(self.W_i), np.zeros_like(self.W_c), np.zeros_like(self.W_o)
+                db_f, db_i, db_c, db_o = np.zeros_like(self.b_f), np.zeros_like(self.b_i), np.zeros_like(self.b_c), np.zeros_like(self.b_o)
+                
+                # Backpropagate through hidden states
+                dh_next = np.dot(self.W_out.T, dy)
+                dc_next = np.zeros_like(c_states[-1])
+                
+                for t in reversed(range(seq_len)):
+                    x_t = X_seq[t].reshape(-1, 1)
+                    concat = np.vstack((h_states[t-1], x_t))
+                    
+                    # Gradient of loss with respect to h_t
+                    dh = dh_next
+                    
+                    # Gradient with respect to Output Gate
+                    do = dh * self._tanh(c_states[t])
+                    do_net = do * o_gates[t] * (1.0 - o_gates[t]) # derivative of sigmoid
+                    
+                    dW_o += np.dot(do_net, concat.T)
+                    db_o += do_net
+                    
+                    # Gradient with respect to Cell State
+                    dc = dh * o_gates[t] * (1.0 - self._tanh(c_states[t])**2) + dc_next
+                    
+                    # Gradient with respect to Candidate Cell State
+                    dc_bar = dc * i_gates[t]
+                    dc_bar_net = dc_bar * (1.0 - c_bar_gates[t]**2) # derivative of tanh
+                    
+                    dW_c += np.dot(dc_bar_net, concat.T)
+                    db_c += dc_bar_net
+                    
+                    # Gradient with respect to Input Gate
+                    di = dc * c_bar_gates[t]
+                    di_net = di * i_gates[t] * (1.0 - i_gates[t])
+                    
+                    dW_i += np.dot(di_net, concat.T)
+                    db_i += di_net
+                    
+                    # Gradient with respect to Forget Gate
+                    df = dc * c_states[t-1]
+                    df_net = df * f_gates[t] * (1.0 - f_gates[t])
+                    
+                    dW_f += np.dot(df_net, concat.T)
+                    db_f += df_net
+                    
+                    # Update dh_next and dc_next for previous time step t-1
+                    dconcat = (
+                        np.dot(self.W_f.T, df_net) +
+                        np.dot(self.W_i.T, di_net) +
+                        np.dot(self.W_c.T, dc_bar_net) +
+                        np.dot(self.W_o.T, do_net)
+                    )
+                    dh_next = dconcat[:self.hidden_dim, :]
+                    dc_next = dc * f_gates[t]
+                    
+                # 3. Apply Gradient Descent Weight Updates (with gradient clipping to avoid explosions)
+                clip_val = 1.0
+                for grad_arr in [dW_f, dW_i, dW_c, dW_o, dW_out, db_f, db_i, db_c, db_o]:
+                    np.clip(grad_arr, -clip_val, clip_val, out=grad_arr)
+                db_out = max(-clip_val, min(clip_val, db_out))
+                    
+                self.W_f -= self.lr * dW_f
+                self.b_f -= self.lr * db_f
+                self.W_i -= self.lr * dW_i
+                self.b_i -= self.lr * db_i
+                self.W_c -= self.lr * dW_c
+                self.b_c -= self.lr * db_c
+                self.W_o -= self.lr * dW_o
+                self.b_o -= self.lr * db_o
+                self.W_out -= self.lr * dW_out
+                self.b_out -= self.lr * db_out
+                
         return self
 
     def predict(self, X_seq):
         """
-        Predicts future price return based on a single temporal sequence of features.
+        Predicts future price return using a single sequence of technical features.
         X_seq: shape (seq_len, input_dim)
         """
-        h = self._extract_hidden_states(X_seq)
-        prediction = np.dot(self.W_out, h.reshape(-1, 1)) + self.b_out
-        return float(prediction[0, 0])
+        _, _, _, _, _, _, pred = self.forward(X_seq)
+        return pred
 
 
 class PPOTRAgent:
     """
     A complete, pure-numpy Actor-Critic Reinforcement Learning Agent
     modeled after the PPO (Proximal Policy Optimization) framework.
-    
-    Optimizes trading exposure (Target Position) based on state vectors.
     """
     def __init__(self, state_dim=4, action_dim=1, lr=0.01, clip_epsilon=0.2):
         self.state_dim = state_dim
@@ -91,86 +220,62 @@ class PPOTRAgent:
         self.clip_epsilon = clip_epsilon
         self.lr = lr
         
-        # Policy Network (Actor): outputs mean of action distribution
-        # Assuming action space is single-dimensional: target portfolio exposure in [-1.0, 1.0]
         np.random.seed(88)
         self.actor_w = np.random.normal(0, 0.1, (state_dim, action_dim))
         self.actor_b = np.zeros((action_dim, 1))
-        self.action_std = 0.2  # Exploration variance
+        self.action_std = 0.2
         
-        # Value Network (Critic): outputs state value V(s)
         self.critic_w = np.random.normal(0, 0.1, (state_dim, 1))
         self.critic_b = 0.0
 
     def get_action(self, state):
-        """
-        Given a state vector, sample an action from the policy distribution (Gaussian)
-        and return the chosen action along with its log-probability.
-        state: shape (state_dim,)
-        """
         state_col = state.reshape(-1, 1)
         mean = np.dot(self.actor_w.T, state_col) + self.actor_b
         mean = float(mean[0, 0])
         mean_clipped = np.clip(mean, -1.0, 1.0)
         
-        # Sample action using Gaussian exploration
         action = np.random.normal(mean_clipped, self.action_std)
         action_clipped = np.clip(action, -1.0, 1.0)
         
-        # Calculate log-probability under the policy
         variance = self.action_std ** 2
         log_prob = -0.5 * np.log(2 * np.pi * variance) - ((action_clipped - mean_clipped) ** 2) / (2 * variance)
         
         return float(action_clipped), float(log_prob)
 
     def get_value(self, state):
-        """
-        Estimates the state value V(s).
-        """
         state_col = state.reshape(-1, 1)
         val = np.dot(self.critic_w.T, state_col) + self.critic_b
         return float(val[0, 0])
 
     def train_step(self, states, actions, log_probs_old, rewards, next_states, terminals):
-        """
-        Executes a localized PPO Actor-Critic update step on collected trajectories.
-        """
-        states = np.array(states) # (Batch_Size, state_dim)
-        actions = np.array(actions) # (Batch_Size,)
-        log_probs_old = np.array(log_probs_old) # (Batch_Size,)
-        rewards = np.array(rewards) # (Batch_Size,)
-        next_states = np.array(next_states) # (Batch_Size, state_dim)
-        terminals = np.array(terminals) # (Batch_Size,)
+        states = np.array(states)
+        actions = np.array(actions)
+        log_probs_old = np.array(log_probs_old)
+        rewards = np.array(rewards)
+        next_states = np.array(next_states)
+        terminals = np.array(terminals)
         
-        # 1. Compute target values and advantages (TD residual)
         gamma = 0.99
         values = np.array([self.get_value(s) for s in states])
         next_values = np.array([self.get_value(ns) for ns in next_states])
         
         targets = rewards + gamma * next_values * (1.0 - terminals)
         advantages = targets - values
-        
-        # Normalize advantages for training stability
         advantages = (advantages - np.mean(advantages)) / (np.std(advantages) + 1e-8)
         
-        # 2. Update Critic Weights (Minimize MSE Loss)
-        # Gradient of Critic Loss = -2 * (Target - V(s)) * State
+        # Update Critic
         critic_gradients_w = np.zeros_like(self.critic_w)
         critic_gradients_b = 0.0
-        
         for idx in range(len(states)):
             diff = targets[idx] - values[idx]
             critic_gradients_w += -2.0 * diff * states[idx].reshape(-1, 1)
             critic_gradients_b += -2.0 * diff
-            
-        # Gradient descent step
         self.critic_w -= self.lr * (critic_gradients_w / len(states))
         self.critic_b -= self.lr * (critic_gradients_b / len(states))
         
-        # 3. Update Actor Weights (PPO Clipped Objective)
+        # Update Actor
         actor_gradients_w = np.zeros_like(self.actor_w)
         actor_gradients_b = np.zeros_like(self.actor_b)
-        
         for idx in range(len(states)):
             state_col = states[idx].reshape(-1, 1)
             mean = np.dot(self.actor_w.T, state_col) + self.actor_b
@@ -180,23 +285,14 @@ class PPOTRAgent:
             variance = self.action_std ** 2
             log_prob_new = -0.5 * np.log(2 * np.pi * variance) - ((actions[idx] - mean_clipped) ** 2) / (2 * variance)
             
-            # Probability ratio r_t(theta)
             ratio = np.exp(log_prob_new - log_probs_old[idx])
-            
-            # Clipped objective
             surr1 = ratio * advantages[idx]
             surr2 = np.clip(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * advantages[idx]
             
-            # If surr1 < surr2, optimize policy based on surr1 gradient
             if surr1 < surr2 or (ratio < 1.0 - self.clip_epsilon and advantages[idx] > 0) or (ratio > 1.0 + self.clip_epsilon and advantages[idx] < 0):
-                # Gradient of log_prob_new with respect to actor weights:
-                # d_log_prob / d_mean = (action - mean) / variance
-                # d_mean / d_w = state
                 grad_mean = (actions[idx] - mean_clipped) / variance
                 actor_gradients_w += -ratio * advantages[idx] * grad_mean * state_col
                 actor_gradients_b += -ratio * advantages[idx] * grad_mean
-                
-        # Gradient descent step
         self.actor_w -= self.lr * (actor_gradients_w / len(states))
         self.actor_b -= self.lr * (actor_gradients_b / len(states))
         

@@ -3,18 +3,25 @@ import pandas as pd
 import numpy as np
 import time
 import random
+import pickle
 
 logger = logging.getLogger("MLOpsPipeline")
 
 class MLOpsAutoTrainer:
     """
     Automated Machine Learning Operations (MLOps) retraining pipeline.
-    Features a high-performance Genetic Algorithm (GA) for strategy parameter auto-tuning.
+    Features a CUSUM Concept Drift Detector, model registry versioning, 
+    and a vectorized Genetic Algorithm (GA) for strategy parameter auto-tuning.
     """
     def __init__(self, regime_detector, price_predictor, db_manager):
         self.regime_detector = regime_detector
         self.price_predictor = price_predictor
         self.db = db_manager
+        
+        # CUSUM drift detection parameters
+        self.cusum_threshold = 0.05
+        self.cusum_drift_accumulator = 0.0
+        self.prediction_errors_history = []
 
     def check_retrain_schedule(self) -> bool:
         last_train = self.db.get_setting("last_mlops_training_epoch")
@@ -26,99 +33,131 @@ class MLOpsAutoTrainer:
         except ValueError:
             return True
 
+    def track_prediction_error_and_detect_drift(self, predicted_ret: float, actual_ret: float) -> bool:
+        """
+        Calculates prediction error and tracks cumulative drift using a CUSUM algorithm.
+        If cumulative drift exceeds threshold, returns True to trigger auto-retraining.
+        """
+        error = abs(predicted_ret - actual_ret)
+        self.prediction_errors_history.append(error)
+        if len(self.prediction_errors_history) > 30:
+            self.prediction_errors_history.pop(0)
+            
+        avg_error = np.mean(self.prediction_errors_history)
+        
+        # CUSUM accumulation
+        deviation = error - avg_error
+        self.cusum_drift_accumulator = max(0.0, self.cusum_drift_accumulator + deviation)
+        
+        if self.cusum_drift_accumulator >= self.cusum_threshold:
+            logger.warning(f"MLOPS DRIFT DETECTED: Cumulative drift {self.cusum_drift_accumulator:.4f} exceeded CUSUM threshold {self.cusum_threshold:.4f}!")
+            self.cusum_drift_accumulator = 0.0 # reset after detection
+            return True
+            
+        return False
+
+    def save_model_to_registry(self, symbol: str, model_type: str, model_object, performance_metric: float):
+        """
+        Serializes and version-controls the trained model inside the SQL persistent database registry.
+        """
+        try:
+            # Serialize the trained model weights
+            serialized_weights = base64.b64encode(pickle.dumps(model_object)).decode('utf-8')
+            version_id = f"v_{model_type}_{int(time.time())}"
+            
+            # Save to system settings as a versioned setting
+            self.db.save_setting(f"model_reg_{symbol}_{model_type}_{version_id}", serialized_weights)
+            # Set this version as active
+            self.db.save_setting(f"active_model_{symbol}_{model_type}", version_id)
+            logger.info(f"MODEL REGISTRY: Successfully registered version {version_id} for {symbol} ({model_type}) with Sharpe metric {performance_metric:.2f}.")
+        except Exception as e:
+            logger.error(f"Failed to register model version: {str(e)}")
+
+    def rollback_model_version(self, symbol: str, model_type: str, target_version_id: str) -> bool:
+        """
+        Rollback in-memory weights to a previous stable model version from database registry.
+        """
+        try:
+            serialized_weights = self.db.get_setting(f"model_reg_{symbol}_{model_type}_{target_version_id}")
+            if not serialized_weights:
+                logger.error(f"Model version {target_version_id} not found in database registry.")
+                return False
+                
+            deserialized_model = pickle.loads(base64.b64decode(serialized_weights.encode('utf-8')))
+            
+            # Rollback active pointers
+            if model_type == "hmm":
+                self.regime_detector.transition_matrix = deserialized_model.transition_matrix
+                self.regime_detector.means = deserialized_model.means
+                self.regime_detector.covariances = deserialized_model.covariances
+            elif model_type == "lstm":
+                self.price_predictor.W_f = deserialized_model.W_f
+                self.price_predictor.W_i = deserialized_model.W_i
+                self.price_predictor.W_c = deserialized_model.W_c
+                self.price_predictor.W_o = deserialized_model.W_o
+                self.price_predictor.W_out = deserialized_model.W_out
+                
+            self.db.save_setting(f"active_model_{symbol}_{model_type}", target_version_id)
+            logger.info(f"MODEL REGISTRY ROLLBACK: Restored {symbol} ({model_type}) successfully to version {target_version_id}.")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to rollback model version: {str(e)}")
+            return False
+
     def execute_genetic_tuning(self, df_bars) -> dict:
-        """
-        Runs a Genetic Algorithm (GA) to auto-tune quantitative strategy parameters.
-        Optimizes Sortino Ratio over a population of parameter chromosomes.
-        """
-        logger.info("Executing MLOps Genetic Algorithm Auto-Tuning...")
-        
-        # 1. Define bounds for chromosomes [ema_fast, ema_slow, rsi_period, bbands_period]
-        # Gene bounds:
-        # - ema_fast: 5 to 20
-        # - ema_slow: 21 to 50
-        # - rsi_period: 8 to 25
-        # - bbands_period: 10 to 30
-        
         population_size = 20
         generations = 5
         mutation_rate = 0.15
         
-        # Initialize random population
         population = []
         for _ in range(population_size):
             population.append([
-                random.randint(5, 20),   # ema_fast
-                random.randint(21, 50),  # ema_slow
-                random.randint(8, 25),   # rsi_period
-                random.randint(10, 30)   # bbands_period
+                random.randint(5, 20),
+                random.randint(21, 50),
+                random.randint(8, 25),
+                random.randint(10, 30)
             ])
             
         prices = df_bars['close'].values
         returns = df_bars['close'].pct_change().dropna().values
         
         def evaluate_fitness(chromosome) -> float:
-            """
-            Evaluates the fitness (annualized Sharpe proxy) of a given chromosome on historical bars.
-            Uses a super fast vectorized matrix approach.
-            """
             fast, slow, rsi_p, bb_p = chromosome
-            
-            # Simple vectorized MACD signal
             ema_f = pd.Series(prices).ewm(span=fast, adjust=False).mean().values
             ema_s = pd.Series(prices).ewm(span=slow, adjust=False).mean().values
             signal = np.where(ema_f > ema_s, 1.0, -1.0)[:-1]
-            
-            # Simulated return series: trade returns (shifted by 1 bar to avoid future lookahead)
             trade_returns = signal * returns[:len(signal)]
-            
             mean_ret = np.mean(trade_returns)
             std_ret = np.std(trade_returns) + 1e-8
-            
-            # Vectorized Sharpe proxy
             sharpe = (mean_ret / std_ret) * np.sqrt(8760)
             return max(0.0, float(sharpe))
 
-        # Run generations
         for gen in range(generations):
-            # Calculate fitness scores
             fitness_scores = [evaluate_fitness(ind) for idx, ind in enumerate(population)]
-            
-            # Sort population by fitness score descending
             sorted_indices = np.argsort(fitness_scores)[::-1]
             population = [population[i] for i in sorted_indices]
             fitness_scores = [fitness_scores[i] for i in sorted_indices]
             
-            # Select top performers (elitism)
             parents = population[:6]
-            
-            # Crossover & Mutation to create next generation
-            next_generation = list(parents) # Keep elite parents intact
+            next_generation = list(parents)
             while len(next_generation) < population_size:
                 p1, p2 = random.sample(parents, 2)
-                # Single-point crossover
                 child = [
                     p1[0] if random.random() < 0.5 else p2[0],
                     p1[1] if random.random() < 0.5 else p2[1],
                     p1[2] if random.random() < 0.5 else p2[2],
                     p1[3] if random.random() < 0.5 else p2[3]
                 ]
-                # Mutation
                 if random.random() < mutation_rate:
                     child[0] = max(5, min(20, child[0] + random.choice([-2, 2])))
                     child[1] = max(21, min(50, child[1] + random.choice([-3, 3])))
                     child[2] = max(8, min(25, child[2] + random.choice([-1, 1])))
                     child[3] = max(10, min(30, child[3] + random.choice([-2, 2])))
-                    
                 next_generation.append(child)
-                
             population = next_generation
             
-        # Extract best chromosome
         best_chromosome = population[0]
         best_sharpe = fitness_scores[0]
-        
-        logger.info(f"Auto-Tuning Complete! Best parameters discovered : {best_chromosome} (Sharpe Proxy: {best_sharpe:.2f})")
         return {
             "ema_fast": best_chromosome[0],
             "ema_slow": best_chromosome[1],
@@ -128,9 +167,6 @@ class MLOpsAutoTrainer:
         }
 
     def execute_pipeline(self, df_bars) -> dict:
-        """
-        Fits models, runs genetic algorithm tuning, and logs parameters in-memory.
-        """
         if len(df_bars) < 30:
             return {"status": "Aborted", "reason": "Insufficient historical bar records."}
             
@@ -161,6 +197,10 @@ class MLOpsAutoTrainer:
         
         # Save training epoch to database
         self.db.save_setting("last_mlops_training_epoch", str(time.time()))
+        
+        # Save newly trained models to Registry!
+        self.save_model_to_registry("BTCUSDT", "hmm", self.regime_detector, ga_results['sharpe_score'])
+        self.save_model_to_registry("BTCUSDT", "lstm", self.price_predictor, ga_results['sharpe_score'])
         
         duration = time.time() - start_time
         logger.info(f"MLOps retrained models in {duration:.4f} seconds.")

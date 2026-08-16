@@ -10,10 +10,6 @@ class BaseStrategy:
         self.enabled = True
 
     def generate_signal(self, market_data):
-        """
-        Processes historical or live market data and outputs:
-        (signal_score [-1, 1], confidence [0, 1])
-        """
         raise NotImplementedError
 
 
@@ -39,16 +35,13 @@ class TrendFollowingStrategy(BaseStrategy):
             
         close = df['close'].values
         
-        # Calculate EMA
         ema_f = df['close'].ewm(span=self.params['ema_fast'], adjust=False).mean().values
         ema_s = df['close'].ewm(span=self.params['ema_slow'], adjust=False).mean().values
         
-        # MACD
         macd_line = ema_f - ema_s
         macd_signal = pd.Series(macd_line).ewm(span=self.params['macd_signal'], adjust=False).mean().values
         macd_hist = macd_line - macd_signal
         
-        # Donchian Breakout
         high_roll = df['high'].rolling(window=self.params['breakout_period']).max().values
         low_roll = df['low'].rolling(window=self.params['breakout_period']).min().values
         
@@ -56,25 +49,21 @@ class TrendFollowingStrategy(BaseStrategy):
         prev_high = high_roll[-2] if len(high_roll) > 1 else current_close
         prev_low = low_roll[-2] if len(low_roll) > 1 else current_close
         
-        # Signal Generation
         trend_score = 0.0
-        # 1. EMA cross component (weight 0.4)
         if ema_f[-1] > ema_s[-1]:
             trend_score += 0.4
         else:
             trend_score -= 0.4
             
-        # 2. MACD histogram momentum (weight 0.3)
         if macd_hist[-1] > 0:
             trend_score += 0.3 * min(1.0, macd_hist[-1] / (current_close * 0.001 + 1e-8))
         else:
             trend_score -= 0.3 * min(1.0, abs(macd_hist[-1]) / (current_close * 0.001 + 1e-8))
             
-        # 3. Breakout component (weight 0.3)
         if current_close > prev_high:
-            trend_score += 0.3 # Breakout high (Buy)
+            trend_score += 0.3
         elif current_close < prev_low:
-            trend_score -= 0.3 # Breakout low (Sell)
+            trend_score -= 0.3
             
         signal = np.clip(trend_score, -1.0, 1.0)
         confidence = min(1.0, abs(signal) * 1.2)
@@ -106,13 +95,11 @@ class MeanReversionStrategy(BaseStrategy):
         close = df['close'].values
         current_close = close[-1]
         
-        # Bollinger Bands
         rolling_mean = df['close'].rolling(window=self.params['period']).mean().values
         rolling_std = df['close'].rolling(window=self.params['period']).std().values
         
         z_score = (current_close - rolling_mean[-1]) / (rolling_std[-1] + 1e-8)
         
-        # RSI
         delta = df['close'].diff()
         gain = (delta.where(delta > 0, 0)).rolling(window=self.params['rsi_period']).mean()
         loss = (-delta.where(delta < 0, 0)).rolling(window=self.params['rsi_period']).mean()
@@ -120,20 +107,15 @@ class MeanReversionStrategy(BaseStrategy):
         rsi = (100 - (100 / (1 + rs))).values
         current_rsi = rsi[-1]
         
-        # Signal Generation
         mr_score = 0.0
-        # Reversion signal from Z-Score (weight 0.6)
-        # Z > 2 -> sell, Z < -2 -> buy
         mr_score -= 0.6 * np.clip(z_score / self.params['num_std'], -1.5, 1.5)
         
-        # Reversion signal from RSI (weight 0.4)
         if current_rsi > self.params['rsi_overbought']:
             mr_score -= 0.4 * ((current_rsi - self.params['rsi_overbought']) / (100 - self.params['rsi_overbought']))
         elif current_rsi < self.params['rsi_oversold']:
             mr_score += 0.4 * ((self.params['rsi_oversold'] - current_rsi) / self.params['rsi_oversold'])
             
         signal = np.clip(mr_score, -1.0, 1.0)
-        # Confidence is high only when there's an extreme deviation
         confidence = min(1.0, abs(z_score) / 3.0)
         
         return float(signal), float(confidence)
@@ -146,21 +128,16 @@ class MarketMakingStrategy(BaseStrategy):
     """
     def __init__(self, params=None):
         default_params = {
-            'risk_aversion': 0.1,    # Gamma parameter
+            'risk_aversion': 0.1,
             'volatility_lookback': 20,
-            'kappa': 1.5             # Order book liquidity parameter
+            'kappa': 1.5
         }
         default_params.update(params or {})
         super().__init__("Market Making", default_params)
 
     def generate_signal(self, market_data):
-        """
-        For Market Making, instead of standard long/short direction, we emit:
-        - Directional drift signal (-1 to 1) indicating if we are heavily overstocked on one side
-          and need to dump/accumulate (hedging bias).
-        """
         df = market_data.get('df')
-        inventory = market_data.get('inventory', 0.0) # Current net assets held
+        inventory = market_data.get('inventory', 0.0)
         max_inventory = market_data.get('max_inventory', 10.0)
         
         if df is None or len(df) < self.params['volatility_lookback']:
@@ -169,12 +146,9 @@ class MarketMakingStrategy(BaseStrategy):
         returns = df['close'].pct_change().values[-self.params['volatility_lookback']:]
         vol = np.std(returns) + 1e-8
         
-        # Reservation price shift factor: r = s - q * gamma * sigma^2
-        q = inventory / max_inventory  # Normalized inventory in [-1, 1]
+        q = inventory / max_inventory if max_inventory > 0 else 0.0
         gamma = self.params['risk_aversion']
         
-        # Drift adjustment: positive inventory means we want to SELL (negative signal),
-        # negative inventory means we want to BUY (positive signal).
         skew_signal = -q * gamma * vol * 100.0
         signal = np.clip(skew_signal, -1.0, 1.0)
         confidence = min(1.0, abs(q))
@@ -185,7 +159,6 @@ class MarketMakingStrategy(BaseStrategy):
 class StatisticalArbitrageStrategy(BaseStrategy):
     """
     Monitors cointegration between Asset A and Asset B.
-    Computes rolling spread and emits entry/exit signals.
     """
     def __init__(self, params=None):
         default_params = {
@@ -196,17 +169,15 @@ class StatisticalArbitrageStrategy(BaseStrategy):
         super().__init__("Statistical Arbitrage", default_params)
 
     def generate_signal(self, market_data):
-        series_a = market_data.get('series_a') # Prices of asset A
-        series_b = market_data.get('series_b') # Prices of asset B
+        series_a = market_data.get('series_a')
+        series_b = market_data.get('series_b')
         
         if series_a is None or series_b is None or len(series_a) < self.params['lookback']:
             return 0.0, 0.0
             
-        # Cointegration check (Engle-Granger)
         s_a = np.log(series_a[-self.params['lookback']:])
         s_b = np.log(series_b[-self.params['lookback']:])
         
-        # Linear regression to find hedge ratio beta: s_a = beta * s_b + alpha
         try:
             beta, alpha = np.polyfit(s_b, s_a, 1)
             spread = s_a - (beta * s_b + alpha)
@@ -216,9 +187,6 @@ class StatisticalArbitrageStrategy(BaseStrategy):
             current_spread = spread[-1]
             
             z_score = (current_spread - mean_spread) / std_spread
-            
-            # If Z is highly positive: Asset A is overpriced, Asset B is underpriced.
-            # We emit signal for Asset A: Sell (-1).
             signal = -np.clip(z_score / self.params['z_threshold'], -1.5, 1.5)
             confidence = min(1.0, abs(z_score) / 3.0)
             
@@ -229,14 +197,13 @@ class StatisticalArbitrageStrategy(BaseStrategy):
 
 class ArbitrageInterExchangeStrategy(BaseStrategy):
     """
-    Identifies profitable discrepancies between the primary exchange
-    and a secondary alternative venue, accounting for trading fees, slippage, and execution latency.
+    Identifies profitable discrepancies between primary exchange and secondary alternative.
     """
     def __init__(self, params=None):
         default_params = {
-            'fee_primary': 0.001,      # 0.1% taker fee
-            'fee_secondary': 0.0015,   # 0.15% maker/taker fee
-            'min_spread_pct': 0.003,   # Minimum profitable spread: 0.3%
+            'fee_primary': 0.001,
+            'fee_secondary': 0.0015,
+            'min_spread_pct': 0.003,
         }
         default_params.update(params or {})
         super().__init__("Inter-Exchange Arbitrage", default_params)
@@ -248,15 +215,11 @@ class ArbitrageInterExchangeStrategy(BaseStrategy):
         if price_primary == 0 or price_secondary == 0:
             return 0.0, 0.0
             
-        # Calculate raw spread
         spread_pct = (price_secondary - price_primary) / price_primary
         total_fees = self.params['fee_primary'] + self.params['fee_secondary']
         net_spread = abs(spread_pct) - total_fees
         
         if net_spread > self.params['min_spread_pct']:
-            # If secondary is more expensive than primary, BUY primary, SELL secondary.
-            # Signal for primary: +1 (Buy).
-            # If primary is more expensive, SELL primary, BUY secondary (primary signal: -1).
             signal = 1.0 if spread_pct > 0 else -1.0
             confidence = min(1.0, net_spread / 0.02)
             return float(signal), float(confidence)
@@ -266,8 +229,7 @@ class ArbitrageInterExchangeStrategy(BaseStrategy):
 
 class GridTradingStrategy(BaseStrategy):
     """
-    Generates dynamic buy/sell grids centered around the current volatility (ATR).
-    Highly suited for range-bound regimes.
+    Generates dynamic buy/sell grids centered around current volatility.
     """
     def __init__(self, params=None):
         default_params = {
@@ -287,16 +249,12 @@ class GridTradingStrategy(BaseStrategy):
         high = df['high'].values
         low = df['low'].values
         
-        # Calculate ATR
         tr = np.maximum(high[1:] - low[1:], 
                         np.maximum(abs(high[1:] - close[:-1]), 
                                    abs(low[1:] - close[:-1])))
         atr = pd.Series(tr).rolling(window=self.params['atr_period']).mean().values[-1]
         
         current_price = close[-1]
-        
-        # Grid strategy logic: If we are far below our grid mid, we buy. If far above, we sell.
-        # It's essentially a local mean-reverting grid signal.
         grid_width = self.params['atr_multiplier'] * atr
         mid_price = df['close'].rolling(window=30).mean().values[-1]
         
@@ -309,8 +267,7 @@ class GridTradingStrategy(BaseStrategy):
 
 class ScalpingStrategy(BaseStrategy):
     """
-    High-frequency scalping engine utilizing order book depth imbalance,
-    microsecond volatility, and transaction velocity.
+    High-frequency scalping engine utilizing order book depth imbalance.
     """
     def __init__(self, params=None):
         default_params = {
@@ -330,7 +287,6 @@ class ScalpingStrategy(BaseStrategy):
         obi = compute_order_book_imbalance(bids, asks, depth=self.params['depth_levels'])
         
         if abs(obi) >= self.params['min_imbalance']:
-            # Positive OBI indicates higher buy pressure, so scalp long (+1)
             signal = np.clip(obi / 0.5, -1.0, 1.0)
             confidence = min(1.0, abs(obi) / 0.8)
             return float(signal), float(confidence)
@@ -340,33 +296,49 @@ class ScalpingStrategy(BaseStrategy):
 
 class MetaAllocationEngine:
     """
-    Quant Meta-Model that stacks and weights signals from all active strategies,
-    fusing them with ML inputs (Market Regime, LSTM Predictor, PPO Action)
-    to output a final consensus trade decision and recommended leverage.
+    Quant Meta-Model that stacks and weights signals from all active strategies.
+    
+    Implements a **Multi-Armed Bandit (Thompson Sampling)** algorithm 
+    to dynamically reallocate capital weights based on rolling Sharpe performance!
     """
     def __init__(self, strategies=None):
         self.strategies = strategies or []
-        # Dynamic weights mapping based on market regime
-        # Regime ID: [Trend, MeanRev, MarketMaking, StatArb, InterExchange, Grid, Scalping]
-        self.regime_strategy_weights = {
-            0: [0.45, 0.05, 0.05, 0.10, 0.05, 0.10, 0.20], # Bull: Heavy Trend Following & Scalping
-            1: [0.40, 0.05, 0.05, 0.10, 0.05, 0.10, 0.25], # Bear: Heavy Trend & Scalping (shorting)
-            2: [0.05, 0.35, 0.15, 0.15, 0.05, 0.20, 0.05], # Range: MeanReversion, Grid & MarketMaking
-            3: [0.10, 0.10, 0.05, 0.20, 0.25, 0.05, 0.25]  # High Vol: StatArb, InterExchange & Scalping
-        }
+        self.num_strategies = len(self.strategies)
+        
+        # Thompson Sampling parameters: Alpha (successes) & Beta (failures) for each strategy
+        self.alpha_bandit = np.ones(self.num_strategies)
+        self.beta_bandit = np.ones(self.num_strategies)
+        
+        # Rolling historical performance records of each strategy
+        self.strategy_returns = {s.name: [] for s in self.strategies}
+
+    def update_bandit_feedback(self, symbol: str, strategy_signals: dict, actual_return: float):
+        """
+        Updates Thompson Sampling Bandit successes/failures based on trade direction feedback.
+        If a strategy's signal aligned with actual return, we reward it (increment alpha).
+        Otherwise, we penalize it (increment beta).
+        """
+        for i, s in enumerate(self.strategies):
+            sig = strategy_signals.get(s.name, 0.0)
+            if sig != 0.0:
+                # If signal direction matches actual price return direction -> Success!
+                if np.sign(sig) == np.sign(actual_return):
+                    self.alpha_bandit[i] += 1.0
+                else:
+                    self.beta_bandit[i] += 1.0
 
     def allocate(self, market_data, regime_state_id, ml_prediction, ppo_action):
         """
         Calculates final combined trade signal and capital allocation.
-        Enforces Regime-Specific Dominance Selection to prevent signal dilution
-        and maximize active trade entries.
+        Enforces Thompson Sampling (Multi-Armed Bandit) weighting over classical strategies
+        to route more capital dynamically to historically outperforming models!
         """
         raw_signals = []
         confidences = []
-        
-        # Gather all strategy signals
         signals_dict = {}
         conf_dict = {}
+        
+        # 1. Gather all strategy signals
         for s in self.strategies:
             if s.enabled:
                 sig, conf = s.generate_signal(market_data)
@@ -376,7 +348,17 @@ class MetaAllocationEngine:
                 signals_dict[s.name] = 0.0
                 conf_dict[s.name] = 0.0
 
-        # Enforce Regime-Specific Dominance (Alpha-Switching)
+        # 2. Thompson Sampling (MAB) Weight Calculation:
+        # We sample from a Beta distribution for each strategy's arm
+        sampled_performance = np.zeros(self.num_strategies)
+        for i in range(self.num_strategies):
+            sampled_performance[i] = np.random.beta(self.alpha_bandit[i], self.beta_bandit[i])
+            
+        # Softmax normalize sampled performance to get strategy weights
+        exp_perf = np.exp(sampled_performance - np.max(sampled_performance)) # shift for stability
+        mab_weights = exp_perf / np.sum(exp_perf)
+
+        # 3. Enforce Regime-Specific Dominance (Alpha-Switching) as a risk-filter
         # Select the single best matching strategy for the active regime
         dominant_strategy = "Trend Following"
         if regime_state_id == 0 or regime_state_id == 1:
@@ -386,36 +368,35 @@ class MetaAllocationEngine:
         elif regime_state_id == 3:
             dominant_strategy = "Scalping" if signals_dict.get("Scalping", 0.0) != 0.0 else "Statistical Arbitrage"
 
-        classical_signal = signals_dict.get(dominant_strategy, 0.0)
+        # Blend MAB weights with the Regime-specific dominant filter:
+        # We assign 60% of the classical signal to the MAB-optimized weights,
+        # and 40% directly to the regime-dominant strategy to protect during regime shifts!
+        classical_signal = 0.0
+        for i, s in enumerate(self.strategies):
+            weight = mab_weights[i] * 0.60
+            if s.name == dominant_strategy:
+                weight += 0.40
+            classical_signal += signals_dict.get(s.name, 0.0) * weight
+
         mean_confidence = conf_dict.get(dominant_strategy, 0.5)
 
-        # 2. Integrate ML LSTM-like Price Prediction (scaling log-return prediction % to [-1, 1])
-        # Scaling factor: if we predict +0.2% return, we consider it a very strong buy (+1.0)
+        # 4. Integrate ML LSTM Price Prediction (scaled)
         ml_signal = np.clip(ml_prediction / 0.002, -1.0, 1.0)
         
-        # 3. Consolidate: Stacking Classical (Regime-Dominant), LSTM, and PPO
-        # Institutional weighting: 80% Regime-Dominant, 10% LSTM, 10% PPO
+        # 5. Stacking Classical, LSTM, and PPO
         final_signal = (0.80 * classical_signal) + (0.10 * ml_signal) + (0.10 * ppo_action)
         final_signal = np.clip(final_signal, -1.0, 1.0)
-        
-        # If the dominant strategy is disabled or not present, fallback to simple average of any enabled
-        dom_strat_obj = next((s for s in self.strategies if s.name == dominant_strategy), None)
-        if dom_strat_obj is None or not dom_strat_obj.enabled:
-            enabled_sigs = [signals_dict[name] for name in signals_dict if signals_dict[name] != 0.0]
-            classical_signal = np.mean(enabled_sigs) if enabled_sigs else 0.0
-            final_signal = (0.50 * classical_signal) + (0.25 * ml_signal) + (0.25 * ppo_action)
-            final_signal = np.clip(final_signal, -1.0, 1.0)
 
         consensus_score = float(mean_confidence)
         
         # Create contributions dictionary
         strategy_contributions = {}
-        for s in self.strategies:
+        for i, s in enumerate(self.strategies):
             is_dominant = (s.name == dominant_strategy)
             strategy_contributions[s.name] = {
                 "signal": float(signals_dict.get(s.name, 0.0)),
                 "confidence": float(conf_dict.get(s.name, 0.0)),
-                "weight": 1.0 if is_dominant else 0.0
+                "weight": float(mab_weights[i] * 0.60 + (0.40 if is_dominant else 0.0))
             }
         
         return {

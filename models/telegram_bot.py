@@ -21,13 +21,19 @@ class TelegramBotManager:
         
         if self.token and self.chat_id:
             logger.info("Telegram Bot successfully configured and active.")
-            # Send startup hello push notification!
-            asyncio.create_task(self.send_push_notification(
-                "🚀 *QUANT-PORTAL EXÉCUTEUR EN LIGNE*\n"
-                "Le robot de trading IA vient de démarrer avec succès sur Railway !"
-            ))
         else:
             logger.warning("Telegram token or chat_id is missing. Operating in alert-silent mode.")
+
+    async def send_startup_message(self):
+        """
+        Sends the startup hello notification. 
+        Must be called after the asyncio event loop is fully running (e.g. in startup_event).
+        """
+        if self.token and self.chat_id:
+            await self.send_push_notification(
+                "🚀 *QUANT-PORTAL EXÉCUTEUR EN LIGNE*\n"
+                "Le robot de trading IA vient de démarrer avec succès sur Railway !"
+            )
 
     async def send_push_notification(self, text: str) -> bool:
         """
@@ -73,7 +79,6 @@ class TelegramBotManager:
                             message = update.get("message", {})
                             chat_id = str(message.get("chat", {}).get("id", ""))
                             
-                            # Strict sender authorization: ignore messages from other users!
                             if chat_id != self.chat_id:
                                 continue
                                 
@@ -82,12 +87,9 @@ class TelegramBotManager:
             except Exception as e:
                 logger.error(f"Error in Telegram polling loop: {str(e)}")
                 
-            await asyncio.sleep(3) # Polling tick rate
+            await asyncio.sleep(3)
 
     async def process_command(self, command: str):
-        """
-        Processes tactile slash-commands and modifies the shared engine state instantly.
-        """
         cmd_lower = command.lower()
         
         if cmd_lower == "/start":
@@ -109,7 +111,6 @@ class TelegramBotManager:
             regime = self.state.get("regime_name", "Unknown")
             is_active = "ACTIF 🟢" if self.state.get("is_running") else "EN PAUSE ⏸️"
             
-            # Fetch active positions
             pos_msg = ""
             if self.db:
                 positions = self.db.get_positions()
@@ -142,9 +143,6 @@ class TelegramBotManager:
         elif cmd_lower == "/kill":
             self.state["kill_switch_active"] = True
             self.state["is_running"] = False
-            
-            # Request flat close via HTTP POST to our own local REST API
-            # This makes the kill switch completely unified!
             try:
                 async with httpx.AsyncClient() as client:
                     await client.post("http://127.0.0.1:8000/api/kill-switch")
