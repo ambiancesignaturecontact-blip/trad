@@ -155,7 +155,10 @@
                 <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
                     <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">REGIME DE MARCHE HMM</p>
                     <h3 id="val-regime" class="text-xs font-black mt-2 text-violet-400 uppercase tracking-widest">Scanning...</h3>
-                    <p class="text-[10px] text-slate-500 mt-0.5">Modèle à 4 États Gaussien</p>
+                    <div class="flex justify-between items-center mt-1 text-[10px] text-slate-500">
+                        <span>On-Chain Risk:</span>
+                        <span id="val-onchain" class="font-bold text-slate-300">0.50</span>
+                    </div>
                 </div>
 
                 <!-- NLP Sentiment Score -->
@@ -637,6 +640,10 @@
             // Advanced metrics telemetry
             safeSetText('val-sentiment', (data.sentiment_index || 0.0).toFixed(2));
             safeSetText('val-sentiment-desc', (data.sentiment_index || 0.0) >= 0.15 ? "Haussier (NLP)" : (data.sentiment_index || 0.0) <= -0.15 ? "Baissier (NLP)" : "Neutre (NLP)");
+            
+            const sentimentPct = (((data.sentiment_index || 0.0) + 1.0) / 2.0) * 100;
+            const barSignal = document.getElementById('bar-signal');
+            if (barSignal) barSignal.style.width = `${sentimentPct}%`;
             
             safeSetText('val-onchain', (data.onchain_risk_score || 0.0).toFixed(2));
             safeSetText('val-onchain-desc', (data.onchain_risk_score || 0.0) >= 0.70 ? "Inflows: Risque" : "Inflows: Calme");
