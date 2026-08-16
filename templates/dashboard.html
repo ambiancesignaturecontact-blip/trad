@@ -107,6 +107,12 @@
                 <i data-lucide="skull" class="w-3.5 h-3.5"></i>
                 <span>KILL</span>
             </button>
+
+            <!-- Reset Bot Button -->
+            <button onclick="resetBotState()" class="bg-gradient-to-r from-cyan-400 to-blue-500 hover:scale-105 text-slate-950 font-black text-xs px-4 py-2 rounded-xl shadow-lg transition-all flex items-center space-x-1.5 uppercase tracking-widest">
+                <i data-lucide="refresh-cw" class="w-3.5 h-3.5"></i>
+                <span>RESET</span>
+            </button>
         </div>
     </header>
 
@@ -868,6 +874,34 @@
 
         async function confirmModeChange() {
             // Direct metamask signature used instead
+        }
+
+        async function toggleBotState() {
+            const btn = document.getElementById('btn-toggle-bot');
+            const isActive = btn.getAttribute('data-active') === 'true';
+            const targetState = !isActive;
+            
+            const resp = await fetch('/api/toggle-bot', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_running: targetState })
+            });
+            
+            if (resp.status === 200) {
+                const res = await resp.json();
+                alert(res.message);
+            } else {
+                alert("Erreur de modification de l'état du bot.");
+            }
+        }
+
+        async function resetBotState() {
+            const ok = confirm("Voulez-vous réinitialiser et déverrouiller le robot ?");
+            if (ok) {
+                const resp = await fetch('/api/reset-bot', { method: 'POST' });
+                const res = await resp.json();
+                alert(res.message);
+            }
         }
 
         async function engageKillSwitch() {
