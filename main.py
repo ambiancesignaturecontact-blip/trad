@@ -540,6 +540,19 @@ async def live_trading_loop():
             continue
             
         loop_count += 1
+        consensus = {
+            "final_signal": 0.0,
+            "consensus": 0.5,
+            "contributions": {
+                "Trend Following": {"signal": 0.0, "weight": 0.20, "confidence": 0.5},
+                "Mean Reversion": {"signal": 0.0, "weight": 0.20, "confidence": 0.5},
+                "Market Making": {"signal": 0.0, "weight": 0.15, "confidence": 0.5},
+                "Statistical Arbitrage": {"signal": 0.0, "weight": 0.15, "confidence": 0.5},
+                "Inter-Exchange Arbitrage": {"signal": 0.0, "weight": 0.10, "confidence": 0.5},
+                "Grid Trading": {"signal": 0.0, "weight": 0.10, "confidence": 0.5},
+                "Scalping": {"signal": 0.0, "weight": 0.10, "confidence": 0.5}
+            }
+        }
         
         # 1. Periodically fetch Advanced External Indicators (to avoid API rate-limits)
         news_scale_factor = 1.0
@@ -742,9 +755,9 @@ async def live_trading_loop():
                     )
                     
             # EVALUATE GENUINE DEX-CEX CROSS-VENUE ARBITRAGE (100% Real-World spreads Bybit vs Binance!)
+            bybit_p = None # Starts as None (Unavailable)
             if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
                 cex_p = current_price
-                bybit_p = None # Starts as None (Unavailable)
                 try:
                     async with httpx.AsyncClient() as http_client:
                         resp = await http_client.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}")
@@ -753,40 +766,39 @@ async def live_trading_loop():
                 except Exception as e:
                     logger.error(f"Failed to fetch real-world secondary exchange price from Bybit for {symbol}: {str(e)}")
                     
-                if bybit_p is None:
+                if bybit_p is not None:
+                    arb_opp = dex_cex_arb_engine.detect_arbitrage_opportunities(
+                        symbol=symbol,
+                        dex_price=cex_p,
+                        cex_price=bybit_p,
+                        estimated_gas_usd=0.05
+                    )
+                    if arb_opp.get("action") == "EXECUTE_ARBITRAGE":
+                        route = arb_opp.get("route")
+                        spread = arb_opp.get("spread_pct")
+                        profit_pct = arb_opp.get("net_profit_pct")
+                        amount_eth = 50.0 / cex_p
+                        signed_dex = defi_wallet.sign_dex_swap_transaction(
+                            token_in="USDT" if route == "BUY_DEX_SELL_CEX" else "ETH",
+                            token_out="ETH" if route == "BUY_DEX_SELL_CEX" else "USDT",
+                            amount_in_eth=amount_eth
+                        )
+                        db.add_audit_log(
+                            "DEX_CEX_ARBITRAGE_EXECUTED",
+                            "127.0.0.1",
+                            f"Captured Cross-Venue {symbol} arbitrage. Route: {route} (Spread: {spread*100:.2f}%)."
+                        )
+                        await telegram_bot.send_push_notification(
+                            f"🏆 *ARBITRAGE DEX-CEX CAPTURÉ*\n"
+                            f"-----------------------------------------\n"
+                            f"📈 Actif : `{symbol}`\n"
+                            f"⚖️ Route : *{route}*\n"
+                            f"📊 Écart de prix : *{spread*100:.2f}%*\n"
+                            f"💵 Gain net estimé : *+{profit_pct*100:.2f}% (net de gaz)*\n"
+                            f"🛡️ Protection : *MevShield On-Chain active*"
+                        )
+                else:
                     logger.warning(f"Skipping arbitrage check for {symbol} due to unavailable Bybit secondary price feed.")
-                    continue
-                    
-                arb_opp = dex_cex_arb_engine.detect_arbitrage_opportunities(
-                    symbol=symbol,
-                    dex_price=cex_p,
-                    cex_price=bybit_p,
-                    estimated_gas_usd=0.05
-                )
-                if arb_opp.get("action") == "EXECUTE_ARBITRAGE":
-                    route = arb_opp.get("route")
-                    spread = arb_opp.get("spread_pct")
-                    profit_pct = arb_opp.get("net_profit_pct")
-                    amount_eth = 50.0 / cex_p
-                    signed_dex = defi_wallet.sign_dex_swap_transaction(
-                        token_in="USDT" if route == "BUY_DEX_SELL_CEX" else "ETH",
-                        token_out="ETH" if route == "BUY_DEX_SELL_CEX" else "USDT",
-                        amount_in_eth=amount_eth
-                    )
-                    db.add_audit_log(
-                        "DEX_CEX_ARBITRAGE_EXECUTED",
-                        "127.0.0.1",
-                        f"Captured Cross-Venue {symbol} arbitrage. Route: {route} (Spread: {spread*100:.2f}%)."
-                    )
-                    await telegram_bot.send_push_notification(
-                        f"🏆 *ARBITRAGE DEX-CEX CAPTURÉ*\n"
-                        f"-----------------------------------------\n"
-                        f"📈 Actif : `{symbol}`\n"
-                        f"⚖️ Route : *{route}*\n"
-                        f"📊 Écart de prix : *{spread*100:.2f}%*\n"
-                        f"💵 Gain net estimé : *+{profit_pct*100:.2f}% (net de gaz)*\n"
-                        f"🛡️ Protection : *MevShield On-Chain active*"
-                    )
                     
             # 4. Formulate signal and sizing
             df = STATE["historical_bars"]
@@ -844,7 +856,7 @@ async def live_trading_loop():
                 market_data = {
                     'df': df,
                     'price_primary': current_price,
-                    'price_secondary': bybit_p, # Real Bybit price from CEX (No random.uniform secondary price fallback!)
+                    'price_secondary': bybit_p if bybit_p is not None else current_price, # Real Bybit price from CEX (No random.uniform secondary price fallback!)
                     'bids': ob_bids,
                     'asks': ob_asks,
                     'inventory': pos_qty,
