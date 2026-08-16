@@ -2,6 +2,8 @@ import sqlite3
 import os
 import json
 import logging
+import hashlib
+import base64
 from cryptography.fernet import Fernet
 
 logger = logging.getLogger("DBManager")
@@ -35,10 +37,13 @@ class DBManager:
 
     def initialize_key(self):
         """Generates and persists an AES encryption key if not exists."""
-        # Check if environment key exists first (Twelve-Factor App standard for Cloud deployments like Vercel)
+        # Check if environment key exists first (Twelve-Factor App standard)
         env_key = os.getenv("FERNET_KEY")
         if env_key:
-            self.key = env_key.encode()
+            # Deterministically hash whatever string the user input into a valid 32-byte base64-encoded key!
+            # This prevents any "ValueError: Fernet key must be 32 url-safe base64-encoded bytes"
+            hashed = hashlib.sha256(env_key.encode()).digest()
+            self.key = base64.urlsafe_b64encode(hashed)
             return
             
         if not os.path.exists(KEY_PATH):
@@ -51,7 +56,8 @@ class DBManager:
     def load_key(self):
         env_key = os.getenv("FERNET_KEY")
         if env_key:
-            return env_key.encode()
+            hashed = hashlib.sha256(env_key.encode()).digest()
+            return base64.urlsafe_b64encode(hashed)
         with open(KEY_PATH, "rb") as key_file:
             return key_file.read()
 
@@ -249,7 +255,6 @@ class DBManager:
             else:
                 cursor.execute("SELECT * FROM orders ORDER BY timestamp DESC LIMIT 100")
             rows = cursor.fetchall()
-            # Convert row objects properly to dictionaries
             return [dict(r) for r in rows]
 
     # Positions API
