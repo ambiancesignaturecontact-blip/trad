@@ -638,7 +638,11 @@ async def broadcast_telemetry(consensus_signals):
 
 @app.get("/", response_class=HTMLResponse)
 async def get_dashboard(request: Request):
-    return templates.TemplateResponse(name="dashboard.html", context={"request": request})
+    return templates.TemplateResponse(
+        request=request, 
+        name="dashboard.html", 
+        context={"request": request}
+    )
 
 
 @app.get("/api/status")
