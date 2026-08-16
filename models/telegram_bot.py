@@ -198,6 +198,15 @@ class TelegramBotManager:
             ]
         }
         
+        # Dynamically append native Telegram Mini App button if hosting URL is present!
+        web_app_url = os.getenv("PORTAL_URL") or os.getenv("WEB_APP_URL") or os.getenv("RAILWAY_STATIC_URL")
+        if web_app_url:
+            if not web_app_url.startswith("http"):
+                web_app_url = f"https://{web_app_url}"
+            keyboard["inline_keyboard"].insert(0, [
+                {"text": "🖥️ OUVRIR MINI APP TERMINAL", "web_app": {"url": web_app_url}}
+            ])
+        
         if cmd_lower.startswith("/set "):
             try:
                 amount_str = command.split(" ")[1]
