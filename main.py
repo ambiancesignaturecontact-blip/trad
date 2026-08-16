@@ -834,7 +834,11 @@ async def live_trading_loop():
                     logger.warning(f"Skipping arbitrage check for {symbol} due to unavailable Bybit secondary price feed.")
                     
             # 4. Formulate signal and sizing
-            df = STATE["historical_bars"]
+            # Query the asset's own genuine price series from persistent DB cache!
+            df = db.load_candles(symbol, limit=120)
+            if df.empty or len(df) < 10:
+                df = STATE["historical_bars"]
+                
             if df is not None:
                 # Update bars df
                 vol_val = STATE.get("last_tick_volume")
@@ -849,11 +853,9 @@ async def live_trading_loop():
                     "volume": vol_val
                 }], index=[pd.Timestamp.now()])
                 df = pd.concat([df.iloc[1:], new_row])
-                STATE["historical_bars"] = df
                 
-                # Persist the newly fetched/generated candle to our database cache!
-                if symbol == "BTCUSDT":
-                    db.save_candles("BTCUSDT", new_row)
+                # Persist the newly fetched/generated candle to our database cache for ALL multi-assets!
+                db.save_candles(symbol, new_row)
                 
                 # Predict Regime HMM
                 recent_returns = df['close'].pct_change().dropna().values[-10:]
