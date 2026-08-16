@@ -319,10 +319,12 @@ class MetaAllocationEngine:
         Otherwise, we penalize it (increment beta).
         """
         for i, s in enumerate(self.strategies):
-            sig = strategy_signals.get(s.name, 0.0)
-            if sig != 0.0:
+            sig_obj = strategy_signals.get(s.name, 0.0)
+            sig_val = sig_obj.get("signal", 0.0) if isinstance(sig_obj, dict) else sig_obj
+            
+            if sig_val != 0.0:
                 # If signal direction matches actual price return direction -> Success!
-                if np.sign(sig) == np.sign(actual_return):
+                if np.sign(sig_val) == np.sign(actual_return):
                     self.alpha_bandit[i] += 1.0
                 else:
                     self.beta_bandit[i] += 1.0
