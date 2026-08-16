@@ -1,0 +1,7 @@
+class MarketDataQuality:
+    LIVE = "LIVE"
+    DELAYED = "DELAYED"
+    STALE = "STALE"
+    INVALID = "INVALID"
+    DISCONNECTED = "DISCONNECTED"
+    UNAVAILABLE = "UNAVAILABLE"
