@@ -18,7 +18,8 @@ class DBManager:
     Dual-dialect, Multi-User SaaS DB manager supporting SQLite for local runs,
     and PostgreSQL (Supabase) for production environments.
     
-    Includes a cryptographically chained double-audit ledger (Sovereign Blockchain-like chaining).
+    Includes an automatic schema migration layer (adding user_id and hash columns to existing tables),
+    a cryptographically chained double-audit ledger, and zero-downtime failover.
     """
     def __init__(self):
         self.initialize_key()
@@ -81,8 +82,8 @@ class DBManager:
 
     def init_db(self):
         """
-        Creates all required tables using dual-dialect queries matching
-        both SQLite and PostgreSQL standards.
+        Creates all required tables and runs automatic on-the-fly migrations
+        to add columns like user_id and hash to pre-existing production databases.
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
@@ -109,7 +110,6 @@ class DBManager:
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS orders (
                         id SERIAL PRIMARY KEY,
-                        user_id INTEGER DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         symbol VARCHAR(20),
                         side VARCHAR(10),
@@ -125,46 +125,38 @@ class DBManager:
                 # Positions
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS positions (
-                        user_id INTEGER DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
-                        symbol VARCHAR(20),
+                        symbol VARCHAR(20) PRIMARY KEY,
                         qty DOUBLE PRECISION,
                         avg_price DOUBLE PRECISION,
-                        mode VARCHAR(10),
-                        PRIMARY KEY (user_id, symbol)
+                        mode VARCHAR(10)
                     )
                 """)
                 
                 # System Settings
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS system_settings (
-                        user_id INTEGER DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
-                        key VARCHAR(100),
-                        value TEXT,
-                        PRIMARY KEY (user_id, key)
+                        key VARCHAR(100) PRIMARY KEY,
+                        value TEXT
                     )
                 """)
                 
-                # Audit Logs (with cryptographically chained hashes)
+                # Audit Logs
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS audit_logs (
                         id SERIAL PRIMARY KEY,
-                        user_id INTEGER DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
                         timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                         action VARCHAR(100),
                         user_ip VARCHAR(50),
-                        details TEXT,
-                        hash VARCHAR(64)
+                        details TEXT
                     )
                 """)
                 
                 # Copytrading
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS copy_allocations (
-                        user_id INTEGER DEFAULT 1 REFERENCES users(id) ON DELETE CASCADE,
-                        trader_id VARCHAR(50),
+                        trader_id VARCHAR(50) PRIMARY KEY,
                         allocated_capital DOUBLE PRECISION,
-                        active INTEGER DEFAULT 0,
-                        PRIMARY KEY (user_id, trader_id)
+                        active INTEGER DEFAULT 0
                     )
                 """)
                 
@@ -198,7 +190,6 @@ class DBManager:
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS orders (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER DEFAULT 1,
                         timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
                         symbol TEXT,
                         side TEXT,
@@ -207,50 +198,37 @@ class DBManager:
                         status TEXT,
                         mode TEXT,
                         strategy TEXT,
-                        order_type TEXT,
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                        order_type TEXT
                     )
                 """)
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS positions (
-                        user_id INTEGER DEFAULT 1,
-                        symbol TEXT,
+                        symbol TEXT PRIMARY KEY,
                         qty REAL,
                         avg_price REAL,
-                        mode TEXT,
-                        PRIMARY KEY (user_id, symbol),
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                        mode TEXT
                     )
                 """)
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS system_settings (
-                        user_id INTEGER DEFAULT 1,
-                        key TEXT,
-                        value TEXT,
-                        PRIMARY KEY (user_id, key),
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                        key TEXT PRIMARY KEY,
+                        value TEXT
                     )
                 """)
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS audit_logs (
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id INTEGER DEFAULT 1,
                         timestamp TEXT DEFAULT CURRENT_TIMESTAMP,
                         action TEXT,
                         user_ip TEXT,
-                        details TEXT,
-                        hash TEXT,
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                        details TEXT
                     )
                 """)
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS copy_allocations (
-                        user_id INTEGER DEFAULT 1,
-                        trader_id TEXT,
+                        trader_id TEXT PRIMARY KEY,
                         allocated_capital REAL,
-                        active INTEGER DEFAULT 0,
-                        PRIMARY KEY (user_id, trader_id),
-                        FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+                        active INTEGER DEFAULT 0
                     )
                 """)
                 cursor.execute("""
@@ -267,6 +245,31 @@ class DBManager:
                 """)
                 
             conn.commit()
+
+            # RUN DYNAMIC AUTO-MIGRATIONS FOR PRODUCTION DATABASES (Supabase & local SQLite)
+            # This safely injects 'user_id' and 'hash' columns to pre-existing tables on-the-fly!
+            tables_to_migrate = ["orders", "positions", "system_settings", "audit_logs", "copy_allocations"]
+            for tbl in tables_to_migrate:
+                try:
+                    cursor.execute(f"ALTER TABLE {tbl} ADD COLUMN user_id INTEGER DEFAULT 1")
+                    conn.commit()
+                    logger.info(f"Database Migration: Added 'user_id' column to {tbl} table.")
+                except Exception:
+                    # Column already exists, rollback PG transaction safely
+                    if self.is_postgres:
+                        conn.rollback()
+                        
+            # Migrate 'hash' column for audit_logs
+            try:
+                if self.is_postgres:
+                    cursor.execute("ALTER TABLE audit_logs ADD COLUMN hash VARCHAR(64)")
+                else:
+                    cursor.execute("ALTER TABLE audit_logs ADD COLUMN hash TEXT")
+                conn.commit()
+                logger.info("Database Migration: Added cryptographically chained 'hash' column to audit_logs.")
+            except Exception:
+                if self.is_postgres:
+                    conn.rollback()
 
     # Encryption Helpers
     def encrypt_val(self, text: str) -> str:
