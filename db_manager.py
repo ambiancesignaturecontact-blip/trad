@@ -457,6 +457,12 @@ class DBManager:
             cursor = conn.cursor()
             for idx, row in df_bars.iterrows():
                 ts_str = str(idx)
+                open_val = float(row['open']) if row['open'] is not None else 0.0
+                high_val = float(row['high']) if row['high'] is not None else 0.0
+                low_val = float(row['low']) if row['low'] is not None else 0.0
+                close_val = float(row['close']) if row['close'] is not None else 0.0
+                volume_val = float(row['volume']) if row['volume'] is not None else 15.0
+                
                 if self.is_postgres:
                     cursor.execute("""
                         INSERT INTO market_candles (symbol, timestamp, open, high, low, close, volume)
@@ -464,12 +470,12 @@ class DBManager:
                         ON CONFLICT (symbol, timestamp) DO UPDATE 
                         SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low, 
                             close = EXCLUDED.close, volume = EXCLUDED.volume
-                    """, (symbol, ts_str, float(row['open']), float(row['high']), float(row['low']), float(row['close']), float(row['volume'])))
+                    """, (symbol, ts_str, open_val, high_val, low_val, close_val, volume_val))
                 else:
                     cursor.execute("""
                         INSERT OR REPLACE INTO market_candles (symbol, timestamp, open, high, low, close, volume)
                         VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """, (symbol, ts_str, float(row['open']), float(row['high']), float(row['low']), float(row['close']), float(row['volume'])))
+                    """, (symbol, ts_str, open_val, high_val, low_val, close_val, volume_val))
             conn.commit()
 
     def load_candles(self, symbol: str, limit=200) -> pd.DataFrame:

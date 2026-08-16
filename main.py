@@ -178,7 +178,9 @@ STATE = {
     "defi_wallet_address": "Not Connected",
     "covariance_matrix": {},
     "options_strategy": {"strategy": "PASSIVE", "legs": [], "estimated_yield_pct": 0.0},
-    "data_quality_status": DataQualityStatus.UNAVAILABLE
+    "data_quality_status": DataQualityStatus.UNAVAILABLE,
+    "macro_scale_factor_tactile": 1.0,  # Controlled by interactive Telegram mobile buttons!
+    "last_sent_macro_event": None      # Tracks sent notifications to avoid spamming
 }
 
 telegram_bot = TelegramBotManager(state_dict=STATE, db_manager=db)
@@ -538,9 +540,22 @@ async def live_trading_loop():
         try:
             macro_res = macro_calendar.check_upcoming_macro_shocks()
             if macro_res.get("upcoming_shock"):
+                event_name = macro_res["event"]
+                time_left = macro_res["time_to_event_minutes"]
+                
+                # Check if we have already sent this alert
+                last_sent_event = STATE.get("last_sent_macro_event")
+                if last_sent_event != event_name:
+                    # Send the newly implemented INTERACTIVE TACTILE mobile alert!
+                    await telegram_bot.send_interactive_macro_alert(event_name, time_left)
+                    STATE["last_sent_macro_event"] = event_name
+                    
                 macro_scale_factor = macro_res["scale_reduction_factor"]
         except Exception as e:
             logger.warning(f"Failed to parse macroeconomic calendar: {str(e)}")
+            
+        # Apply tactile mobile buttons override if they clicked 'REDUCE EXPO'!
+        macro_scale_factor *= STATE.get("macro_scale_factor_tactile", 1.0)
                 
         if loop_count % 5 == 1:
             try:
@@ -612,10 +627,13 @@ async def live_trading_loop():
             try:
                 async with httpx.AsyncClient() as http_client:
                     if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
-                        if symbol != "BTCUSDT":
-                            resp = await http_client.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}")
-                            if resp.status_code == 200:
-                                STATE["assets"][symbol]["price"] = float(resp.json()["price"])
+                        # Query Bybit public API - completely cloud-friendly and geoblock-free!
+                        resp = await http_client.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}")
+                        if resp.status_code == 200:
+                            price_val = float(resp.json().get("result", {}).get("list", [{}])[0].get("lastPrice"))
+                            STATE["assets"][symbol]["price"] = price_val
+                            if symbol == "BTCUSDT":
+                                STATE["last_price"] = price_val
                     else:
                         # Yahoo Finance Real-time Tickers! Gold (GC=F), EURUSD (EURUSD=X), AAPL (AAPL), TSLA (TSLA)
                         y_ticker = "GC=F" if symbol == "XAUUSD" else "EURUSD=X" if symbol == "EURUSD" else symbol
@@ -753,12 +771,16 @@ async def live_trading_loop():
             df = STATE["historical_bars"]
             if df is not None:
                 # Update bars df
+                vol_val = STATE.get("last_tick_volume")
+                if vol_val is None:
+                    vol_val = 15.0
+                    
                 new_row = pd.DataFrame([{
                     "open": current_price * 0.9995,
                     "high": current_price * 1.0005,
                     "low": current_price * 0.9990,
                     "close": current_price,
-                    "volume": STATE.get("last_tick_volume", 15.0)
+                    "volume": vol_val
                 }], index=[pd.Timestamp.now()])
                 df = pd.concat([df.iloc[1:], new_row])
                 STATE["historical_bars"] = df
@@ -794,16 +816,16 @@ async def live_trading_loop():
                 ppo_state = np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], 0.0])
                 STATE["ppo_action"], _ = ppo_agent.get_action(ppo_state)
                 
-                # Compile default spreads if WebSockets has not pushed depth yet
-                bids = [[current_price * (1.0 - i*0.00015), random.uniform(0.5, 4.0)] for i in range(1, 6)]
-                asks = [[current_price * (1.0 + i*0.00015), random.uniform(0.5, 4.0)] for i in range(1, 6)]
+                # Setup genuine order book parameters from the WebSockets stream (No fake fallback allowed!)
+                ob_bids = STATE["order_book"].get("bids") if STATE["order_book"] is not None else None
+                ob_asks = STATE["order_book"].get("asks") if STATE["order_book"] is not None else None
                 
                 market_data = {
                     'df': df,
                     'price_primary': current_price,
-                    'price_secondary': current_price * random.uniform(0.999, 1.001),
-                    'bids': STATE["order_book"].get("bids", bids),
-                    'asks': STATE["order_book"].get("asks", asks),
+                    'price_secondary': bybit_p, # Real Bybit price from CEX (No random.uniform secondary price fallback!)
+                    'bids': ob_bids,
+                    'asks': ob_asks,
                     'inventory': pos_qty,
                     'max_inventory': STATE[active_balance_key] / current_price if STATE[active_balance_key] > 0 else 0.0
                 }
@@ -1139,16 +1161,8 @@ async def get_history_endpoint(timeframe: str = "1h"):
             logger.warning(f"Failed to fetch Binance klines for {timeframe}: {str(e)}")
             
     if df.empty:
-        # Generate safe fallback
-        np.random.seed(42)
-        prices = [60000.0]
-        for _ in range(120):
-            prices.append(prices[-1] * (1.0 + np.random.normal(0, 0.005)))
-        return {
-            "timeframe": timeframe,
-            "prices": prices,
-            "timestamps": [str(pd.Timestamp.now() - pd.Timedelta(hours=i)) for i in range(121)]
-        }
+        logger.error(f"Failed to load historical candles for {timeframe}. No database or CEX feed active.")
+        raise HTTPException(status_code=503, detail="Historical market data currently unavailable.")
         
     prices = df['close'].values.tolist()
     timestamps = [str(t) for t in df.index]
@@ -1221,10 +1235,14 @@ async def trigger_monte_carlo():
     if df is None:
         raise HTTPException(status_code=400, detail="No historical data loaded yet.")
         
+    current_p = STATE["last_price"]
+    if current_p is None:
+        raise HTTPException(status_code=400, detail="No live price fetched yet. Please wait for WebSockets synchronization.")
+        
     vols = df['close'].pct_change().std()
     res = monte_carlo_tester.execute_stress_test(
         initial_capital=STATE["balance_demo"] if STATE["mode"] == "DEMO" else STATE["balance_real"],
-        current_price=STATE["last_price"],
+        current_price=current_p,
         historical_volatility=vols if not np.isnan(vols) else 0.02
     )
     

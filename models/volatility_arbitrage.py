@@ -20,7 +20,7 @@ class OptionsVolatilityArbitrageEngine:
         - Regime 2 (Range Low Vol) -> write iron condors or sell straddles (capture theta decay).
         - Regime 3 (Erratic High Vol) -> buy long straddles or strangles (capture breakout delta/gamma).
         """
-        if current_price <= 0:
+        if current_price is None or current_price <= 0:
             return {"strategy": "PASSIVE", "details": "Asset price offline."}
             
         # Standard deviation proxy for option strikes (e.g. 1 month duration, 30 days)
