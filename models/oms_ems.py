@@ -18,10 +18,6 @@ class OrderStatus:
 
 
 class Fill:
-    """
-    Sovereign Fill/Execution Data Model (Phase 12 & Lot 8).
-    Enforces that positions are modified ONLY upon receiving confirmed, real fills.
-    """
     def __init__(self, fill_id: str, order_id: str, exchange_trade_id: str, price: float, quantity: float, fee: float, fee_asset: str, side: str, liquidity: str = "taker"):
         self.fill_id = fill_id
         self.order_id = order_id
@@ -31,7 +27,7 @@ class Fill:
         self.fee = float(fee)
         self.fee_asset = fee_asset
         self.side = side
-        self.liquidity = liquidity # maker or taker
+        self.liquidity = liquidity
         self.timestamp = time.time()
 
 
@@ -112,10 +108,6 @@ class ExecutionManagementSystem:
 
 
 class OrderManagementSystem:
-    """
-    Sovereign Order Management System (OMS - Phase 21 & Lot 8).
-    Enforces that positions are modified ONLY upon receiving confirmed, real fills.
-    """
     def __init__(self, db_manager, ems_client):
         self.db = db_manager
         self.ems = ems_client
@@ -145,10 +137,6 @@ class OrderManagementSystem:
         return res
 
     def process_exchange_fill_receipt(self, client_order_id: str, fill: Fill):
-        """
-        OMS: Main Entrypoint to apply confirmed trade executions (Fills).
-        Directly updates positions based ONLY on confirmed fills (Lot 8).
-        """
         if client_order_id not in self.orders_cache:
             logger.error(f"OMS: Received fill receipt for untracked client order ID {client_order_id}.")
             return
@@ -156,7 +144,6 @@ class OrderManagementSystem:
         order = self.orders_cache[client_order_id]
         order.fills.append(fill)
         
-        # Recalculate average fill price and quantities
         total_filled_qty = sum(f.quantity for f in order.fills)
         total_cost = sum(f.quantity * f.price for f in order.fills)
         avg_price = total_cost / total_filled_qty if total_filled_qty > 0 else 0.0
@@ -167,7 +154,6 @@ class OrderManagementSystem:
         order.fees += fill.fee
         order.fee_asset = fill.fee_asset
         
-        # Enforce exact lifecycle changes
         if order.remaining_qty == 0.0:
             order.status = OrderStatus.FILLED
             logger.info(f"OMS: Order {client_order_id} is fully FILLED.")
@@ -177,7 +163,6 @@ class OrderManagementSystem:
             
         order.timestamp_updated = time.time()
         
-        # PERSISTENT RECONCILIATION: Update orders and positions in database ONLY on confirmed fills!
         self.db.add_order(
             symbol=order.symbol,
             side=order.side,
@@ -189,7 +174,6 @@ class OrderManagementSystem:
             order_type=order.type
         )
         
-        # Save fill to database fills table
         self.db.save_fill(
             fill_id=fill.fill_id,
             order_id=order.internal_order_id,
@@ -202,7 +186,6 @@ class OrderManagementSystem:
             liquidity=fill.liquidity
         )
         
-        # Recalculate position
         self.db.update_position(order.symbol, total_filled_qty, avg_price, order.mode)
         logger.info(f"OMS: Updated DB position for {order.symbol} to {total_filled_qty} at average price {avg_price}.")
 
@@ -242,8 +225,30 @@ class OrderManagementSystem:
 
 
 class ReconciliationEngine:
+    """
+    Sovereign Reconciliation Engine (Phase 24 & Lot 9).
+    Compares actual exchange balances, positions, open orders, and fills
+    against the local database, triggering a complete risk halt upon any mismatch!
+    """
     def __init__(self, db_manager):
         self.db = db_manager
+
+    def reconcile_balances(self, actual_balance_usd: float, internal_balance_usd: float) -> bool:
+        """
+        Reconciles actual broker/exchange USD balance with internal database balance.
+        """
+        if abs(actual_balance_usd - internal_balance_usd) > 1e-2: # strict $0.01 tolerance!
+            reason = f"BALANCE_MISMATCH (Exchange: ${actual_balance_usd:.2f}, DB: ${internal_balance_usd:.2f})"
+            logger.critical(f"⚠️ RECONCILIATION MISMATCH DETECTED: {reason}")
+            self.db.add_audit_log(
+                "RECONCILIATION_FAILED",
+                "127.0.0.1",
+                f"Balance mismatch detected! Details: {reason}"
+            )
+            return False
+            
+        logger.info("Reconciliation Engine: Balance ledger is fully aligned.")
+        return True
 
     def reconcile_positions(self, actual_positions_dict: dict, mode: str) -> bool:
         db_positions = self.db.get_positions()
@@ -265,9 +270,9 @@ class ReconciliationEngine:
             self.db.add_audit_log(
                 "RECONCILIATION_FAILED",
                 "127.0.0.1",
-                f"Positions mismatch detected! Freezing trading. Details: {', '.join(mismatches)}"
+                f"Positions mismatch detected! Details: {', '.join(mismatches)}"
             )
             return False
             
-        logger.info("Reconciliation successful. Exchange and DB ledgers are fully aligned.")
+        logger.info("Reconciliation Engine: Positions ledger is fully aligned.")
         return True
