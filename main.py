@@ -274,6 +274,10 @@ async def fetch_yahoo_finance_candles(ticker: str, interval="1h", range_str="5d"
             if resp.status_code == 200:
                 result = resp.json().get("chart", {}).get("result", [])[0]
                 timestamps = result.get("timestamp", [])
+                if timestamps is None:
+                    logger.info(f"Yahoo Finance: Market for {ticker} is currently closed or has no active trades (Weekend/Closed).")
+                    return pd.DataFrame()
+                    
                 indicators = result.get("indicators", {}).get("quote", [])[0]
                 
                 opens = indicators.get("open", [])
