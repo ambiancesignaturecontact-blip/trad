@@ -139,15 +139,18 @@ class TelegramBotManager:
     async def process_command(self, command: str):
         cmd_lower = command.lower()
         
-        if cmd_lower == "/start":
+        if cmd_lower in ["/start", "/help"]:
             welcome_msg = (
                 "👋 *BIENVENUE SUR VOTRE CONSOLE DE TRADING TACTILE !*\n\n"
                 "Je suis *Q-Bot*, votre copilote intelligent. Je gère vos investissements et protège votre capital de manière entièrement autonome.\n\n"
                 "📌 *Commandes tactiles simples :*\n"
                 "📊 `/status` - Voir ma santé, mon solde, et mes investissements en cours.\n"
+                "📋 `/history` - Voir les 5 dernières transactions passées par le bot.\n"
+                "⚖️ `/modes` - Explications simples sur le mode DÉMO vs RÉEL.\n"
+                "🛡️ `/risk` - Afficher mes règles de protection de capital actuelles.\n"
                 "⏸️ `/pause` - Mettre en pause le trading automatique (sécurité).\n"
                 "🟢 `/resume` - Relancer le trading automatique.\n"
-                "🚨 `/kill` - URGENCE : Vendre tous mes investissements et sécuriser tout mon argent."
+                "🚨 `/kill` - URGENCE : Vendre immédiatement tous mes actifs et geler le robot."
             )
             await self.send_push_notification(welcome_msg)
             
@@ -188,6 +191,45 @@ class TelegramBotManager:
             )
             await self.send_push_notification(status_msg)
             
+        elif cmd_lower == "/history":
+            orders_msg = "📋 *HISTORIQUE DES 5 DERNIÈRES TRANSACTIONS :*\n-----------------------------------------"
+            if self.db:
+                orders = self.db.get_all_orders()
+                if orders:
+                    for o in orders[:5]:
+                        sign_emoji = "🟢 ACHAT" if o['side'].upper() == "BUY" else "🔴 VENTE"
+                        orders_msg += (
+                            f"\n🎬 {sign_emoji} *{o['symbol']}*\n"
+                            f"   • Qté : `{o['qty']:.4f}` | Prix : `${o['price']:.2f}`\n"
+                            f"   • Statut : `{o['status']}` | Strategie : `{o['strategy']}`\n"
+                        )
+                else:
+                    orders_msg += "\nAnalyse : Aucun ordre n'a encore été passé pour le moment."
+            else:
+                orders_msg += "\nBase de données indisponible."
+            await self.send_push_notification(orders_msg)
+            
+        elif cmd_lower == "/modes":
+            mode_msg = (
+                "⚖️ *DÉMO vs RÉEL : COMPRENDRE LA DIFFÉRENCE*\n"
+                "-----------------------------------------\n"
+                "• *Mode DÉMO (Simulation)* : Le robot s'entraîne avec un capital virtuel fictif que vous pouvez modifier (ex: $100,000). Aucun risque pour vos économies !\n\n"
+                "• *Mode RÉEL (Production)* : Le robot se connecte à vos clés API d'exchange cryptées pour placer de vrais investissements. L'accès est hautement sécurisé par votre connexion MetaMask.\n\n"
+                "💡 *Mode Actif Actuel* : " + f"*{self.state.get('mode', 'DEMO')}*"
+            )
+            await self.send_push_notification(mode_msg)
+            
+        elif cmd_lower == "/risk":
+            # Simple explanations of risk settings
+            risk_msg = (
+                "🛡️ *VOS RÈGLES DE PROTECTION ACTIVES :*\n"
+                "-----------------------------------------\n"
+                "• *Max Daily Drawdown (2.5%)* : Si le marché se retourne et que notre portefeuille perd plus de 2.5% sur la même journée, j'active le coupe-circuit d'urgence pour tout stopper.\n"
+                "• *Max Total Drawdown (8.0%)* : Si la perte historique cumulée atteint 8.0%, le robot se fige par sécurité.\n"
+                "• *Sizing à la volatilité* : Plus le vent souffle fort sur le marché (haute volatilité), plus je réduis la taille de mes transactions pour vous protéger !"
+            )
+            await self.send_push_notification(risk_msg)
+            
         elif cmd_lower == "/pause":
             self.state["is_running"] = False
             await self.send_push_notification("⏸️ *TRADING MIS EN PAUSE !* J'ai arrêté toute prise de position automatique. Vos fonds actuels sont conservés au chaud.")
@@ -199,15 +241,46 @@ class TelegramBotManager:
         elif cmd_lower == "/kill":
             self.state["kill_switch_active"] = True
             self.state["is_running"] = False
-            try:
-                async with httpx.AsyncClient() as client:
-                    await client.post("http://127.0.0.1:8000/api/kill-switch")
-                await self.send_push_notification(
-                    "🚨 *URGENCE : KILL SWITCH DÉCLENCHÉ !*\n"
-                    "J'ai immédiatement VENDU tous nos investissements au prix du marché et gelé le robot. Tout votre capital est désormais à l'abri."
-                )
-            except Exception as e:
-                await self.send_push_notification(f"⚠️ Échec du bouton d'urgence : {str(e)}")
+            
+            # Direct liquidation of positions to avoid circular imports and hardcoded local port requests!
+            positions = []
+            if self.db:
+                positions = self.db.get_positions()
+                
+            active_mode = self.state.get("mode", "DEMO")
+            active_balance_key = "balance_demo" if active_mode == "DEMO" else "balance_real"
+            
+            for p in positions:
+                try:
+                    asset_price = self.state["assets"].get(p['symbol'], {}).get("price", self.state.get("last_price"))
+                    if asset_price is None:
+                        asset_price = p['avg_price'] # fallback
+                        
+                    close_val = p['qty'] * asset_price * 0.999
+                    self.state[active_balance_key] = self.state.get(active_balance_key, 100000.0) + close_val
+                    if self.db:
+                        self.db.update_position(p['symbol'], 0, 0, active_mode)
+                        self.db.add_order(
+                            symbol=p['symbol'],
+                            side="SELL",
+                            price=asset_price * 0.999,
+                            qty=p['qty'],
+                            status="FORCE_LIQUIDATED",
+                            mode=active_mode,
+                            strategy="EMERGENCY_TELEGRAM_KILL",
+                            order_type="MARKET"
+                        )
+                except Exception as exc:
+                    logger.error(f"Emergency close failed for {p['symbol']} via Telegram: {str(exc)}")
+                    
+            if self.db:
+                self.db.add_audit_log("KILL_SWITCH_ENGAGED_TELEGRAM", "127.0.0.1", "Global KILL SWITCH activated via Telegram remote control.")
+                
+            await self.send_push_notification(
+                "🚨 *URGENCE : KILL SWITCH DÉCLENCHÉ VIA TELEGRAM !*\n\n"
+                "J'ai immédiatement bloqué le robot et vendu l'intégralité de nos investissements au prix du marché.\n"
+                "Tout votre capital est désormais sécurisé et à l'abri !"
+            )
 
     async def process_callback_query(self, callback_id: str, data: str):
         """

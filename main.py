@@ -187,7 +187,8 @@ STATE = {
     "options_strategy": {"strategy": "PASSIVE", "legs": [], "estimated_yield_pct": 0.0},
     "data_quality_status": DataQualityStatus.UNAVAILABLE,
     "macro_scale_factor_tactile": 1.0,  # Controlled by interactive Telegram mobile buttons!
-    "last_sent_macro_event": None      # Tracks sent notifications to avoid spamming
+    "last_sent_macro_event": None,      # Tracks sent notifications to avoid spamming
+    "last_broadcast_time": 0.0          # For real-time telemetry throttling
 }
 
 telegram_bot = TelegramBotManager(state_dict=STATE, db_manager=db)
@@ -391,6 +392,17 @@ def evaluate_real_safety_gate(symbol: str) -> bool:
     return True
 
 
+async def trigger_realtime_broadcast():
+    """
+    Throttles WebSocket broadcasts to a maximum of 5 times per second (once every 200ms)
+    to keep the dashboard UI blazing fast, ultra-smooth and real-time without slamming the server.
+    """
+    now = time.time()
+    if now - STATE.get("last_broadcast_time", 0.0) >= 0.20:
+        STATE["last_broadcast_time"] = now
+        asyncio.create_task(broadcast_telemetry(None))
+
+
 async def multi_exchange_websocket_listener():
     """
     Connects concurrently to Binance and Bybit public WebSocket streams.
@@ -428,6 +440,8 @@ async def multi_exchange_websocket_listener():
                             if len(STATE["price_history"]) > 60:
                                 STATE["price_history"].pop(0)
                                 
+                            await trigger_realtime_broadcast()
+                                
                         elif "@depth5" in stream_name:
                             # Parse 100% genuine, real-time live order book depth and volumes!
                             bids_raw = msg.get("bids", [])
@@ -441,6 +455,7 @@ async def multi_exchange_websocket_listener():
                                     "bids": bids,
                                     "asks": asks
                                 }
+                                await trigger_realtime_broadcast()
             except Exception as e:
                 logger.warning(f"Binance WS disconnected: {str(e)}. Reconnecting in 5s...")
                 await asyncio.sleep(5)
@@ -461,6 +476,7 @@ async def multi_exchange_websocket_listener():
                             price = float(tick.get("lastPrice", STATE["last_price"]))
                             STATE["last_price"] = price
                             STATE["assets"]["BTCUSDT"]["price"] = price
+                            await trigger_realtime_broadcast()
             except Exception as e:
                 logger.warning(f"Bybit WS disconnected: {str(e)}. Reconnecting in 5s...")
                 await asyncio.sleep(5)
