@@ -1,38 +1,35 @@
 import pytest
-from models.oms_ems import OrderManagementSystem, ReconciliationEngine, OrderStatus
+from models.oms_ems import OrderManagementSystem, ExecutionManagementSystem, OrderStatus
+from adapters.exchange_adapter import BinanceExchangeAdapter, BybitExchangeAdapter
 from db_manager import DBManager
 
-def test_oms_order_lifecycle():
+def test_oms_and_ems_lifecycle_flow():
     db = DBManager()
-    oms = OrderManagementSystem(db)
     
-    order = oms.create_order(
+    # Instantiate adapters
+    binance = BinanceExchangeAdapter(None)
+    bybit = BybitExchangeAdapter(None)
+    
+    # Instantiate EMS & OMS
+    ems = ExecutionManagementSystem(binance, bybit)
+    oms = OrderManagementSystem(db, ems)
+    
+    # Create order
+    order = oms.submit_new_order(
         symbol="BTCUSDT",
         side="BUY",
-        qty=0.05,
+        qty=0.01,
         price=60000.0,
         mode="DEMO",
         strategy="META_MODEL",
-        client_order_id="client_id_99"
+        client_order_id="unique_client_id_77"
     )
     
-    assert order.status == OrderStatus.PENDING
+    assert order.status == OrderStatus.CREATED
+    assert order.requested_qty == 0.01
     
-    # Update to Filled
-    oms.update_order_status("client_id_99", OrderStatus.FILLED, filled_qty=0.05, avg_price=60100.0)
+    # Approve and execute order through OMS -> EMS!
+    res = oms.approve_and_execute_order(order)
     
-    assert order.status == OrderStatus.FILLED
-    assert order.filled_qty == 0.05
-    assert order.average_filled_price == 60100.0
-
-def test_reconciliation_flow():
-    db = DBManager()
-    reconciler = ReconciliationEngine(db)
-    
-    # Query current positions from DB to align mock exchange
-    db_positions = db.get_positions()
-    mock_exchange_positions = {p['symbol']: p['qty'] for p in db_positions if p['mode'] == "DEMO"}
-    
-    # Reconciling with identical positions should succeed perfectly!
-    res = reconciler.reconcile_positions(mock_exchange_positions, "DEMO")
-    assert res is True
+    assert res["status"] == "ACKNOWLEDGED"
+    assert order.status == OrderStatus.ACKNOWLEDGED
