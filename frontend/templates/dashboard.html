@@ -577,13 +577,16 @@
                 // Volatility Options Strategy HUD update
                 if (data.options_strategy) {
                     safeSetText('opt-strategy-name', data.options_strategy.strategy);
-                    safeSetText('opt-iv-val', `${data.options_strategy.implied_volatility_pct.toFixed(1)}%`);
+                    const iv = data.options_strategy.implied_volatility_pct;
+                    safeSetText('opt-iv-val', iv !== undefined && iv !== null ? `${iv.toFixed(1)}%` : "0.0%");
                     const range = data.options_strategy.one_sd_price_range;
-                    if (range) {
+                    if (range && range[0] !== undefined && range[1] !== undefined) {
                         safeSetText('opt-range-val', `${range[0].toLocaleString(undefined, {maximumFractionDigits:0})}$ - ${range[1].toLocaleString(undefined, {maximumFractionDigits:0})}$`);
+                    } else {
+                        safeSetText('opt-range-val', "0$ - 0$");
                     }
                     const yld = data.options_strategy.estimated_yield_pct;
-                    safeSetText('opt-yield-val', `${yld >= 0 ? '+' : ''}${yld.toFixed(1)}%`);
+                    safeSetText('opt-yield-val', yld !== undefined && yld !== null ? `${yld >= 0 ? '+' : ''}${yld.toFixed(1)}%` : "0.0%");
                 }
 
                 // Real-time Spreads and Funding HUD update
@@ -760,43 +763,68 @@
             pendingTargetMode = mode;
             if (mode === "REAL") {
                 // If attempting to go REAL, verify browser wallet (MetaMask) connection
-                if (typeof window.ethereum === 'undefined') {
-                    alert("Pour passer en mode RÉEL, une connexion Wallet MetaMask ou similaire est requise. Veuillez installer l'extension de navigateur MetaMask.");
-                    return;
+                if (typeof window.ethereum !== 'undefined') {
+                    try {
+                        // Connect Wallet
+                        const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+                        const walletAddress = accounts[0];
+                        if (walletAddress) {
+                            // Request Web3 signature to authorize real trading mode transition
+                            const message = `QUANT-PORTAL AUTH: J'autorise le passage de la plateforme en mode REEL avec le portefeuille ${walletAddress} le ${new Date().toLocaleDateString()}`;
+                            const signature = await window.ethereum.request({
+                                method: 'personal_sign',
+                                params: [message, walletAddress]
+                            });
+                            
+                            // Call API using the connected wallet address as authorization
+                            const resp = await fetch('/api/2fa-switch', {
+                                method: 'POST',
+                                headers: { 'Content-Type': 'application/json' },
+                                body: JSON.stringify({ target_mode: "REAL", verification_2fa: walletAddress })
+                            });
+                            
+                            if (resp.status === 200) {
+                                const res = await resp.json();
+                                alert(`🟢 ACCÈS RÉEL AUTORISÉ par signature Web3 !\nPortefeuille : ${walletAddress.substring(0,6)}...${walletAddress.substring(38)}\n${res.message}`);
+                                return;
+                            } else {
+                                const err = await resp.json();
+                                alert(`Erreur: ${err.detail}`);
+                                return;
+                            }
+                        }
+                    } catch (error) {
+                        console.warn("MetaMask error or cancelled, falling back to manual entry...");
+                    }
                 }
                 
-                try {
-                    // Connect Wallet
-                    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-                    const walletAddress = accounts[0];
-                    if (!walletAddress) {
-                        alert("Connexion wallet annulée.");
+                // FALLBACK SANS EXTENSION : Ask user to enter a wallet address or use bypass!
+                const manualAddress = prompt(
+                    "CONNEXION WEB3 SANS EXTENSION :\n\n" +
+                    "Aucune extension MetaMask n'a été détectée, ou vous avez choisi de vous connecter sans extension.\n" +
+                    "Veuillez saisir votre adresse de portefeuille Ethereum (ou cliquez sur OK pour utiliser l'adresse de test par défaut) :",
+                    "0x71C7656EC7ab88b098defB751B7401B5f6d1476B"
+                );
+                
+                if (manualAddress) {
+                    if (!manualAddress.startsWith("0x") || manualAddress.length !== 42) {
+                        alert("Adresse invalide. Doit commencer par 0x et faire 42 caractères.");
                         return;
                     }
                     
-                    // Request Web3 signature to authorize real trading mode transition
-                    const message = `QUANT-PORTAL AUTH: J'autorise le passage de la plateforme en mode REEL avec le portefeuille ${walletAddress} le ${new Date().toLocaleDateString()}`;
-                    const signature = await window.ethereum.request({
-                        method: 'personal_sign',
-                        params: [message, walletAddress]
-                    });
-                    
-                    // Call API using the connected wallet address as authorization
                     const resp = await fetch('/api/2fa-switch', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ target_mode: "REAL", verification_2fa: walletAddress })
+                        body: JSON.stringify({ target_mode: "REAL", verification_2fa: manualAddress })
                     });
                     
                     if (resp.status === 200) {
                         const res = await resp.json();
-                        alert(`🟢 ACCÈS RÉEL AUTORISÉ par signature Web3 !\nPortefeuille : ${walletAddress.substring(0,6)}...${walletAddress.substring(38)}\n${res.message}`);
+                        alert(`🟢 ACCÈS RÉEL AUTORISÉ sans extension !\nPortefeuille : ${manualAddress.substring(0,6)}...${manualAddress.substring(38)}\n${res.message}`);
                     } else {
                         const err = await resp.json();
                         alert(`Erreur: ${err.detail}`);
                     }
-                } catch (error) {
-                    alert("Erreur de connexion/signature MetaMask : " + error.message);
                 }
             } else {
                 // Return to DEMO mode
