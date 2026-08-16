@@ -705,42 +705,43 @@
                 liveChartInstance.update();
             }
 
-            // Open Positions Table
-            const tblPositions = document.getElementById('tbl-positions');
-            if (tblPositions) {
-                tblPositions.innerHTML = '';
-                
-                // Render active positions of multi-assets dynamically!
-                const act_positions = data.positions || [];
-                if (act_positions.length === 0) {
-                    tblPositions.innerHTML = `
-                        <tr class="text-slate-500">
-                            <td class="py-4 text-center" colspan="6">Aucune exposition active.</td>
-                        </tr>
-                    `;
-                } else {
-                    act_positions.forEach(p => {
-                        const price_live = data.assets_telemetry && data.assets_telemetry[p.symbol] ? data.assets_telemetry[p.symbol].price : data.last_price;
-                        const value = p.qty * price_live;
-                        const pnl = (price_live - p.avg_price) * p.qty;
-                        const pnlPct = ((price_live - p.avg_price) / p.avg_price) * 100;
-                        const asset_class = data.assets_telemetry && data.assets_telemetry[p.symbol] ? data.assets_telemetry[p.symbol].class : "Crypto";
-                        
-                        tblPositions.innerHTML += `
-                            <tr class="text-slate-200 border-b border-slate-900 py-2.5">
-                                <td class="py-3 font-black">${p.symbol}</td>
-                                <td class="text-slate-400 font-bold">${asset_class}</td>
-                                <td>${p.qty.toFixed(4)}</td>
-                                <td>$${p.avg_price.toFixed(2)}</td>
-                                <td>$${price_live.toFixed(2)}</td>
-                                <td class="${pnl >= 0 ? 'text-emerald-400' : 'text-rose-500'} font-black">
-                                    $${pnl.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)
-                                </td>
+                // Open Positions Table
+                const tblPositions = document.getElementById('tbl-positions');
+                if (tblPositions) {
+                    tblPositions.innerHTML = '';
+                    
+                    // Render active positions of multi-assets dynamically!
+                    const act_positions = data.positions || [];
+                    if (act_positions.length === 0) {
+                        tblPositions.innerHTML = `
+                            <tr class="text-slate-500">
+                                <td class="py-4 text-center" colspan="6">Aucune exposition active.</td>
                             </tr>
                         `;
-                    });
+                    } else {
+                        act_positions.forEach(p => {
+                            const price_live_raw = data.assets_telemetry && data.assets_telemetry[p.symbol] ? data.assets_telemetry[p.symbol].price : data.last_price;
+                            const price_live = price_live_raw !== undefined && price_live_raw !== null ? parseFloat(price_live_raw) : 0.0;
+                            const value = p.qty * price_live;
+                            const pnl = price_live > 0 ? (price_live - p.avg_price) * p.qty : 0.0;
+                            const pnlPct = price_live > 0 && p.avg_price > 0 ? ((price_live - p.avg_price) / p.avg_price) * 100 : 0.0;
+                            const asset_class = data.assets_telemetry && data.assets_telemetry[p.symbol] ? data.assets_telemetry[p.symbol].class : "Crypto";
+                            
+                            tblPositions.innerHTML += `
+                                <tr class="text-slate-200 border-b border-slate-900 py-2.5">
+                                    <td class="py-3 font-black">${p.symbol}</td>
+                                    <td class="text-slate-400 font-bold">${asset_class}</td>
+                                    <td>${(p.qty || 0.0).toFixed(4)}</td>
+                                    <td>$${(p.avg_price || 0.0).toFixed(2)}</td>
+                                    <td>$${(price_live || 0.0).toFixed(2)}</td>
+                                    <td class="${pnl >= 0 ? 'text-emerald-400' : 'text-rose-500'} font-black">
+                                        $${(pnl || 0.0).toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${(pnlPct || 0.0).toFixed(2)}%)
+                                    </td>
+                                </tr>
+                            `;
+                        });
+                    }
                 }
-            }
 
             // Render Recent Orders Table
             const tblOrders = document.getElementById('tbl-orders');
