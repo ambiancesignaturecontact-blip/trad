@@ -117,12 +117,19 @@
         <div class="col-span-12 lg:col-span-8 flex flex-col space-y-4 overflow-y-auto pr-2 pb-6">
             
             <!-- TOP METRICS CARDS -->
-            <div class="grid grid-cols-1 md:grid-cols-4 gap-4">
+            <div class="grid grid-cols-1 md:grid-cols-5 gap-4">
                 <!-- Portfolio Equity -->
                 <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
                     <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">ÉQUITÉ DU COMPTE</p>
                     <h3 id="val-equity" class="text-xl font-black mt-1 text-cyan-400 glow-text-cyan">$0.00</h3>
                     <p id="val-balance" class="text-[10px] text-slate-500 mt-0.5">Solde: $0.00</p>
+                </div>
+
+                <!-- Live Benefits / P&L -->
+                <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">BÉNÉFICES EN DIRECT (PnL)</p>
+                    <h3 id="val-pnl" class="text-xl font-black mt-1 text-emerald-400 glow-text-green">+$0.00</h3>
+                    <p id="val-pnl-pct" class="text-[10px] text-slate-500 mt-0.5">Rendement: +0.00%</p>
                 </div>
 
                 <!-- Price ticker -->
@@ -561,6 +568,17 @@
                 // Cards telemetry
                 safeSetText('val-equity', `$${(data.current_equity || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
                 safeSetText('val-balance', `Solde: $${(data.balance || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
+                
+                // PnL Cards update
+                const pnlUsd = data.live_pnl_usd || 0.0;
+                const pnlPct = data.live_pnl_pct || 0.0;
+                const pnlEl = document.getElementById('val-pnl');
+                if (pnlEl) {
+                    pnlEl.innerText = `${pnlUsd >= 0 ? '+' : ''}$${pnlUsd.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+                    pnlEl.className = `text-xl font-black mt-1 ${pnlUsd >= 0 ? 'text-emerald-400 glow-text-green' : 'text-rose-500'}`;
+                }
+                safeSetText('val-pnl-pct', `Rendement: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`);
+
                 safeSetText('val-price', `$${(data.last_price || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
                 safeSetText('val-regime', data.regime_name || "N/A");
 

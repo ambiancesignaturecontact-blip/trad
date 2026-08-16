@@ -153,6 +153,8 @@ STATE = {
     "kill_switch_active": False,     # Emergency lock
     "balance_demo": 100000.0,        # Configurable virtual capital
     "balance_real": 0.0,             # Real wallet balance (loaded from exchange)
+    "initial_capital_demo": 100000.0,  # Startup initial capital for P&L tracking
+    "initial_capital_real": 0.0,      # Startup real capital for P&L tracking
     "current_equity": 100000.0,
     "last_price": 60000.0,              # Initialized with a robust default price
     "last_tick_volume": 15.0,           # Initialized with safe default volume
@@ -1126,6 +1128,14 @@ async def broadcast_telemetry(consensus_signals):
     orders = STATE.get("cached_orders", [])
     audit_logs = STATE.get("cached_audit_logs", [])
     
+    # Calculate live P&L
+    active_mode = STATE["mode"]
+    initial_cap = STATE["initial_capital_demo"] if active_mode == "DEMO" else STATE["initial_capital_real"]
+    current_eq = STATE["current_equity"]
+    
+    live_pnl_usd = current_eq - initial_cap if initial_cap > 0 else 0.0
+    live_pnl_pct = (live_pnl_usd / initial_cap) * 100.0 if initial_cap > 0 else 0.0
+    
     # Packaged JSON
     telemetry = {
         "mode": STATE["mode"],
@@ -1137,6 +1147,8 @@ async def broadcast_telemetry(consensus_signals):
         "balance": STATE["balance_demo"] if STATE["mode"] == "DEMO" else STATE["balance_real"],
         "current_equity": STATE["current_equity"],
         "equity_history": STATE["equity_history_demo"] if STATE["mode"] == "DEMO" else STATE["equity_history_real"],
+        "live_pnl_usd": live_pnl_usd,
+        "live_pnl_pct": live_pnl_pct,
         "regime_id": STATE["regime_id"],
         "regime_name": STATE["regime_name"],
         "ml_prediction_pct": STATE["ml_prediction_pct"],
@@ -1281,6 +1293,7 @@ async def set_demo_balance(payload: SetBalanceRequest):
     if payload.balance <= 0:
         raise HTTPException(status_code=400, detail="Balance must be positive.")
     STATE["balance_demo"] = payload.balance
+    STATE["initial_capital_demo"] = payload.balance
     STATE["current_equity"] = payload.balance
     STATE["equity_history_demo"] = [payload.balance]
     db.add_audit_log(
