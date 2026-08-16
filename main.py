@@ -1152,16 +1152,12 @@ async def live_trading_loop():
         await asyncio.sleep(2.5) # Loop tick pause
 
 
-async def broadcast_telemetry(consensus_signals):
+def compile_telemetry_data(consensus_signals=None) -> dict:
     """
-    Broadcasts real-time trading metrics to all active dashboard connections.
+    Compiles and returns the unified telemetry payload.
     Caches database queries for 3.0 seconds to avoid blocking the event loop on high-frequency ticks.
     """
-    if not STATE["connected_websockets"]:
-        return
-        
     now = time.time()
-    # Cooldown of 3.0 seconds for external PostgreSQL/Supabase queries
     if now - STATE.get("last_db_query_time", 0.0) >= 3.0 or consensus_signals is not None:
         STATE["last_db_query_time"] = now
         try:
@@ -1228,11 +1224,22 @@ async def broadcast_telemetry(consensus_signals):
             for t in copy_manager.get_ranked_traders()
         ]
     }
+    return telemetry
+
+
+async def broadcast_telemetry(consensus_signals):
+    """
+    Broadcasts real-time trading metrics to all active dashboard connections.
+    """
+    if not STATE["connected_websockets"]:
+        return
+        
+    payload = compile_telemetry_data(consensus_signals)
     
     dead_sockets = []
     for ws in STATE["connected_websockets"]:
         try:
-            await ws.send_text(json.dumps(telemetry))
+            await ws.send_text(json.dumps(payload))
         except Exception:
             dead_sockets.append(ws)
             
@@ -1241,6 +1248,15 @@ async def broadcast_telemetry(consensus_signals):
 
 
 # REST endpoints
+
+@app.get("/api/telemetry")
+async def get_telemetry_rest():
+    """
+    REST Fallback API to query telemetry.
+    Ensures 100% platform connectivity even when WebSockets are blocked by client browser or proxy!
+    """
+    return JSONResponse(compile_telemetry_data())
+
 
 @app.get("/", response_class=HTMLResponse)
 async def get_dashboard(request: Request):

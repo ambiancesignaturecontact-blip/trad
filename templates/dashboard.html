@@ -576,267 +576,308 @@
             }
         });
 
-        // WS Message parser
-        ws.onmessage = function(event) {
-            try {
-                const data = JSON.parse(event.data);
-                
-                // Helper to safely update text content
-                const safeSetText = (id, text) => {
-                    const el = document.getElementById(id);
-                    if (el) el.innerText = text;
-                };
+        // Shared payload processing (for both WebSocket and REST Fallback Polling)
+        function processPayload(data) {
+            // Helper to safely update text content
+            const safeSetText = (id, text) => {
+                const el = document.getElementById(id);
+                if (el) el.innerText = text;
+            };
 
-                // Helper to safely set className
-                const safeSetClass = (id, className) => {
-                    const el = document.getElementById(id);
-                    if (el) el.className = className;
-                };
-                
-                // Mode state buttons
-                if (data.mode === "DEMO") {
-                    safeSetClass('btn-mode-demo', "px-3.5 py-1.5 rounded-lg font-bold text-xs bg-cyan-400 text-slate-950 shadow-md");
-                    safeSetClass('btn-mode-real', "px-3.5 py-1.5 rounded-lg font-bold text-xs text-slate-400 hover:text-slate-200 transition-all");
-                    const capPanel = document.getElementById('demo-capital-panel');
-                    if (capPanel) capPanel.classList.remove('hidden');
+            // Helper to safely set className
+            const safeSetClass = (id, className) => {
+                const el = document.getElementById(id);
+                if (el) el.className = className;
+            };
+            
+            // Mode state buttons
+            if (data.mode === "DEMO") {
+                safeSetClass('btn-mode-demo', "px-3.5 py-1.5 rounded-lg font-bold text-xs bg-cyan-400 text-slate-950 shadow-md");
+                safeSetClass('btn-mode-real', "px-3.5 py-1.5 rounded-lg font-bold text-xs text-slate-400 hover:text-slate-200 transition-all");
+                const capPanel = document.getElementById('demo-capital-panel');
+                if (capPanel) capPanel.classList.remove('hidden');
+            } else {
+                safeSetClass('btn-mode-demo', "px-3.5 py-1.5 rounded-lg font-bold text-xs text-slate-400 hover:text-slate-200 transition-all");
+                safeSetClass('btn-mode-real', "px-3.5 py-1.5 rounded-lg font-bold text-xs bg-yellow-500 text-slate-950 shadow-md");
+                const capPanel = document.getElementById('demo-capital-panel');
+                if (capPanel) capPanel.classList.add('hidden');
+            }
+
+            // Update Start/Stop Bot Button Status
+            const btnToggle = document.getElementById('btn-toggle-bot');
+            if (btnToggle) {
+                if (data.is_running) {
+                    btnToggle.className = "px-4 py-2 bg-emerald-500 text-slate-950 rounded-xl font-bold text-xs hover:scale-105 transition-all shadow-md flex items-center space-x-1.5 uppercase tracking-widest";
+                    btnToggle.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-slate-950 animate-ping mr-1"></span><span>BOT ACTIF</span>`;
+                    btnToggle.setAttribute('data-active', 'true');
                 } else {
-                    safeSetClass('btn-mode-demo', "px-3.5 py-1.5 rounded-lg font-bold text-xs text-slate-400 hover:text-slate-200 transition-all");
-                    safeSetClass('btn-mode-real', "px-3.5 py-1.5 rounded-lg font-bold text-xs bg-yellow-500 text-slate-950 shadow-md");
-                    const capPanel = document.getElementById('demo-capital-panel');
-                    if (capPanel) capPanel.classList.add('hidden');
+                    btnToggle.className = "px-4 py-2 bg-slate-800 text-slate-400 border border-slate-700 rounded-xl font-bold text-xs hover:scale-105 transition-all flex items-center space-x-1.5 uppercase tracking-widest hover:text-slate-200";
+                    btnToggle.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-rose-500 mr-1 animate-pulse"></span><span>BOT PAUSE</span>`;
+                    btnToggle.setAttribute('data-active', 'false');
                 }
+            }
 
-                // Update Start/Stop Bot Button Status
-                const btnToggle = document.getElementById('btn-toggle-bot');
-                if (btnToggle) {
-                    if (data.is_running) {
-                        btnToggle.className = "px-4 py-2 bg-emerald-500 text-slate-950 rounded-xl font-bold text-xs hover:scale-105 transition-all shadow-md flex items-center space-x-1.5 uppercase tracking-widest";
-                        btnToggle.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-slate-950 animate-ping mr-1"></span><span>BOT ACTIF</span>`;
-                        btnToggle.setAttribute('data-active', 'true');
-                    } else {
-                        btnToggle.className = "px-4 py-2 bg-slate-800 text-slate-400 border border-slate-700 rounded-xl font-bold text-xs hover:scale-105 transition-all flex items-center space-x-1.5 uppercase tracking-widest hover:text-slate-200";
-                        btnToggle.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-rose-500 mr-1 animate-pulse"></span><span>BOT PAUSE</span>`;
-                        btnToggle.setAttribute('data-active', 'false');
-                    }
+            // Cards telemetry
+            safeSetText('val-equity', `$${(data.current_equity || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
+            safeSetText('val-balance', `Solde: $${(data.balance || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
+            
+            // PnL Cards update
+            const pnlUsd = data.live_pnl_usd || 0.0;
+            const pnlPct = data.live_pnl_pct || 0.0;
+            const pnlEl = document.getElementById('val-pnl');
+            if (pnlEl) {
+                pnlEl.innerText = `${pnlUsd >= 0 ? '+' : ''}$${pnlUsd.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+                pnlEl.className = `text-xl font-black mt-1 ${pnlUsd >= 0 ? 'text-emerald-400 glow-text-green' : 'text-rose-500'}`;
+            }
+            safeSetText('val-pnl-pct', `Rendement: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`);
+
+            safeSetText('val-price', `$${(data.last_price || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
+            safeSetText('val-regime', data.regime_name || "N/A");
+
+            // Advanced metrics telemetry
+            safeSetText('val-sentiment', (data.sentiment_index || 0.0).toFixed(2));
+            safeSetText('val-sentiment-desc', (data.sentiment_index || 0.0) >= 0.15 ? "Haussier (NLP)" : (data.sentiment_index || 0.0) <= -0.15 ? "Baissier (NLP)" : "Neutre (NLP)");
+            
+            safeSetText('val-onchain', (data.onchain_risk_score || 0.0).toFixed(2));
+            safeSetText('val-onchain-desc', (data.onchain_risk_score || 0.0) >= 0.70 ? "Inflows: Risque" : "Inflows: Calme");
+            
+            safeSetText('val-wallet-eth', `${(data.eth_defi_balance || 0.0).toFixed(4)} ETH`);
+            safeSetText('val-wallet-addr', data.defi_wallet_address || "Non connecté");
+            
+            // Volatility Options Strategy HUD update
+            if (data.options_strategy) {
+                safeSetText('opt-strategy-name', data.options_strategy.strategy);
+                const iv = data.options_strategy.implied_volatility_pct;
+                safeSetText('opt-iv-val', iv !== undefined && iv !== null ? `${iv.toFixed(1)}%` : "0.0%");
+                const range = data.options_strategy.one_sd_price_range;
+                if (range && range[0] !== undefined && range[1] !== undefined) {
+                    safeSetText('opt-range-val', `${range[0].toLocaleString(undefined, {maximumFractionDigits:0})}$ - ${range[1].toLocaleString(undefined, {maximumFractionDigits:0})}$`);
+                } else {
+                    safeSetText('opt-range-val', "0$ - 0$");
                 }
+                const yld = data.options_strategy.estimated_yield_pct;
+                safeSetText('opt-yield-val', yld !== undefined && yld !== null ? `${yld >= 0 ? '+' : ''}${yld.toFixed(1)}%` : "0.0%");
+            }
 
-                // Cards telemetry
-                safeSetText('val-equity', `$${(data.current_equity || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
-                safeSetText('val-balance', `Solde: $${(data.balance || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
+            // Real-time Spreads and Funding HUD update
+            const btc_spread = Math.abs(Math.sin(Date.now() / 15000) * 0.25).toFixed(2);
+            const eth_spread = (0.50 + Math.abs(Math.sin(Date.now() / 8000) * 0.40)).toFixed(2);
+            const sol_spread = Math.abs(Math.cos(Date.now() / 20000) * 0.15).toFixed(2);
+            
+            safeSetText('spread-btc-val', `${btc_spread}%`);
+            safeSetText('spread-eth-val', `${eth_spread}%`);
+            safeSetText('spread-sol-val', `${sol_spread}%`);
+            
+            const btcBadge = document.getElementById('spread-btc-badge');
+            if (btcBadge) {
+                btcBadge.className = btc_spread >= 0.50 ? "px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-bold uppercase animate-pulse text-[9px]" : "px-2 py-0.5 rounded bg-slate-900 text-slate-500 font-bold uppercase text-[9px]";
+                btcBadge.innerText = btc_spread >= 0.50 ? "⚡ OPPORTUNITY" : "CALME";
+            }
+            const ethBadge = document.getElementById('spread-eth-badge');
+            if (ethBadge) {
+                ethBadge.className = eth_spread >= 0.50 ? "px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-bold uppercase animate-pulse text-[9px]" : "px-2 py-0.5 rounded bg-slate-900 text-slate-500 font-bold uppercase text-[9px]";
+                ethBadge.innerText = eth_spread >= 0.50 ? "⚡ OPPORTUNITY" : "CALME";
+            }
+            const solBadge = document.getElementById('spread-sol-badge');
+            if (solBadge) {
+                solBadge.className = sol_spread >= 0.50 ? "px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-bold uppercase animate-pulse text-[9px]" : "px-2 py-0.5 rounded bg-slate-900 text-slate-500 font-bold uppercase text-[9px]";
+                solBadge.innerText = sol_spread >= 0.50 ? "⚡ OPPORTUNITY" : "CALME";
+            }
+
+            // Colors for regimes
+            const regimeEl = document.getElementById('val-regime');
+            if (regimeEl) {
+                if (data.regime_id === 0) {
+                    regimeEl.className = "text-xs font-black mt-2 text-emerald-400 uppercase tracking-widest";
+                } else if (data.regime_id === 1) {
+                    regimeEl.className = "text-xs font-black mt-2 text-red-500 uppercase tracking-widest";
+                } else if (data.regime_id === 2) {
+                    regimeEl.className = "text-xs font-black mt-2 text-cyan-400 uppercase tracking-widest";
+                } else {
+                    regimeEl.className = "text-xs font-black mt-2 text-yellow-500 uppercase tracking-widest";
+                }
+            }
+
+            // Update live metrics charts
+            if (activeTimeframe === '1h' && liveChartInstance) {
+                liveChartInstance.data.labels = Array.from({length: data.price_history.length}, (_, i) => i);
+                liveChartInstance.data.datasets[0].data = data.equity_history;
+                liveChartInstance.data.datasets[1].data = data.price_history;
+                liveChartInstance.update();
+            }
+
+            // Open Positions Table
+            const tblPositions = document.getElementById('tbl-positions');
+            if (tblPositions) {
+                tblPositions.innerHTML = '';
                 
-                // PnL Cards update
-                const pnlUsd = data.live_pnl_usd || 0.0;
-                const pnlPct = data.live_pnl_pct || 0.0;
-                const pnlEl = document.getElementById('val-pnl');
-                if (pnlEl) {
-                    pnlEl.innerText = `${pnlUsd >= 0 ? '+' : ''}$${pnlUsd.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
-                    pnlEl.className = `text-xl font-black mt-1 ${pnlUsd >= 0 ? 'text-emerald-400 glow-text-green' : 'text-rose-500'}`;
-                }
-                safeSetText('val-pnl-pct', `Rendement: ${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%`);
-
-                safeSetText('val-price', `$${(data.last_price || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
-                safeSetText('val-regime', data.regime_name || "N/A");
-
-                // Advanced metrics telemetry
-                safeSetText('val-sentiment', (data.sentiment_index || 0.0).toFixed(2));
-                safeSetText('val-sentiment-desc', (data.sentiment_index || 0.0) >= 0.15 ? "Haussier (NLP)" : (data.sentiment_index || 0.0) <= -0.15 ? "Baissier (NLP)" : "Neutre (NLP)");
-                
-                safeSetText('val-onchain', (data.onchain_risk_score || 0.0).toFixed(2));
-                safeSetText('val-onchain-desc', (data.onchain_risk_score || 0.0) >= 0.70 ? "Inflows: Risque" : "Inflows: Calme");
-                
-                safeSetText('val-wallet-eth', `${(data.eth_defi_balance || 0.0).toFixed(4)} ETH`);
-                safeSetText('val-wallet-addr', data.defi_wallet_address || "Non connecté");
-                
-                // Volatility Options Strategy HUD update
-                if (data.options_strategy) {
-                    safeSetText('opt-strategy-name', data.options_strategy.strategy);
-                    const iv = data.options_strategy.implied_volatility_pct;
-                    safeSetText('opt-iv-val', iv !== undefined && iv !== null ? `${iv.toFixed(1)}%` : "0.0%");
-                    const range = data.options_strategy.one_sd_price_range;
-                    if (range && range[0] !== undefined && range[1] !== undefined) {
-                        safeSetText('opt-range-val', `${range[0].toLocaleString(undefined, {maximumFractionDigits:0})}$ - ${range[1].toLocaleString(undefined, {maximumFractionDigits:0})}$`);
-                    } else {
-                        safeSetText('opt-range-val', "0$ - 0$");
-                    }
-                    const yld = data.options_strategy.estimated_yield_pct;
-                    safeSetText('opt-yield-val', yld !== undefined && yld !== null ? `${yld >= 0 ? '+' : ''}${yld.toFixed(1)}%` : "0.0%");
-                }
-
-                // Real-time Spreads and Funding HUD update
-                const btc_spread = Math.abs(Math.sin(Date.now() / 15000) * 0.25).toFixed(2);
-                const eth_spread = (0.50 + Math.abs(Math.sin(Date.now() / 8000) * 0.40)).toFixed(2);
-                const sol_spread = Math.abs(Math.cos(Date.now() / 20000) * 0.15).toFixed(2);
-                
-                safeSetText('spread-btc-val', `${btc_spread}%`);
-                safeSetText('spread-eth-val', `${eth_spread}%`);
-                safeSetText('spread-sol-val', `${sol_spread}%`);
-                
-                const btcBadge = document.getElementById('spread-btc-badge');
-                if (btcBadge) {
-                    btcBadge.className = btc_spread >= 0.50 ? "px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-bold uppercase animate-pulse text-[9px]" : "px-2 py-0.5 rounded bg-slate-900 text-slate-500 font-bold uppercase text-[9px]";
-                    btcBadge.innerText = btc_spread >= 0.50 ? "⚡ OPPORTUNITY" : "CALME";
-                }
-                const ethBadge = document.getElementById('spread-eth-badge');
-                if (ethBadge) {
-                    ethBadge.className = eth_spread >= 0.50 ? "px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-bold uppercase animate-pulse text-[9px]" : "px-2 py-0.5 rounded bg-slate-900 text-slate-500 font-bold uppercase text-[9px]";
-                    ethBadge.innerText = eth_spread >= 0.50 ? "⚡ OPPORTUNITY" : "CALME";
-                }
-                const solBadge = document.getElementById('spread-sol-badge');
-                if (solBadge) {
-                    solBadge.className = sol_spread >= 0.50 ? "px-2 py-0.5 rounded bg-emerald-500/15 text-emerald-400 border border-emerald-500/30 font-bold uppercase animate-pulse text-[9px]" : "px-2 py-0.5 rounded bg-slate-900 text-slate-500 font-bold uppercase text-[9px]";
-                    solBadge.innerText = sol_spread >= 0.50 ? "⚡ OPPORTUNITY" : "CALME";
-                }
-
-                // Colors for regimes
-                const regimeEl = document.getElementById('val-regime');
-                if (regimeEl) {
-                    if (data.regime_id === 0) {
-                        regimeEl.className = "text-xs font-black mt-2 text-emerald-400 uppercase tracking-widest";
-                    } else if (data.regime_id === 1) {
-                        regimeEl.className = "text-xs font-black mt-2 text-red-500 uppercase tracking-widest";
-                    } else if (data.regime_id === 2) {
-                        regimeEl.className = "text-xs font-black mt-2 text-cyan-400 uppercase tracking-widest";
-                    } else {
-                        regimeEl.className = "text-xs font-black mt-2 text-yellow-500 uppercase tracking-widest";
-                    }
-                }
-
-                // Update live metrics charts
-                if (activeTimeframe === '1h' && liveChartInstance) {
-                    liveChartInstance.data.labels = Array.from({length: data.price_history.length}, (_, i) => i);
-                    liveChartInstance.data.datasets[0].data = data.equity_history;
-                    liveChartInstance.data.datasets[1].data = data.price_history;
-                    liveChartInstance.update();
-                }
-
-                // Open Positions Table
-                const tblPositions = document.getElementById('tbl-positions');
-                if (tblPositions) {
-                    tblPositions.innerHTML = '';
-                    
-                    // Render active positions of multi-assets dynamically!
-                    const act_positions = data.positions || [];
-                    if (act_positions.length === 0) {
-                        tblPositions.innerHTML = `
-                            <tr class="text-slate-500">
-                                <td class="py-4 text-center" colspan="6">Aucune exposition active.</td>
+                // Render active positions of multi-assets dynamically!
+                const act_positions = data.positions || [];
+                if (act_positions.length === 0) {
+                    tblPositions.innerHTML = `
+                        <tr class="text-slate-500">
+                            <td class="py-4 text-center" colspan="6">Aucune exposition active.</td>
+                        </tr>
+                    `;
+                } else {
+                    act_positions.forEach(p => {
+                        const price_live = data.assets_telemetry && data.assets_telemetry[p.symbol] ? data.assets_telemetry[p.symbol].price : data.last_price;
+                        const value = p.qty * price_live;
+                        const pnl = (price_live - p.avg_price) * p.qty;
+                        const pnlPct = ((price_live - p.avg_price) / p.avg_price) * 100;
+                        const asset_class = data.assets_telemetry && data.assets_telemetry[p.symbol] ? data.assets_telemetry[p.symbol].class : "Crypto";
+                        
+                        tblPositions.innerHTML += `
+                            <tr class="text-slate-200 border-b border-slate-900 py-2.5">
+                                <td class="py-3 font-black">${p.symbol}</td>
+                                <td class="text-slate-400 font-bold">${asset_class}</td>
+                                <td>${p.qty.toFixed(4)}</td>
+                                <td>$${p.avg_price.toFixed(2)}</td>
+                                <td>$${price_live.toFixed(2)}</td>
+                                <td class="${pnl >= 0 ? 'text-emerald-400' : 'text-rose-500'} font-black">
+                                    $${pnl.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)
+                                </td>
                             </tr>
                         `;
-                    } else {
-                        act_positions.forEach(p => {
-                            const price_live = data.assets_telemetry && data.assets_telemetry[p.symbol] ? data.assets_telemetry[p.symbol].price : data.last_price;
-                            const value = p.qty * price_live;
-                            const pnl = (price_live - p.avg_price) * p.qty;
-                            const pnlPct = ((price_live - p.avg_price) / p.avg_price) * 100;
-                            const asset_class = data.assets_telemetry && data.assets_telemetry[p.symbol] ? data.assets_telemetry[p.symbol].class : "Crypto";
-                            
-                            tblPositions.innerHTML += `
-                                <tr class="text-slate-200 border-b border-slate-900 py-2.5">
-                                    <td class="py-3 font-black">${p.symbol}</td>
-                                    <td class="text-slate-400 font-bold">${asset_class}</td>
-                                    <td>${p.qty.toFixed(4)}</td>
-                                    <td>$${p.avg_price.toFixed(2)}</td>
-                                    <td>$${price_live.toFixed(2)}</td>
-                                    <td class="${pnl >= 0 ? 'text-emerald-400' : 'text-rose-500'} font-black">
-                                        $${pnl.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)
-                                    </td>
-                                </tr>
-                            `;
-                        });
-                    }
+                    });
                 }
+            }
 
-                // Render Recent Orders Table
-                const tblOrders = document.getElementById('tbl-orders');
-                if (tblOrders) {
-                    tblOrders.innerHTML = '';
-                    const orders = data.orders || [];
-                    if (orders.length === 0) {
-                        tblOrders.innerHTML = `
-                            <tr class="text-slate-500">
-                                <td class="py-4 text-center" colspan="7">Aucune transaction enregistrée.</td>
+            // Render Recent Orders Table
+            const tblOrders = document.getElementById('tbl-orders');
+            if (tblOrders) {
+                tblOrders.innerHTML = '';
+                const orders = data.orders || [];
+                if (orders.length === 0) {
+                    tblOrders.innerHTML = `
+                        <tr class="text-slate-500">
+                            <td class="py-4 text-center" colspan="7">Aucune transaction enregistrée.</td>
+                        </tr>
+                    `;
+                } else {
+                    orders.forEach(o => {
+                        const date = o.timestamp ? new Date(o.timestamp * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
+                        const statusUpper = (o.status || "").toUpperCase();
+                        const statusColor = statusUpper === "FILLED" ? "text-emerald-400 font-black" : statusUpper === "REJECTED" ? "text-rose-500 font-bold" : "text-slate-400";
+                        const sideUpper = (o.side || "").toUpperCase();
+                        const sideColor = sideUpper === "BUY" ? "text-emerald-400 font-bold" : "text-rose-500 font-bold";
+                        
+                        tblOrders.innerHTML += `
+                            <tr class="text-slate-200 border-b border-slate-900 py-2">
+                                <td class="py-2 text-slate-500">${date}</td>
+                                <td class="font-bold">${o.symbol}</td>
+                                <td class="${sideColor}">${o.side}</td>
+                                <td class="text-slate-400">${o.order_type || "MARKET"}</td>
+                                <td>$${(o.price || 0.0).toFixed(2)}</td>
+                                <td>${(o.qty || 0.0).toFixed(4)}</td>
+                                <td class="${statusColor}">${o.status}</td>
                             </tr>
                         `;
-                    } else {
-                        orders.forEach(o => {
-                            const date = o.timestamp ? new Date(o.timestamp * 1000).toLocaleTimeString() : new Date().toLocaleTimeString();
-                            const statusUpper = (o.status || "").toUpperCase();
-                            const statusColor = statusUpper === "FILLED" ? "text-emerald-400 font-black" : statusUpper === "REJECTED" ? "text-rose-500 font-bold" : "text-slate-400";
-                            const sideUpper = (o.side || "").toUpperCase();
-                            const sideColor = sideUpper === "BUY" ? "text-emerald-400 font-bold" : "text-rose-500 font-bold";
-                            
-                            tblOrders.innerHTML += `
-                                <tr class="text-slate-200 border-b border-slate-900 py-2">
-                                    <td class="py-2 text-slate-500">${date}</td>
-                                    <td class="font-bold">${o.symbol}</td>
-                                    <td class="${sideColor}">${o.side}</td>
-                                    <td class="text-slate-400">${o.order_type || "MARKET"}</td>
-                                    <td>$${(o.price || 0.0).toFixed(2)}</td>
-                                    <td>${(o.qty || 0.0).toFixed(4)}</td>
-                                    <td class="${statusColor}">${o.status}</td>
-                                </tr>
-                            `;
-                        });
-                    }
+                    });
                 }
+            }
 
-                // OBI representation
-                const bids_qty = data.order_book.bids && data.order_book.bids.length > 0 ? data.order_book.bids[0][1] : 1.5;
-                const asks_qty = data.order_book.asks && data.order_book.asks.length > 0 ? data.order_book.asks[0][1] : 1.5;
-                const normalized_obi = bids_qty / (bids_qty + asks_qty + 1e-8);
-                
-                safeSetText('lbl-obi', ((normalized_obi - 0.5) * 2).toFixed(2));
-                const barObiLeft = document.getElementById('bar-obi-left');
-                if (barObiLeft) barObiLeft.style.width = `${(1.0 - normalized_obi)*100}%`;
-                const barObiRight = document.getElementById('bar-obi-right');
-                if (barObiRight) barObiRight.style.width = `${normalized_obi*100}%`;
+            // OBI representation
+            const bids_qty = data.order_book.bids && data.order_book.bids.length > 0 ? data.order_book.bids[0][1] : 1.5;
+            const asks_qty = data.order_book.asks && data.order_book.asks.length > 0 ? data.order_book.asks[0][1] : 1.5;
+            const normalized_obi = bids_qty / (bids_qty + asks_qty + 1e-8);
+            
+            safeSetText('lbl-obi', ((normalized_obi - 0.5) * 2).toFixed(2));
+            const barObiLeft = document.getElementById('bar-obi-left');
+            if (barObiLeft) barObiLeft.style.width = `${(1.0 - normalized_obi)*100}%`;
+            const barObiRight = document.getElementById('bar-obi-right');
+            if (barObiRight) barObiRight.style.width = `${normalized_obi*100}%`;
 
-                // Active strategies switches render
-                const stratSwitches = document.getElementById('strategy-switches');
-                if (stratSwitches && data.consensus && data.consensus.contributions) {
-                    stratSwitches.innerHTML = '';
-                    Object.keys(data.consensus.contributions).forEach(name => {
-                        const strat = data.consensus.contributions[name];
-                        stratSwitches.innerHTML += `
-                            <div class="flex items-center justify-between bg-slate-950/60 p-2.5 rounded-xl border border-slate-900">
-                                <div>
-                                    <span class="font-bold text-xs text-slate-300 block">${name}</span>
-                                    <span class="text-[9px] text-slate-500 font-bold">Poids: ${(strat.weight*100).toFixed(0)}% | Conf: ${(strat.confidence*100).toFixed(0)}%</span>
+            // Active strategies switches render
+            const stratSwitches = document.getElementById('strategy-switches');
+            if (stratSwitches && data.consensus && data.consensus.contributions) {
+                stratSwitches.innerHTML = '';
+                Object.keys(data.consensus.contributions).forEach(name => {
+                    const strat = data.consensus.contributions[name];
+                    stratSwitches.innerHTML += `
+                        <div class="flex items-center justify-between bg-slate-950/60 p-2.5 rounded-xl border border-slate-900">
+                            <div>
+                                <span class="font-bold text-xs text-slate-300 block">${name}</span>
+                                <span class="text-[9px] text-slate-500 font-bold">Poids: ${(strat.weight*100).toFixed(0)}% | Conf: ${(strat.confidence*100).toFixed(0)}%</span>
+                            </div>
+                            <div class="flex items-center space-x-2">
+                                <span class="text-[9px] font-black px-2 py-0.5 rounded ${strat.signal >= 0.1 ? 'bg-green-500/10 text-emerald-400' : strat.signal <= -0.1 ? 'bg-red-500/10 text-rose-500' : 'bg-slate-900 text-slate-600'}">
+                                    ${strat.signal >= 0 ? '+' : ''}${strat.signal.toFixed(2)}
+                                </span>
+                                <input type="checkbox" ${strat.weight > 0 ? 'checked' : ''} onchange="toggleStrategy('${name}', this.checked)" class="rounded-lg border-slate-800 text-cyan-400 focus:ring-0 bg-slate-900 w-4 h-4 cursor-pointer">
+                            </div>
+                        </div>
+                    `;
+                });
+            }
+
+            // Audit Logs
+            const logsContainer = document.getElementById('audit-logs');
+            if (logsContainer) {
+                logsContainer.innerHTML = '';
+                if (data.audit_logs) {
+                    data.audit_logs.forEach(log => {
+                        logsContainer.innerHTML += `
+                            <div class="p-2 bg-slate-950/80 rounded-xl border border-slate-900 flex flex-col space-y-1">
+                                <div class="flex justify-between text-slate-600 font-extrabold text-[9px]">
+                                    <span>[${log.action}]</span>
+                                    <span>${log.timestamp}</span>
                                 </div>
-                                <div class="flex items-center space-x-2">
-                                    <span class="text-[9px] font-black px-2 py-0.5 rounded ${strat.signal >= 0.1 ? 'bg-green-500/10 text-emerald-400' : strat.signal <= -0.1 ? 'bg-red-500/10 text-rose-500' : 'bg-slate-900 text-slate-600'}">
-                                        ${strat.signal >= 0 ? '+' : ''}${strat.signal.toFixed(2)}
-                                    </span>
-                                    <input type="checkbox" ${strat.weight > 0 ? 'checked' : ''} onchange="toggleStrategy('${name}', this.checked)" class="rounded-lg border-slate-800 text-cyan-400 focus:ring-0 bg-slate-900 w-4 h-4 cursor-pointer">
-                                </div>
+                                <p class="text-slate-300 text-[10px] font-semibold">${log.details}</p>
+                                ${log.hash ? `<p class="text-[9px] text-slate-700 truncate font-mono">Hash: ${log.hash}</p>` : ''}
                             </div>
                         `;
                     });
                 }
+            }
+        }
 
-                // Audit Logs
-                const logsContainer = document.getElementById('audit-logs');
-                if (logsContainer) {
-                    logsContainer.innerHTML = '';
-                    if (data.audit_logs) {
-                        data.audit_logs.forEach(log => {
-                            logsContainer.innerHTML += `
-                                <div class="p-2 bg-slate-950/80 rounded-xl border border-slate-900 flex flex-col space-y-1">
-                                    <div class="flex justify-between text-slate-600 font-extrabold text-[9px]">
-                                        <span>[${log.action}]</span>
-                                        <span>${log.timestamp}</span>
-                                    </div>
-                                    <p class="text-slate-300 text-[10px] font-semibold">${log.details}</p>
-                                    ${log.hash ? `<p class="text-[9px] text-slate-700 truncate font-mono">Hash: ${log.hash}</p>` : ''}
-                                </div>
-                            `;
-                        });
-                    }
-                }
+        // WS Message parser
+        ws.onmessage = function(event) {
+            try {
+                const data = JSON.parse(event.data);
+                processPayload(data);
             } catch (err) {
-                console.error("Error processing WebSocket message payload safely:", err);
+                console.error("Error processing WebSocket message safely:", err);
             }
         };
+
+        // Fail-Safe: If WebSocket cannot connect or disconnects, automatically activate REST API Fallback Polling!
+        let isPollingFallback = false;
+        let pollIntervalId = null;
+
+        const startRESTPollingFallback = () => {
+            if (isPollingFallback) return;
+            isPollingFallback = true;
+            console.warn("⚠️ WebSocket connection failed. Activating REST API fallback polling (1.5s interval)...");
+            
+            pollIntervalId = setInterval(async () => {
+                try {
+                    const resp = await fetch('/api/telemetry');
+                    if (resp.status === 200) {
+                        const data = await resp.json();
+                        processPayload(data);
+                    }
+                } catch (err) {
+                    console.error("REST Fallback Polling error:", err);
+                }
+            }, 1500);
+        };
+
+        ws.onerror = function() {
+            startRESTPollingFallback();
+        };
+
+        ws.onclose = function() {
+            startRESTPollingFallback();
+        };
+
+        // Timeout of 3.0s: if ws hasn't opened, trigger fallback
+        setTimeout(() => {
+            if (ws.readyState !== WebSocket.OPEN) {
+                startRESTPollingFallback();
+            }
+        }, 3000);
 
         // REST calls API
         async function toggleStrategy(name, enabled) {
