@@ -514,6 +514,20 @@ async def startup_event():
     
     # Load default copytrade allocations
     global STATE
+    
+    # Load persisted demo balance if exists to ensure complete state survival across restarts!
+    persisted_bal = db.get_setting("balance_demo")
+    if persisted_bal:
+        try:
+            val = float(persisted_bal)
+            STATE["balance_demo"] = val
+            STATE["initial_capital_demo"] = val
+            STATE["current_equity"] = val
+            STATE["equity_history_demo"] = [val]
+            logger.info(f"Loaded persisted demo balance from database: ${val:,.2f} USD")
+        except Exception as e:
+            logger.error(f"Failed to load persisted demo balance: {str(e)}")
+            
     allocations = db.get_copy_allocations()
     for trader_id, data in allocations.items():
         if data['active']:
@@ -1363,6 +1377,11 @@ async def set_demo_balance(payload: SetBalanceRequest):
     STATE["initial_capital_demo"] = payload.balance
     STATE["current_equity"] = payload.balance
     STATE["equity_history_demo"] = [payload.balance]
+    
+    # Persist in DB setting so it survives server restart and browser refresh!
+    db.save_setting("balance_demo", str(payload.balance))
+    db.save_setting("initial_capital_demo", str(payload.balance))
+    
     db.add_audit_log(
         "DEMO_BALANCE_RESET", 
         "127.0.0.1", 
