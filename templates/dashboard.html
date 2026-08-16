@@ -1,0 +1,779 @@
+<!DOCTYPE html>
+<html lang="fr" class="dark h-full bg-slate-950 text-slate-100">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Q-PORTAL | Bot de Trading IA Institutionnel</title>
+    <!-- Tailwind CSS CDN -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            darkMode: 'class',
+            theme: {
+                extend: {
+                    colors: {
+                        bloomberg: '#00ffff',
+                        neonGreen: '#39ff14',
+                        neonRed: '#ff073a',
+                        cyberViolet: '#b026ff',
+                        darkSlate: '#0a0f1d'
+                    }
+                }
+            }
+        }
+    </script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        .glow-border-cyan { box-shadow: 0 0 10px rgba(0, 255, 255, 0.25); border-color: rgba(0, 255, 255, 0.5); }
+        .glow-border-red { box-shadow: 0 0 10px rgba(255, 7, 58, 0.25); border-color: rgba(255, 7, 58, 0.5); }
+        .glow-text-cyan { text-shadow: 0 0 8px rgba(0, 255, 255, 0.6); }
+        .glow-text-green { text-shadow: 0 0 8px rgba(57, 255, 20, 0.6); }
+        .pulse-glow { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+        @keyframes pulse { 0%, 100% { opacity: 1; transform: scale(1); } 50% { opacity: .7; transform: scale(0.98); } }
+    </style>
+</head>
+<body class="h-full font-mono text-sm leading-relaxed overflow-x-hidden">
+
+    <div class="min-h-full flex flex-col">
+        <!-- HEADER -->
+        <header class="bg-slate-900 border-b border-slate-800 px-6 py-4 flex items-center justify-between">
+            <div class="flex items-center space-x-3">
+                <div class="w-8 h-8 rounded bg-gradient-to-tr from-cyan-500 to-violet-600 flex items-center justify-center text-slate-950 font-bold text-lg shadow-lg shadow-cyan-500/20">
+                    Q
+                </div>
+                <div>
+                    <h1 class="text-lg font-black tracking-widest text-slate-100 flex items-center">
+                        QUANT-PORTAL <span class="ml-2 text-xs font-bold bg-cyan-500/10 text-cyan-400 px-2 py-0.5 rounded border border-cyan-500/20">V3.8-SECURE</span>
+                    </h1>
+                    <p class="text-xxs text-slate-400 uppercase tracking-wider">Moteur IA Multi-Stratégies & Réplicateur Haute Fidélité</p>
+                </div>
+            </div>
+
+            <!-- CORE SWITCHES -->
+            <div class="flex items-center space-x-6">
+                <!-- Status Mode -->
+                <div class="flex items-center space-x-2 bg-slate-950/60 rounded-lg p-1.5 border border-slate-800">
+                    <button id="btn-mode-demo" onclick="promptModeChange('DEMO')" class="px-3 py-1.5 rounded font-bold text-xs transition-all bg-cyan-500 text-slate-950 shadow-md">
+                        DEMO MODE
+                    </button>
+                    <button id="btn-mode-real" onclick="promptModeChange('REAL')" class="px-3 py-1.5 rounded font-bold text-xs text-slate-400 hover:text-slate-200 transition-all">
+                        REAL TRADING
+                    </button>
+                </div>
+
+                <!-- Global Lock switch -->
+                <div id="kill-switch-banner" class="hidden flex items-center bg-red-950/40 text-red-400 border border-red-900/50 px-3 py-1.5 rounded-lg text-xs font-bold">
+                    <span class="w-2.5 h-2.5 rounded-full bg-red-500 mr-2 pulse-glow"></span>
+                    LOCK ENGAGED
+                </div>
+
+                <button onclick="engageKillSwitch()" class="bg-gradient-to-r from-red-600 to-rose-700 hover:from-red-700 hover:to-rose-800 text-slate-100 font-extrabold text-xs px-4 py-2.5 rounded shadow-lg shadow-red-600/20 uppercase tracking-widest border border-red-500/40 hover:scale-105 transition-all flex items-center space-x-2">
+                    <i data-lucide="skull" class="w-4 h-4"></i>
+                    <span>KILL SWITCH GLOBAL</span>
+                </button>
+                
+                <button id="btn-reset" onclick="resetBot()" class="hidden bg-slate-800 hover:bg-slate-700 text-slate-100 font-bold text-xs px-3 py-2 rounded border border-slate-700 transition-all">
+                    Reset Lock
+                </button>
+            </div>
+        </header>
+
+        <!-- MAIN LAYOUT -->
+        <main class="flex-1 grid grid-cols-12 gap-4 p-6 overflow-y-auto">
+
+            <!-- LEFT COL: Telemetry & Live charts (7 Columns) -->
+            <div class="col-span-12 lg:col-span-8 flex flex-col space-y-4">
+                
+                <!-- TOP WIDGETS CARDS -->
+                <div class="grid grid-cols-4 gap-4">
+                    <!-- Net Equity -->
+                    <div class="bg-slate-900/80 rounded-xl p-4 border border-slate-800 shadow-sm relative overflow-hidden">
+                        <div class="absolute top-0 right-0 w-24 h-24 bg-cyan-500/5 rounded-full blur-2xl"></div>
+                        <p class="text-xs text-slate-400 uppercase font-semibold">VALEUR ACTIVE DU COMPTE</p>
+                        <h3 id="val-equity" class="text-2xl font-black mt-2 text-cyan-400 glow-text-cyan">$0.00</h3>
+                        <p id="val-balance" class="text-xs text-slate-400 mt-1">Solde: $0.00</p>
+                    </div>
+
+                    <!-- Market Price -->
+                    <div class="bg-slate-900/80 rounded-xl p-4 border border-slate-800 shadow-sm relative overflow-hidden">
+                        <div class="absolute top-0 right-0 w-24 h-24 bg-green-500/5 rounded-full blur-2xl"></div>
+                        <p class="text-xs text-slate-400 uppercase font-semibold">PRIX DIRECT BTCUSDT</p>
+                        <h3 id="val-price" class="text-2xl font-black mt-2 text-green-400 glow-text-green">$0.00</h3>
+                        <div class="flex items-center space-x-1.5 mt-1 text-xxs font-bold text-slate-400">
+                            <span class="w-2 h-2 rounded-full bg-green-400 animate-ping"></span>
+                            <span>BINANCE FEED (100% REEL)</span>
+                        </div>
+                    </div>
+
+                    <!-- AI Market Regime -->
+                    <div class="bg-slate-900/80 rounded-xl p-4 border border-slate-800 shadow-sm relative overflow-hidden">
+                        <div class="absolute top-0 right-0 w-24 h-24 bg-violet-500/5 rounded-full blur-2xl"></div>
+                        <p class="text-xs text-slate-400 uppercase font-semibold">DÉTECTION RÉGIME HMM</p>
+                        <h3 id="val-regime" class="text-md font-black mt-3 text-violet-400 uppercase tracking-wider">Scanning...</h3>
+                        <p class="text-xxs text-slate-400 mt-1">Classification Gaussienne 4-Etats</p>
+                    </div>
+
+                    <!-- AI Consolidated Signal -->
+                    <div class="bg-slate-900/80 rounded-xl p-4 border border-slate-800 shadow-sm relative overflow-hidden">
+                        <div class="absolute top-0 right-0 w-24 h-24 bg-pink-500/5 rounded-full blur-2xl"></div>
+                        <p class="text-xs text-slate-400 uppercase font-semibold">MÉTA-SIGNAL CONSOLIDÉ</p>
+                        <div class="flex items-baseline mt-2 space-x-2">
+                            <h3 id="val-signal" class="text-2xl font-black text-rose-400">-0.00</h3>
+                            <span id="val-consensus" class="text-xxs text-slate-400">Confiance: 0%</span>
+                        </div>
+                        <div class="w-full bg-slate-950 rounded-full h-1.5 mt-1.5 overflow-hidden">
+                            <div id="bar-signal" class="bg-cyan-500 h-1.5 rounded-full" style="width: 50%"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- MAIN LIVE CHART (Bloomberg Dark style) -->
+                <div class="bg-slate-900/80 rounded-xl p-5 border border-slate-800 shadow-sm">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="font-bold text-slate-100 flex items-center">
+                            <i data-lucide="trending-up" class="w-4 h-4 mr-2 text-cyan-400"></i>
+                            <span>TELEMETRIE ET COURBE D'EQUITE TEMPS REEL</span>
+                        </h3>
+                        <div class="flex items-center space-x-2 text-xxs">
+                            <span class="flex items-center text-cyan-400"><span class="w-2 h-2 bg-cyan-400 rounded-full mr-1"></span> Equité</span>
+                            <span class="flex items-center text-slate-400"><span class="w-2 h-2 bg-slate-400 rounded-full mr-1"></span> Ticker</span>
+                        </div>
+                    </div>
+                    <div class="h-80 w-full relative">
+                        <canvas id="liveChart"></canvas>
+                    </div>
+                </div>
+
+                <!-- UNDERLYING EXPOSURE & LIVE POSITION -->
+                <div class="bg-slate-900/80 rounded-xl p-5 border border-slate-800">
+                    <h3 class="font-bold text-slate-100 mb-4 flex items-center">
+                        <i data-lucide="briefcase" class="w-4 h-4 mr-2 text-emerald-400"></i>
+                        <span>EXPOSITION ET POSITIONS OUVERTES</span>
+                    </h3>
+                    <div class="overflow-x-auto">
+                        <table class="w-full text-left border-collapse">
+                            <thead>
+                                <tr class="text-slate-400 border-b border-slate-800 text-xxs uppercase">
+                                    <th class="py-2.5">Actif</th>
+                                    <th>Quantité</th>
+                                    <th>Prix Moyen</th>
+                                    <th>Valeur notionnelle</th>
+                                    <th>PnL non-réalisé</th>
+                                    <th>Action</th>
+                                </tr>
+                            </thead>
+                            <tbody id="tbl-positions" class="divide-y divide-slate-800">
+                                <tr class="text-slate-500 text-xs">
+                                    <td class="py-4 text-center" colspan="6">Aucune exposition active détectée.</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+                </div>
+
+                <!-- ALGORITHMIC BACKTESTING HANDLER -->
+                <div class="bg-slate-900/80 rounded-xl p-5 border border-slate-800">
+                    <div class="flex items-center justify-between mb-4">
+                        <h3 class="font-bold text-slate-100 flex items-center">
+                            <i data-lucide="activity" class="w-4 h-4 mr-2 text-cyberViolet"></i>
+                            <span>BACKTESTING & VALIDATION HISTORIQUE EVENT-DRIVEN</span>
+                        </h3>
+                        <button onclick="runBacktest()" class="bg-cyberViolet hover:bg-violet-700 text-white font-extrabold text-xs px-4 py-2 rounded-lg border border-violet-500/20 transition-all flex items-center space-x-2">
+                            <i data-lucide="play" class="w-3.5 h-3.5"></i>
+                            <span>LANCER LE BACKTEST</span>
+                        </button>
+                    </div>
+                    <p class="text-slate-400 text-xs mb-4">
+                        Simule réellement les flux historiques de marché tick-by-tick sur l'actif de référence. Évalue l'impact de slippages de 0.05% et commissions de 0.1% sur la performance finale des modèles IA actuels.
+                    </p>
+                    
+                    <!-- Backtest Results HUD -->
+                    <div id="backtest-loading" class="hidden flex items-center justify-center p-8 bg-slate-950/40 rounded-lg border border-slate-800">
+                        <span class="w-6 h-6 rounded-full border-2 border-violet-500 border-t-transparent animate-spin mr-3"></span>
+                        <span class="font-bold text-slate-400">Simulation de marché en cours...</span>
+                    </div>
+
+                    <div id="backtest-results" class="hidden grid grid-cols-4 gap-4 p-4 bg-slate-950/60 rounded-xl border border-slate-800">
+                        <div class="border-r border-slate-800 pr-4">
+                            <p class="text-slate-400 text-xxs uppercase font-bold">Rendement total</p>
+                            <h4 id="bt-return" class="text-xl font-black text-emerald-400 mt-1">+0.00%</h4>
+                        </div>
+                        <div class="border-r border-slate-800 px-4">
+                            <p class="text-slate-400 text-xxs uppercase font-bold">Sharpe Ratio</p>
+                            <h4 id="bt-sharpe" class="text-xl font-black text-cyan-400 mt-1">0.00</h4>
+                        </div>
+                        <div class="border-r border-slate-800 px-4">
+                            <p class="text-slate-400 text-xxs uppercase font-bold">Max Drawdown</p>
+                            <h4 id="bt-drawdown" class="text-xl font-black text-rose-500 mt-1">0.00%</h4>
+                        </div>
+                        <div class="pl-4">
+                            <p class="text-slate-400 text-xxs uppercase font-bold">Profit Factor</p>
+                            <h4 id="bt-profitfactor" class="text-xl font-black text-yellow-500 mt-1">1.00</h4>
+                        </div>
+                    </div>
+                </div>
+
+            </div>
+
+            <!-- RIGHT COL: AI, Controls, & Copytrading (4 Columns) -->
+            <div class="col-span-12 lg:col-span-4 flex flex-col space-y-4">
+                
+                <!-- COUCHE IA / ML STATS -->
+                <div class="bg-slate-900/80 rounded-xl p-5 border border-slate-800">
+                    <h3 class="font-bold text-slate-100 mb-4 flex items-center">
+                        <i data-lucide="cpu" class="w-4 h-4 mr-2 text-violet-400"></i>
+                        <span>COUCHE D'ANALYSE IA / MACHINE LEARNING</span>
+                    </h3>
+                    <div class="space-y-4">
+                        <!-- OBI -->
+                        <div>
+                            <div class="flex justify-between text-xs mb-1">
+                                <span class="text-slate-400">Déséquilibre Carnet (OBI)</span>
+                                <span id="lbl-obi" class="font-bold text-slate-200">0.00</span>
+                            </div>
+                            <div class="w-full bg-slate-950 h-2 rounded overflow-hidden flex">
+                                <div id="bar-obi-left" class="bg-red-500 h-full" style="width: 50%"></div>
+                                <div id="bar-obi-right" class="bg-emerald-500 h-full" style="width: 50%"></div>
+                            </div>
+                        </div>
+
+                        <!-- Price forecast -->
+                        <div class="bg-slate-950 p-3 rounded-lg border border-slate-800">
+                            <div class="flex justify-between text-xs">
+                                <span class="text-slate-400">Prédiction Séquentielle (LSTM-like)</span>
+                                <span id="val-lstm" class="font-bold text-emerald-400">+0.00%</span>
+                            </div>
+                        </div>
+
+                        <!-- PPO RL Agent -->
+                        <div class="bg-slate-950 p-3 rounded-lg border border-slate-800">
+                            <div class="flex justify-between text-xs">
+                                <span class="text-slate-400">Agent RL (Proximal Policy Opt)</span>
+                                <span id="val-ppo" class="font-bold text-violet-400">0.00 (Neutre)</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- STRATEGIES CONFIGURATION -->
+                <div class="bg-slate-900/80 rounded-xl p-5 border border-slate-800">
+                    <h3 class="font-bold text-slate-100 mb-4 flex items-center">
+                        <i data-lucide="sliders" class="w-4 h-4 mr-2 text-cyan-400"></i>
+                        <span>STRATÉGIES ALGOS INTÉGRÉES</span>
+                    </h3>
+                    <div id="strategy-switches" class="space-y-3">
+                        <!-- Filled dynamically -->
+                        <div class="flex items-center justify-between bg-slate-950 p-2.5 rounded-lg border border-slate-800/60">
+                            <span class="font-semibold text-xs text-slate-300">Trend Following</span>
+                            <input type="checkbox" checked class="rounded border-slate-800 text-cyan-500 focus:ring-0 bg-slate-900">
+                        </div>
+                    </div>
+                </div>
+
+                <!-- RISK MANAGER CONTROLS -->
+                <div class="bg-slate-900/80 rounded-xl p-5 border border-slate-800">
+                    <h3 class="font-bold text-slate-100 mb-4 flex items-center">
+                        <i data-lucide="shield-alert" class="w-4 h-4 mr-2 text-rose-500"></i>
+                        <span>PARAMÈTRES DE CONTRÔLE DES RISQUES</span>
+                    </h3>
+                    <form id="form-risk" onsubmit="updateRisk(event)" class="space-y-3 text-xs">
+                        <div>
+                            <label class="text-slate-400 block mb-1">Max Daily Drawdown (%)</label>
+                            <input type="number" step="0.1" name="max_daily_drawdown_pct" class="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500" value="2.5">
+                        </div>
+                        <div>
+                            <label class="text-slate-400 block mb-1">Max Total Drawdown (%)</label>
+                            <input type="number" step="0.1" name="max_total_drawdown_pct" class="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500" value="8.0">
+                        </div>
+                        <div>
+                            <label class="text-slate-400 block mb-1">Max Exposure per Asset (%)</label>
+                            <input type="number" step="1" name="max_exposure_per_asset_pct" class="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500" value="25">
+                        </div>
+                        <div>
+                            <label class="text-slate-400 block mb-1">Conservative Kelly Ratio</label>
+                            <input type="number" step="0.05" name="fractional_kelly_multiplier" class="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500" value="0.15">
+                        </div>
+                        <button type="submit" class="w-full bg-gradient-to-r from-cyan-500 to-blue-600 hover:from-cyan-600 hover:to-blue-700 text-slate-950 font-black py-2 rounded uppercase tracking-wider transition-all">
+                            Sauvegarder les limites
+                        </button>
+                    </form>
+                </div>
+
+                <!-- API KEYS MANAGER -->
+                <div class="bg-slate-900/80 rounded-xl p-5 border border-slate-800">
+                    <h3 class="font-bold text-slate-100 mb-4 flex items-center">
+                        <i data-lucide="key" class="w-4 h-4 mr-2 text-yellow-500"></i>
+                        <span>CLES D'API EXCHANGE (CHIFFREES AES-256)</span>
+                    </h3>
+                    <form id="form-api-keys" onsubmit="saveAPIKeys(event)" class="space-y-3 text-xs">
+                        <div>
+                            <label class="text-slate-400 block mb-1">Exchange</label>
+                            <select name="exchange" class="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500">
+                                <option value="binance">Binance Futures</option>
+                                <option value="bybit">Bybit Perpetual</option>
+                            </select>
+                        </div>
+                        <div>
+                            <label class="text-slate-400 block mb-1">Exchange API Key</label>
+                            <input type="text" name="api_key" placeholder="Entrez la clé API" class="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500">
+                        </div>
+                        <div>
+                            <label class="text-slate-400 block mb-1">Exchange Secret Key</label>
+                            <input type="password" name="secret_key" placeholder="Entrez la clé secrète" class="w-full bg-slate-950 border border-slate-800 rounded px-2.5 py-1.5 text-slate-200 focus:outline-none focus:border-cyan-500">
+                        </div>
+                        <button type="submit" class="w-full bg-gradient-to-r from-yellow-500 to-amber-600 hover:from-yellow-600 hover:to-amber-700 text-slate-950 font-black py-2 rounded uppercase tracking-wider transition-all">
+                            Enregistrer & Chiffrer
+                        </button>
+                    </form>
+                </div>
+
+                <!-- COPYTRADING HUB -->
+                <div class="bg-slate-900/80 rounded-xl p-5 border border-slate-800">
+                    <h3 class="font-bold text-slate-100 mb-4 flex items-center">
+                        <i data-lucide="users" class="w-4 h-4 mr-2 text-indigo-400"></i>
+                        <span>MODULE DE COPYTRADING REPLICATEUR</span>
+                    </h3>
+                    <div id="copy-traders-list" class="space-y-4">
+                        <!-- Filled dynamically -->
+                    </div>
+                </div>
+
+                <!-- AUDIT LOGS / TELEGRAM NOTIFIER -->
+                <div class="bg-slate-900/80 rounded-xl p-5 border border-slate-800">
+                    <h3 class="font-bold text-slate-100 mb-3 flex items-center">
+                        <i data-lucide="file-text" class="w-4 h-4 mr-2 text-slate-400"></i>
+                        <span>JOURNAL D'AUDIT SÉCURISÉ</span>
+                    </h3>
+                    <div id="audit-logs" class="space-y-2 h-48 overflow-y-auto pr-1 text-xxs font-mono text-slate-400">
+                        <div class="p-1.5 bg-slate-950 rounded border border-slate-800">Initialisation du système...</div>
+                    </div>
+                </div>
+
+            </div>
+
+        </main>
+    </div>
+
+    <!-- 2FA CONFIRMATION MODAL -->
+    <div id="modal-2fa" class="hidden fixed inset-0 z-50 flex items-center justify-center bg-slate-950/85 backdrop-blur-sm">
+        <div class="bg-slate-900 border border-slate-800 rounded-2xl p-6 w-96 max-w-full shadow-2xl relative">
+            <h3 class="text-lg font-extrabold text-slate-100 mb-2 flex items-center">
+                <i data-lucide="shield-check" class="w-5 h-5 mr-2 text-yellow-500"></i>
+                <span>AUTHENTIFICATION REQUISE</span>
+            </h3>
+            <p id="modal-2fa-warning" class="text-xs text-slate-400 mb-4">
+                ATTENTION : Le passage en mode réel utilise vos clés API exchange pour passer de vrais ordres avec votre capital de trading. Saisissez le code de validation 2FA pour valider.
+            </p>
+            <div class="space-y-3">
+                <input type="password" id="input-2fa" placeholder="Entrez le code 2FA (Test: 123456)" class="w-full bg-slate-950 border border-slate-800 rounded px-3 py-2 text-slate-200 text-center font-bold tracking-widest focus:outline-none focus:border-cyan-500">
+                <div class="flex space-x-2">
+                    <button onclick="confirmModeChange()" class="flex-1 bg-yellow-500 hover:bg-yellow-600 text-slate-950 font-bold py-2 rounded text-xs uppercase tracking-wider">
+                        CONFIRMER SWITCH
+                    </button>
+                    <button onclick="close2FAModal()" class="px-4 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 font-bold rounded text-xs">
+                        Annuler
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- SCRIPT LOGIC (WebSockets & Charts) -->
+    <script>
+        lucide.createIcons();
+
+        let liveChartInstance = null;
+        let ws_protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+        let ws_url = ws_protocol + '//' + window.location.host + '/ws';
+        let ws = new WebSocket(ws_url);
+
+        let pendingTargetMode = null;
+
+        // Establish Chart.js
+        const ctx = document.getElementById('liveChart').getContext('2d');
+        liveChartInstance = new Chart(ctx, {
+            type: 'line',
+            data: {
+                labels: [],
+                datasets: [
+                    {
+                        label: "Équité du portefeuille ($)",
+                        data: [],
+                        borderColor: '#00ffff',
+                        backgroundColor: 'rgba(0, 255, 255, 0.04)',
+                        borderWidth: 2,
+                        tension: 0.15,
+                        fill: true,
+                        yAxisID: 'y'
+                    },
+                    {
+                        label: "Prix d'actif sous-jacent ($)",
+                        data: [],
+                        borderColor: 'rgba(156, 163, 175, 0.4)',
+                        borderWidth: 1.5,
+                        borderDash: [5, 5],
+                        tension: 0.1,
+                        fill: false,
+                        yAxisID: 'y1'
+                    }
+                ]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    x: {
+                        grid: { color: 'rgba(255, 255, 255, 0.03)' },
+                        ticks: { display: false }
+                    },
+                    y: {
+                        position: 'left',
+                        grid: { color: 'rgba(255, 255, 255, 0.05)' },
+                        ticks: { color: '#00ffff', font: { family: 'monospace' } }
+                    },
+                    y1: {
+                        position: 'right',
+                        grid: { drawOnChartArea: false },
+                        ticks: { color: '#9ca3af', font: { family: 'monospace' } }
+                    }
+                },
+                plugins: {
+                    legend: { display: false }
+                }
+            }
+        });
+
+        // WS Message parser
+        ws.onmessage = function(event) {
+            const data = JSON.parse(event.data);
+            
+            // Mode state buttons
+            if (data.mode === "DEMO") {
+                document.getElementById('btn-mode-demo').className = "px-3 py-1.5 rounded font-bold text-xs bg-cyan-500 text-slate-950 shadow-md";
+                document.getElementById('btn-mode-real').className = "px-3 py-1.5 rounded font-bold text-xs text-slate-400 hover:text-slate-200 transition-all";
+            } else {
+                document.getElementById('btn-mode-demo').className = "px-3 py-1.5 rounded font-bold text-xs text-slate-400 hover:text-slate-200 transition-all";
+                document.getElementById('btn-mode-real').className = "px-3 py-1.5 rounded font-bold text-xs bg-yellow-500 text-slate-950 shadow-md";
+            }
+
+            // Emergency banner check
+            if (data.kill_switch_active) {
+                document.getElementById('kill-switch-banner').classList.remove('hidden');
+                document.getElementById('btn-reset').classList.remove('hidden');
+            } else {
+                document.getElementById('kill-switch-banner').classList.add('hidden');
+                document.getElementById('btn-reset').classList.add('hidden');
+            }
+
+            // Cards telemetry
+            document.getElementById('val-equity').innerText = `$${data.current_equity.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+            document.getElementById('val-balance').innerText = `Solde: $${data.balance.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+            document.getElementById('val-price').innerText = `$${data.last_price.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
+            document.getElementById('val-regime').innerText = data.regime_name;
+            
+            // Colors for regimes
+            const regimeCard = document.getElementById('val-regime').parentElement;
+            if (data.regime_id === 0) {
+                document.getElementById('val-regime').className = "text-md font-black mt-3 text-emerald-400 uppercase tracking-wider";
+            } else if (data.regime_id === 1) {
+                document.getElementById('val-regime').className = "text-md font-black mt-3 text-red-500 uppercase tracking-wider";
+            } else if (data.regime_id === 2) {
+                document.getElementById('val-regime').className = "text-md font-black mt-3 text-cyan-400 uppercase tracking-wider";
+            } else {
+                document.getElementById('val-regime').className = "text-md font-black mt-3 text-yellow-500 uppercase tracking-wider";
+            }
+
+            // Signal Consensus representation
+            const sig = data.consensus.final_signal;
+            document.getElementById('val-signal').innerText = sig.toFixed(2);
+            document.getElementById('val-consensus').innerText = `Confiance: ${(data.consensus.consensus * 100).toFixed(0)}%`;
+            if (sig >= 0.1) {
+                document.getElementById('val-signal').className = "text-2xl font-black text-emerald-400";
+            } else if (sig <= -0.1) {
+                document.getElementById('val-signal').className = "text-2xl font-black text-rose-500";
+            } else {
+                document.getElementById('val-signal').className = "text-2xl font-black text-slate-400";
+            }
+
+            const val_perc = ((sig + 1) / 2) * 100;
+            document.getElementById('bar-signal').style.width = `${val_perc}%`;
+            if (sig >= 0.1) document.getElementById('bar-signal').className = "bg-emerald-500 h-1.5 rounded-full";
+            else if (sig <= -0.1) document.getElementById('bar-signal').className = "bg-rose-500 h-1.5 rounded-full";
+            else document.getElementById('bar-signal').className = "bg-slate-500 h-1.5 rounded-full";
+
+            // Update live metrics charts
+            liveChartInstance.data.labels = Array.from({length: data.price_history.length}, (_, i) => i);
+            liveChartInstance.data.datasets[0].data = data.equity_history;
+            liveChartInstance.data.datasets[1].data = data.price_history;
+            liveChartInstance.update();
+
+            // Open Positions Table
+            const tblPositions = document.getElementById('tbl-positions');
+            tblPositions.innerHTML = '';
+            if (data.positions.length === 0) {
+                tblPositions.innerHTML = `
+                    <tr class="text-slate-500 text-xs">
+                        <td class="py-4 text-center" colspan="6">Aucune exposition active détectée.</td>
+                    </tr>
+                `;
+            } else {
+                data.positions.forEach(p => {
+                    const value = p.qty * data.last_price;
+                    const pnl = (data.last_price - p.avg_price) * p.qty;
+                    const pnlPct = ((data.last_price - p.avg_price) / p.avg_price) * 100;
+                    
+                    tblPositions.innerHTML += `
+                        <tr class="text-xs text-slate-200 border-b border-slate-800">
+                            <td class="py-3 font-bold">${p.symbol}</td>
+                            <td>${p.qty.toFixed(4)}</td>
+                            <td>$${p.avg_price.toFixed(2)}</td>
+                            <td>$${value.toFixed(2)}</td>
+                            <td class="${pnl >= 0 ? 'text-emerald-400' : 'text-rose-500'} font-bold">
+                                $${pnl.toFixed(2)} (${pnlPct >= 0 ? '+' : ''}${pnlPct.toFixed(2)}%)
+                            </td>
+                            <td>
+                                <button onclick="engageKillSwitch()" class="text-xxs font-bold text-red-500 bg-red-500/10 px-2 py-1 rounded border border-red-500/20 hover:bg-red-500 hover:text-white transition-all">FLAT CLOSE</button>
+                            </td>
+                        </tr>
+                    `;
+                });
+            }
+
+            // OBI representation
+            const obi_val = data.ml_prediction_pct * 100; // Simulated book imbalance helper
+            const normalized_obi = data.order_book.bids.length > 0 ? (data.order_book.bids[0][1] / (data.order_book.bids[0][1] + data.order_book.asks[0][1])) : 0.5;
+            document.getElementById('lbl-obi').innerText = ((normalized_obi - 0.5) * 2).toFixed(2);
+            document.getElementById('bar-obi-left').style.width = `${(1.0 - normalized_obi)*100}%`;
+            document.getElementById('bar-obi-right').style.width = `${normalized_obi*100}%`;
+
+            document.getElementById('val-lstm').innerText = `${data.ml_prediction_pct >= 0 ? '+' : ''}${(data.ml_prediction_pct * 100).toFixed(4)}%`;
+            document.getElementById('val-ppo').innerText = `${data.ppo_action.toFixed(2)} (${Math.abs(data.ppo_action) < 0.2 ? 'Neutre' : data.ppo_action > 0 ? 'Long' : 'Short'})`;
+
+            // Active strategies switches render
+            const stratSwitches = document.getElementById('strategy-switches');
+            stratSwitches.innerHTML = '';
+            Object.keys(data.consensus.contributions).forEach(name => {
+                const strat = data.consensus.contributions[name];
+                stratSwitches.innerHTML += `
+                    <div class="flex items-center justify-between bg-slate-950 p-2.5 rounded-lg border border-slate-800/60">
+                        <div>
+                            <span class="font-bold text-xs text-slate-300 block">${name}</span>
+                            <span class="text-xxs text-slate-500">Poids: ${(strat.weight*100).toFixed(0)}% | Conf: ${(strat.confidence*100).toFixed(0)}%</span>
+                        </div>
+                        <div class="flex items-center space-x-2">
+                            <span class="text-xxs font-bold px-1.5 py-0.5 rounded ${strat.signal >= 0.1 ? 'bg-green-500/10 text-green-400' : strat.signal <= -0.1 ? 'bg-red-500/10 text-red-400' : 'bg-slate-800 text-slate-500'}">
+                                ${strat.signal >= 0 ? '+' : ''}${strat.signal.toFixed(2)}
+                            </span>
+                            <input type="checkbox" ${strat.weight > 0 ? 'checked' : ''} onchange="toggleStrategy('${name}', this.checked)" class="rounded border-slate-800 text-cyan-500 focus:ring-0 bg-slate-900 w-4 h-4 cursor-pointer">
+                        </div>
+                    </div>
+                `;
+            });
+
+            // Copy Traders dynamic listing
+            const tradersContainer = document.getElementById('copy-traders-list');
+            tradersContainer.innerHTML = '';
+            data.copy_traders.forEach(t => {
+                tradersContainer.innerHTML += `
+                    <div class="bg-slate-950 p-3 rounded-lg border border-slate-800/80 hover:border-slate-700/80 transition-all">
+                        <div class="flex items-center justify-between mb-2">
+                            <div>
+                                <h4 class="font-extrabold text-xs text-slate-200">${t.name}</h4>
+                                <span class="text-xxs text-cyan-400">Score SEQ: ${t.seq_score.toFixed(2)}</span>
+                            </div>
+                            <span class="text-xxs bg-slate-900 px-2 py-0.5 rounded border border-slate-800 text-slate-400 uppercase font-mono">Verified API</span>
+                        </div>
+                        <div class="grid grid-cols-3 gap-2 text-center text-xxs my-2.5 py-1.5 bg-slate-900/40 rounded border border-slate-900">
+                            <div>
+                                <p class="text-slate-500">ROI Annuel</p>
+                                <p class="font-bold text-emerald-400">+${t.roi_annual.toFixed(1)}%</p>
+                            </div>
+                            <div>
+                                <p class="text-slate-500">Win Rate</p>
+                                <p class="font-bold text-slate-200">${t.win_rate.toFixed(1)}%</p>
+                            </div>
+                            <div>
+                                <p class="text-slate-500">Max DD</p>
+                                <p class="font-bold text-rose-500">${t.max_drawdown.toFixed(1)}%</p>
+                            </div>
+                        </div>
+                        ${t.active_copied ? `
+                            <div class="flex items-center space-x-2 mt-2">
+                                <span class="flex-1 text-center py-1.5 rounded text-xxs font-bold bg-indigo-500/10 text-indigo-400 border border-indigo-500/20">Alloué: $${t.allocated_capital}</span>
+                                <button onclick="stopCopy('${t.trader_id}')" class="bg-rose-500/10 hover:bg-rose-500 text-rose-500 hover:text-white border border-rose-500/30 text-xxs font-black px-3 py-1.5 rounded transition-all">ARRETER</button>
+                            </div>
+                        ` : `
+                            <div class="flex items-center space-x-2 mt-2">
+                                <input type="number" id="alloc-${t.trader_id}" placeholder="Capital allocation" value="5000" class="flex-1 bg-slate-900 border border-slate-800 rounded px-2 py-1 text-xxs font-bold text-slate-200 focus:outline-none focus:border-cyan-500">
+                                <button onclick="startCopy('${t.trader_id}')" class="bg-indigo-600 hover:bg-indigo-700 text-white font-extrabold text-xxs px-4 py-1.5 rounded shadow-md transition-all">COPIER</button>
+                            </div>
+                        `}
+                    </div>
+                `;
+            });
+
+            // Audit Logs
+            const logsContainer = document.getElementById('audit-logs');
+            logsContainer.innerHTML = '';
+            data.audit_logs.forEach(log => {
+                logsContainer.innerHTML += `
+                    <div class="p-1.5 bg-slate-950 rounded border border-slate-900 flex flex-col space-y-0.5">
+                        <div class="flex justify-between text-slate-500 font-semibold">
+                            <span>[${log.action}]</span>
+                            <span>${log.timestamp}</span>
+                        </div>
+                        <p class="text-slate-300 font-mono">${log.details}</p>
+                    </div>
+                `;
+            });
+        };
+
+        // REST calls API
+
+        async function toggleStrategy(name, enabled) {
+            await fetch('/api/toggle-strategy', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name, enabled: enabled })
+            });
+        }
+
+        async function updateRisk(e) {
+            e.preventDefault();
+            const form = e.target;
+            const data = {
+                max_daily_drawdown_pct: parseFloat(form.max_daily_drawdown_pct.value) / 100,
+                max_total_drawdown_pct: parseFloat(form.max_total_drawdown_pct.value) / 100,
+                max_exposure_per_asset_pct: parseFloat(form.max_exposure_per_asset_pct.value) / 100,
+                fractional_kelly_multiplier: parseFloat(form.fractional_kelly_multiplier.value),
+                deviation_limit_pct: 0.05
+            };
+            const resp = await fetch('/api/risk-settings', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            const res = await resp.json();
+            alert(res.message);
+        }
+
+        async function saveAPIKeys(e) {
+            e.preventDefault();
+            const form = e.target;
+            const data = {
+                exchange: form.exchange.value,
+                api_key: form.api_key.value,
+                secret_key: form.secret_key.value
+            };
+            const resp = await fetch('/api/keys', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data)
+            });
+            const res = await resp.json();
+            alert(res.message);
+            form.api_key.value = '';
+            form.secret_key.value = '';
+        }
+
+        function promptModeChange(mode) {
+            pendingTargetMode = mode;
+            const modal = document.getElementById('modal-2fa');
+            const warningText = document.getElementById('modal-2fa-warning');
+            
+            if (mode === "REAL") {
+                warningText.innerText = "ATTENTION : Le passage en mode réel utilise vos clés API exchange pour passer de vrais ordres avec votre capital de trading. Saisissez le code de validation 2FA pour valider. (Code de test: 123456)";
+            } else {
+                warningText.innerText = "Saisissez le code de validation 2FA pour valider la transition vers le mode démo de simulation. (Code de test: 123456)";
+            }
+            modal.classList.remove('hidden');
+        }
+
+        function close2FAModal() {
+            document.getElementById('modal-2fa').classList.add('hidden');
+            document.getElementById('input-2fa').value = '';
+            pendingTargetMode = null;
+        }
+
+        async function confirmModeChange() {
+            const token = document.getElementById('input-2fa').value;
+            const resp = await fetch('/api/2fa-switch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ target_mode: pendingTargetMode, verification_2fa: token })
+            });
+            
+            if (resp.status === 200) {
+                const res = await resp.json();
+                close2FAModal();
+                alert(res.message);
+            } else {
+                const err = await resp.json();
+                alert(`Erreur: ${err.detail}`);
+            }
+        }
+
+        async function engageKillSwitch() {
+            const ok = confirm("URGENT : Voulez-vous déclencher le KILL SWITCH GLOBAL ? Cela vendra instantanément toutes vos expositions ouvertes et arrêtera le robot.");
+            if (ok) {
+                const resp = await fetch('/api/kill-switch', { method: 'POST' });
+                const res = await resp.json();
+                alert(res.message);
+            }
+        }
+
+        async function resetBot() {
+            const resp = await fetch('/api/reset-bot', { method: 'POST' });
+            const res = await resp.json();
+            alert(res.message);
+        }
+
+        async function startCopy(traderId) {
+            const allocInput = document.getElementById(`alloc-${traderId}`);
+            const allocValue = parseFloat(allocInput.value);
+            const resp = await fetch('/api/copy-trade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ trader_id: traderId, action: 'START', allocated_capital: allocValue })
+            });
+            const res = await resp.json();
+            if (resp.status === 200) {
+                alert(res.message);
+            } else {
+                alert(`Erreur: ${res.detail}`);
+            }
+        }
+
+        async function stopCopy(traderId) {
+            const resp = await fetch('/api/copy-trade', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ trader_id: traderId, action: 'STOP' })
+            });
+            const res = await resp.json();
+            alert(res.message);
+        }
+
+        async function runBacktest() {
+            document.getElementById('backtest-loading').classList.remove('hidden');
+            document.getElementById('backtest-results').classList.add('hidden');
+            
+            const resp = await fetch('/api/run-backtest', { method: 'POST' });
+            const data = await resp.json();
+            
+            document.getElementById('backtest-loading').classList.add('hidden');
+            document.getElementById('backtest-results').classList.remove('hidden');
+            
+            document.getElementById('bt-return').innerText = `${data.total_return_pct >= 0 ? '+' : ''}${data.total_return_pct.toFixed(2)}%`;
+            document.getElementById('bt-return').className = `text-xl font-black ${data.total_return_pct >= 0 ? 'text-emerald-400' : 'text-rose-500'} mt-1`;
+            
+            document.getElementById('bt-sharpe').innerText = data.sharpe_ratio.toFixed(2);
+            document.getElementById('bt-drawdown').innerText = `${data.max_drawdown_pct.toFixed(2)}%`;
+            document.getElementById('bt-profitfactor').innerText = data.profit_factor.toFixed(2);
+        }
+    </script>
+</body>
+</html>
