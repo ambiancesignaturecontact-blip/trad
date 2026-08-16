@@ -229,24 +229,39 @@ class TelegramBotManager:
             }
             translated_regime = hmm_translation.get(regime, regime)
             
+            # Calculate Live Benefits (PnL)
+            initial_cap = self.state.get("initial_capital_demo" if mode == "DEMO" else "initial_capital_real", 100000.0)
+            live_pnl_usd = equity - initial_cap if initial_cap > 0 else 0.0
+            live_pnl_pct = (live_pnl_usd / initial_cap) * 100.0 if initial_cap > 0 else 0.0
+            
+            pnl_color = "🟢" if live_pnl_usd >= 0 else "🔴"
+            pnl_sign = "+" if live_pnl_usd >= 0 else ""
+            
             pos_msg = ""
             if self.db:
                 positions = self.db.get_positions()
                 if positions:
-                    pos_msg = "\n📂 *Vos investissements actifs :*"
+                    pos_msg = "📂 <b>Vos investissements actifs :</b>"
                     for p in positions:
-                        pos_msg += f"\n- *{p['symbol']}* : {p['qty']:.4f} (Prix d'achat: ${p['avg_price']:.2f})"
+                        pos_msg += f"\n• <b>{p['symbol']}</b> : {p['qty']:.4f} (Prix d'achat: ${p['avg_price']:.2f})"
                 else:
-                    pos_msg = "\n📂 *Vos investissements actifs :* Aucun achat en cours. Votre argent dort en sécurité !"
+                    pos_msg = "📂 <b>Vos investissements actifs :</b> Aucun achat en cours. Votre argent dort en sécurité !"
             
             status_msg = (
-                f"📊 *RAPPORT DE SANTÉ DE VOTRE TIRELIRE ({mode})*\n"
-                f"-----------------------------------------\n"
-                f"⚙️ État du Bot : *{is_active}*\n"
-                f"🌦️ Météo du marché : *{translated_regime}*\n"
-                f"💰 Votre argent disponible : *${balance:,.2f}*\n"
-                f"📈 Valeur totale de votre tirelire : *${equity:,.2f}*\n"
-                f"{pos_msg}"
+                f"🏦 <b>QUANT-PORTAL • CONSOLE DE TRADING ({mode})</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🤖 État du Bot : <b>{is_active}</b>\n"
+                f"🌦️ Météo Marché : <b>{translated_regime}</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"💳 Capital Initial : <code>${initial_cap:,.2f} USD</code>\n"
+                f"💰 Solde disponible : <b>${balance:,.2f} USD</b>\n"
+                f"💎 Valeur Tirelire : <b>${equity:,.2f} USD</b>\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{pnl_color} <b>BÉNÉFICES EN DIRECT :</b> <b>{pnl_sign}${live_pnl_usd:,.2f} USD</b> (<code>{pnl_sign}{live_pnl_pct:.2f}%</code>)\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"{pos_msg}\n"
+                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                f"🖥️ <i>Terminal Web synchronisé. Utilisez les touches ci-dessous :</i>"
             )
             await self.send_push_notification(status_msg, reply_markup=keyboard)
             
