@@ -611,18 +611,18 @@ async def live_trading_loop():
                     
             corr_df = covariance_engine.calculate_correlation_matrix(real_returns_dict)
             STATE["covariance_matrix"] = corr_df.to_dict()
-            mock_returns_dict = real_returns_dict
+            active_returns_dict = real_returns_dict
         except Exception as e:
             logger.error(f"Failed to calculate covariance matrix: {str(e)}")
             corr_df = pd.DataFrame()
-            mock_returns_dict = {asset: np.zeros(30) for asset in STATE["assets"]}
+            active_returns_dict = {asset: np.zeros(30) for asset in STATE["assets"]}
             
         # Calculate daily Portfolio VaR/CVaR dynamically before the asset loop!
         positions = db.get_positions()
         var_metrics = covariance_engine.calculate_portfolio_var_cvar(
             active_positions=positions,
             corr_matrix=corr_df if corr_df is not None else pd.DataFrame(),
-            assets_returns_dict=mock_returns_dict
+            assets_returns_dict=active_returns_dict
         )
         portfolio_cvar_pct = var_metrics.get("portfolio_cvar_pct", 0.02)
         if portfolio_cvar_pct <= 0:
