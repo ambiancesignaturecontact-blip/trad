@@ -19,6 +19,15 @@ class RiskManager:
         self.peak_equity = 100000.0
         self.circuit_breaker_active = False
 
+    def set_initial_capital(self, capital):
+        """
+        Dynamically binds risk parameters to actual starting AUM.
+        Essential for micro-accounts (e.g. 50 Euros) and macro portfolios.
+        """
+        self.daily_start_equity = float(capital)
+        self.peak_equity = float(capital)
+        self.circuit_breaker_active = False
+
     def check_circuit_breaker(self, current_equity):
         """
         Monitors active equity curves. If a daily or lifetime drawdown
@@ -75,6 +84,11 @@ class RiskManager:
         
         # 3. Choose the most conservative size
         final_size_usd = min(kelly_size_usd, vol_size_usd)
+        
+        # MICRO ACCOUNT BOOST: If capital is under $500, we bypass the conservative Kelly scaling
+        # and allow a larger, more active size (up to 40% of capital) so that trades can be placed.
+        if capital < 500.0:
+            final_size_usd = max(final_size_usd, capital * 0.40)
         
         # Apply exposure cap (max_exposure_per_asset_pct)
         max_allowed_usd = capital * self.params['max_exposure_per_asset_pct']

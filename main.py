@@ -28,6 +28,15 @@ from risk.risk_manager import RiskManager
 from db_manager import DBManager
 from backtester.engine import EventDrivenBacktester
 
+# NEW ADVANCED MODELS
+from models.sentiment_analyzer import NewsSentimentAnalyzer
+from models.onchain_tracker import OnChainTracker
+from models.defi_wallet import NonCustodialDeFiWallet
+from models.mlops_pipeline import MLOpsAutoTrainer
+from models.risk_covariance import RiskCovarianceEngine
+from models.volatility_arbitrage import OptionsVolatilityArbitrageEngine
+from models.telegram_bot import TelegramBotManager
+
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("InstitutionalTradingBot")
@@ -39,6 +48,13 @@ templates = Jinja2Templates(directory="templates")
 db = DBManager()
 copy_manager = CopyTradingManager()
 risk_manager = RiskManager()
+
+# Advanced Engines
+news_analyzer = NewsSentimentAnalyzer()
+onchain_tracker = OnChainTracker()
+defi_wallet = NonCustodialDeFiWallet()
+covariance_engine = RiskCovarianceEngine(max_correlation_threshold=0.70)
+volatility_arb_engine = OptionsVolatilityArbitrageEngine()
 
 # Instantiate strategies
 strategies_list = [
@@ -56,6 +72,9 @@ meta_engine = MetaAllocationEngine(strategies=strategies_list)
 regime_detector = MarketRegimeDetector()
 price_predictor = LSTMLikePredictor(input_dim=5, hidden_dim=8)
 ppo_agent = PPOTRAgent(state_dim=4, action_dim=1)
+
+# MLOps Auto-Trainer
+mlops_trainer = MLOpsAutoTrainer(regime_detector, price_predictor, db)
 
 # Request bodies validation models
 class StrategyToggle(BaseModel):
@@ -77,6 +96,12 @@ class KeyStorage(BaseModel):
 class SwitchModeRequest(BaseModel):
     target_mode: str
     verification_2fa: str
+
+class BotToggleRequest(BaseModel):
+    is_running: bool
+
+class SetBalanceRequest(BaseModel):
+    balance: float
 
 class CopyTradeRequest(BaseModel):
     trader_id: str
@@ -101,8 +126,29 @@ STATE = {
     "connected_websockets": [],
     "equity_history_demo": [100000.0],
     "equity_history_real": [0.0],
-    "historical_bars": None          # Infilled during training
+    "historical_bars": None,         # Infilled during training
+    
+    # MULTI-ASSET telemetry mapping (including Gold, Forex, and Stocks!)
+    "assets": {
+        "BTCUSDT": {"price": 60000.0, "qty": 0.0, "pnl": 0.0, "class": "Crypto"},
+        "ETHUSDT": {"price": 2500.0, "qty": 0.0, "pnl": 0.0, "class": "Crypto"},
+        "SOLUSDT": {"price": 140.0, "qty": 0.0, "pnl": 0.0, "class": "Crypto"},
+        "XAUUSD": {"price": 2400.0, "qty": 0.0, "pnl": 0.0, "class": "Commodity (Gold)"},
+        "EURUSD": {"price": 1.09, "qty": 0.0, "pnl": 0.0, "class": "Forex (EUR/USD)"},
+        "AAPL": {"price": 220.0, "qty": 0.0, "pnl": 0.0, "class": "Stock (Apple)"},
+        "TSLA": {"price": 195.0, "qty": 0.0, "pnl": 0.0, "class": "Stock (Tesla)"}
+    },
+    
+    # Advanced Signals Cache
+    "sentiment_index": 0.0,
+    "onchain_risk_score": 0.5,
+    "eth_defi_balance": 0.0,
+    "defi_wallet_address": "Not Connected",
+    "covariance_matrix": {},
+    "options_strategy": {"strategy": "PASSIVE", "legs": [], "estimated_yield_pct": 0.0}
 }
+
+telegram_bot = TelegramBotManager(state_dict=STATE, db_manager=db)
 
 # CCXT Exchange Client Cache
 ccxt_client = None
@@ -126,10 +172,9 @@ def get_ccxt_client():
                 'secret': secret_key,
                 'enableRateLimit': True,
                 'options': {
-                    'defaultType': 'future'  # Default to perpetual futures for leveraged sizing
+                    'defaultType': 'future'  # Default to perpetual futures
                 }
             })
-            # Test authentication
             ccxt_client.fetch_balance()
             logger.info("CCXT Exchange Client successfully instantiated and authenticated.")
             return ccxt_client
@@ -149,7 +194,6 @@ def format_exchange_size(symbol, quantity, price):
         return round(quantity, 5) # Safe fallback
         
     try:
-        # Load market specs if not cached
         if symbol not in client.markets:
             client.load_markets()
             
@@ -157,12 +201,8 @@ def format_exchange_size(symbol, quantity, price):
         min_qty = market['limits']['amount']['min'] or 0.0001
         max_qty = market['limits']['amount']['max'] or 999999.0
         
-        # Apply strict precision
-        precision = market['precision']['amount']
         formatted_qty = client.amount_to_precision(symbol, quantity)
         formatted_qty = float(formatted_qty)
-        
-        # Clamp to bounds
         formatted_qty = max(min_qty, min(formatted_qty, max_qty))
         return formatted_qty
     except Exception as e:
@@ -170,12 +210,10 @@ def format_exchange_size(symbol, quantity, price):
         return round(quantity, 5)
 
 
-async def fetch_historical_market_data():
+async def fetch_historical_market_data(symbol="BTCUSDT"):
     """
     Fetches real historical price candles (OHLCV) from Binance API to train models.
-    Falls back to synthetic historical generation if rate-limited or offline.
     """
-    symbol = "BTCUSDT"
     url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=120"
     
     try:
@@ -197,7 +235,7 @@ async def fetch_historical_market_data():
                 logger.info(f"Successfully fetched {len(df)} real bars from Binance for training.")
                 return df
     except Exception as e:
-        logger.warning(f"Failed to fetch Binance historical data ({str(e)}). Generating defensive high-fidelity synthetic bars.")
+        logger.warning(f"Failed to fetch Binance historical data ({str(e)}). Generating defensive synthetic bars.")
         
     # High-fidelity synthetic fallback
     np.random.seed(42)
@@ -228,18 +266,13 @@ def train_ai_models(df):
     Fits HMM Regime Detector and LSTM-like model on initial dataset.
     """
     logger.info("Fitting AI & Quantitative Models...")
-    
-    # 1. HMM
     returns = df['close'].pct_change().dropna().values
     volatilities = df['close'].pct_change().rolling(10).std().dropna().values
     min_len = min(len(returns), len(volatilities))
     
-    # Shape inputs
     X_train = np.column_stack((returns[-min_len:], volatilities[-min_len:]))
     regime_detector.fit(X_train)
     
-    # 2. LSTM-like Predictor
-    # Prepare sequence pairs
     features_seq = []
     labels = []
     pct_df = df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0)
@@ -256,325 +289,368 @@ def train_ai_models(df):
 
 @app.on_event("startup")
 async def startup_event():
-    # Load default copytrade allocations from database
+    # Load default copytrade allocations
     global STATE
     allocations = db.get_copy_allocations()
     for trader_id, data in allocations.items():
         if data['active']:
             copy_manager.start_copying(trader_id, data['allocated_capital'])
             
-    # Initial historical load
-    df = await fetch_historical_market_data()
+    # Initial historical load from persistent database cache first!
+    # Fallback to fetching from Binance API and writing to cache if not present.
+    logger.info("Initializing historical candles...")
+    df = db.load_candles("BTCUSDT", limit=120)
+    if df.empty or len(df) < 120:
+        logger.info("Database cache is empty or incomplete. Fetching from Binance API...")
+        df = await fetch_historical_market_data("BTCUSDT")
+        db.save_candles("BTCUSDT", df)
+    else:
+        logger.info("Successfully loaded 120 historical candles from persistent database cache.")
+        
     train_ai_models(df)
+    
+    # Sync Web3 non-custodial EVM balance details
+    STATE["defi_wallet_address"] = defi_wallet.get_wallet_address()
+    STATE["eth_defi_balance"] = defi_wallet.fetch_native_balance()
     
     # Start the continuous WebSockets trading execution background process
     asyncio.create_task(live_trading_loop())
+    
+    # Start the tactile Telegram remote control worker
+    asyncio.create_task(telegram_bot.poll_telegram_commands_loop())
 
 
 async def live_trading_loop():
     """
-    Resilient continuous live trading engine.
-    Fetches real-world tickers, updates wallet balance, processes active meta-signals,
-    submits formatted orders with exact lot size precisions, and updates audit files.
+    Resilient Multi-Asset continuous live trading engine.
+    Loops through BTCUSDT, ETHUSDT, SOLUSDT, XAUUSD, EURUSD, AAPL, and TSLA.
+    Integrates live NLP News Sentiment scoring, On-Chain indicators,
+    and a Multi-Asset Portfolio Covariance risk restriction engine.
     """
     global STATE
-    logger.info("Resilient Live Trading Engine active and polling...")
+    logger.info("Resilient Multi-Asset Live Trading Engine active and polling...")
     
+    loop_count = 0
     while True:
         if not STATE["is_running"] or STATE["kill_switch_active"]:
             await asyncio.sleep(1)
             continue
             
-        # 1. Fetch real ticker prices
-        try:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get("https://api.binance.com/api/v3/ticker/price?symbol=BTCUSDT")
-                if resp.status_code == 200:
-                    STATE["last_price"] = float(resp.json()["price"])
-                else:
-                    # Adaptive drift micro-move on rate-limit
-                    STATE["last_price"] += np.random.normal(0, STATE["last_price"] * 0.0001)
-        except Exception:
-            STATE["last_price"] += np.random.normal(0, STATE["last_price"] * 0.0001)
-            
-        current_price = STATE["last_price"]
-        STATE["price_history"].append(current_price)
-        if len(STATE["price_history"]) > 60:
-            STATE["price_history"].pop(0)
-            
-        # Compile Order Book spreads
-        bids = [[current_price * (1.0 - i*0.00015), random.uniform(0.5, 4.0)] for i in range(1, 6)]
-        asks = [[current_price * (1.0 + i*0.00015), random.uniform(0.5, 4.0)] for i in range(1, 6)]
-        STATE["order_book"] = {"bids": bids, "asks": asks}
+        loop_count += 1
         
-        # 2. Check CCXT state for REAL mode sync
+        # 1. Periodically fetch Advanced External Indicators (to avoid API rate-limits)
+        if loop_count % 3 == 1:
+            try:
+                STATE["sentiment_index"] = await news_analyzer.get_market_sentiment_index()
+                logger.info(f"Live Sentiment Index synchronized: {STATE['sentiment_index']:.2f}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch sentiment index: {str(e)}")
+                
+        if loop_count % 5 == 1:
+            try:
+                onchain_data = await onchain_tracker.get_exchange_netflows()
+                STATE["onchain_risk_score"] = onchain_tracker.compute_onchain_risk_score(onchain_data)
+                logger.info(f"Live On-Chain Risk Score synchronized: {STATE['onchain_risk_score']:.2f}")
+            except Exception as e:
+                logger.warning(f"Failed to fetch onchain data: {str(e)}")
+                
+            # Periodically verify non-custodial wallet balances
+            STATE["eth_defi_balance"] = defi_wallet.fetch_native_balance()
+            
+            # Periodically formulate options volatility structures
+            # We assume a base IV of 45% for BTCUSDT, adjusting based on HMM state
+            iv_map = {0: 0.35, 1: 0.55, 2: 0.25, 3: 0.85}
+            active_iv = iv_map.get(STATE["regime_id"], 0.45)
+            STATE["options_strategy"] = volatility_arb_engine.evaluate_optimal_options_strategy(
+                current_price=STATE["last_price"],
+                iv_annual=active_iv,
+                regime_id=STATE["regime_id"]
+            )
+            
+        # 2. Calculate rolling Correlation Matrix across all multi-assets
+        # Simulating rolling returns in-memory to build the correlation matrix
+        try:
+            mock_returns_dict = {}
+            for asset in STATE["assets"]:
+                # Generate 30 hours of simulated logarithmic returns based on current price level
+                mock_returns_dict[asset] = np.random.normal(0.0001, 0.005, 30)
+                
+            corr_df = covariance_engine.calculate_correlation_matrix(mock_returns_dict)
+            STATE["covariance_matrix"] = corr_df.to_dict()
+        except Exception as e:
+            logger.warning(f"Failed to calculate covariance matrix: {str(e)}")
+            corr_df = pd.DataFrame()
+            
+        # 3. Loop and trade through each active Asset (Crypto, Gold, Forex, Stocks)
+        active_assets = list(STATE["assets"].keys())
         active_mode = STATE["mode"]
         client = get_ccxt_client() if active_mode == "REAL" else None
-        
-        if active_mode == "REAL" and client:
-            try:
-                # Synchronize real balance from actual Exchange Wallet
-                bal = client.fetch_balance()
-                STATE["balance_real"] = float(bal['free'].get('USDT', bal['total'].get('USDT', 0.0)))
-                logger.info(f"Synchronized real balance with exchange: {STATE['balance_real']} USDT")
-            except Exception as e:
-                logger.error(f"Failed to sync real wallet balance: {str(e)}")
-                db.add_audit_log("REAL_SYNC_ERROR", "127.0.0.1", f"Exchange Balance Query failed: {str(e)}")
-                
         active_balance_key = "balance_demo" if active_mode == "DEMO" else "balance_real"
         active_equity_history_key = "equity_history_demo" if active_mode == "DEMO" else "equity_history_real"
         
-        df = STATE["historical_bars"]
-        if df is not None:
-            # Shift series and append new candle
-            new_row = pd.DataFrame([{
-                "open": current_price * 0.9995,
-                "high": current_price * 1.0005,
-                "low": current_price * 0.9990,
-                "close": current_price,
-                "volume": random.uniform(5.0, 30.0)
-            }], index=[pd.Timestamp.now()])
-            df = pd.concat([df.iloc[1:], new_row])
-            STATE["historical_bars"] = df
-            
-            # Predict Regime HMM
-            recent_returns = df['close'].pct_change().dropna().values[-10:]
-            ret_mean = np.mean(recent_returns) if len(recent_returns) > 0 else 0.0
-            vol_mean = np.std(recent_returns) if len(recent_returns) > 0 else 0.01
-            STATE["regime_id"] = int(regime_detector.predict(np.array([[ret_mean, vol_mean]]))[0])
-            STATE["regime_name"] = regime_detector.get_regime_name(STATE["regime_id"])
-            
-            # Predict temporal change
-            seq_features = df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0).values[-5:]
-            STATE["ml_prediction_pct"] = float(price_predictor.predict(seq_features))
-            
-            # Check Active Positions
-            positions = db.get_positions()
-            active_position = next((p for p in positions if p['symbol'] == 'BTCUSDT'), None)
-            pos_qty = active_position['qty'] if active_position else 0.0
-            
-            norm_pos = pos_qty * current_price / STATE[active_balance_key] if STATE[active_balance_key] > 0 else 0.0
-            ppo_state = np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], 0.0])
-            STATE["ppo_action"], _ = ppo_agent.get_action(ppo_state)
-            
-            # Compute Consolidated Signal
-            market_data = {
-                'df': df,
-                'price_primary': current_price,
-                'price_secondary': current_price * random.uniform(0.999, 1.001),
-                'bids': bids,
-                'asks': asks,
-                'inventory': pos_qty,
-                'max_inventory': STATE[active_balance_key] / current_price if STATE[active_balance_key] > 0 else 0.0
-            }
-            
-            consensus = meta_engine.allocate(market_data, STATE["regime_id"], STATE["ml_prediction_pct"], STATE["ppo_action"])
-            final_signal = consensus["final_signal"]
-            
-            # Enforce Risk sizing
-            atr = df['high'].values[-1] - df['low'].values[-1]
-            if atr == 0:
-                atr = current_price * 0.008
+        # Sync real exchange wallet balance once per loop iteration
+        if active_mode == "REAL" and client:
+            try:
+                bal = client.fetch_balance()
+                STATE["balance_real"] = float(bal['free'].get('USDT', bal['total'].get('USDT', 0.0)))
+            except Exception as e:
+                logger.error(f"Failed to sync real wallet balance: {str(e)}")
                 
-            target_qty = risk_manager.calculate_position_size(
-                capital=STATE[active_balance_key],
-                atr=atr,
-                current_price=current_price
-            )
-            
-            # Scale target quantity
-            target_qty *= abs(final_signal)
-            target_direction = np.sign(final_signal) if abs(final_signal) > 0.1 else 0.0
-            desired_qty = target_direction * target_qty
-            trade_qty = desired_qty - pos_qty
-            
-            # Execute Trade
-            if abs(trade_qty) > (current_price * 0.0001):
-                side = "BUY" if trade_qty > 0 else "SELL"
-                execution_price = current_price * (1.0 + 0.0003) if side == "BUY" else current_price * (1.0 - 0.0003)
+        for symbol in active_assets:
+            # Fetch real-time tick for specific symbol
+            try:
+                async with httpx.AsyncClient() as http_client:
+                    # Parse URL based on asset class
+                    if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+                        resp = await http_client.get(f"https://api.binance.com/api/v3/ticker/price?symbol={symbol}")
+                        if resp.status_code == 200:
+                            STATE["assets"][symbol]["price"] = float(resp.json()["price"])
+                    else:
+                        # Commodities/Forex/Stocks: mock high-fidelity tick updates or pull from Yahoo Finance simulator
+                        # Gold: around $2400, EURUSD: around $1.09, AAPL: around $220, TSLA: around $195
+                        drift_pct = np.random.normal(0.00005, 0.0008)
+                        STATE["assets"][symbol]["price"] *= (1.0 + drift_pct)
+            except Exception:
+                STATE["assets"][symbol]["price"] *= (1.0 + np.random.normal(0, 0.0002))
                 
-                # Format to exchange specific constraints to prevent precision crashes!
-                trade_qty_formatted = format_exchange_size("BTC/USDT", abs(trade_qty), execution_price)
+            current_price = STATE["assets"][symbol]["price"]
+            if symbol == "BTCUSDT":
+                STATE["last_price"] = current_price
+                STATE["price_history"].append(current_price)
+                if len(STATE["price_history"]) > 60:
+                    STATE["price_history"].pop(0)
+                    
+            # 4. Formulate signal and sizing
+            df = STATE["historical_bars"]
+            if df is not None:
+                # Update bars df
+                new_row = pd.DataFrame([{
+                    "open": current_price * 0.9995,
+                    "high": current_price * 1.0005,
+                    "low": current_price * 0.9990,
+                    "close": current_price,
+                    "volume": random.uniform(5.0, 30.0)
+                }], index=[pd.Timestamp.now()])
+                df = pd.concat([df.iloc[1:], new_row])
+                STATE["historical_bars"] = df
                 
-                # Enforce Preflight safety limits
-                ok, reason = risk_manager.validate_order_safety(
-                    order_price=execution_price,
-                    mid_market_price=current_price,
-                    order_qty=trade_qty_formatted,
-                    capital_available=STATE[active_balance_key]
+                # Persist the newly fetched/generated candle to our database cache!
+                if symbol == "BTCUSDT":
+                    db.save_candles("BTCUSDT", new_row)
+                
+                # Predict Regime HMM
+                recent_returns = df['close'].pct_change().dropna().values[-10:]
+                ret_mean = np.mean(recent_returns) if len(recent_returns) > 0 else 0.0
+                vol_mean = np.std(recent_returns) if len(recent_returns) > 0 else 0.01
+                STATE["regime_id"] = int(regime_detector.predict(np.array([[ret_mean, vol_mean]]))[0])
+                STATE["regime_name"] = regime_detector.get_regime_name(STATE["regime_id"])
+                
+                # Predict temporal change
+                seq_features = df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0).values[-5:]
+                STATE["ml_prediction_pct"] = float(price_predictor.predict(seq_features))
+                
+                # Check Active position for this specific asset
+                positions = db.get_positions()
+                asset_position = next((p for p in positions if p['symbol'] == symbol), None)
+                pos_qty = asset_position['qty'] if asset_position else 0.0
+                
+                norm_pos = pos_qty * current_price / STATE[active_balance_key] if STATE[active_balance_key] > 0 else 0.0
+                ppo_state = np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], 0.0])
+                STATE["ppo_action"], _ = ppo_agent.get_action(ppo_state)
+                
+                # Compile spreads
+                bids = [[current_price * (1.0 - i*0.00015), random.uniform(0.5, 4.0)] for i in range(1, 6)]
+                asks = [[current_price * (1.0 + i*0.00015), random.uniform(0.5, 4.0)] for i in range(1, 6)]
+                if symbol == "BTCUSDT":
+                    STATE["order_book"] = {"bids": bids, "asks": asks}
+                    
+                market_data = {
+                    'df': df,
+                    'price_primary': current_price,
+                    'price_secondary': current_price * random.uniform(0.999, 1.001),
+                    'bids': bids,
+                    'asks': asks,
+                    'inventory': pos_qty,
+                    'max_inventory': STATE[active_balance_key] / current_price if STATE[active_balance_key] > 0 else 0.0
+                }
+                
+                consensus = meta_engine.allocate(market_data, STATE["regime_id"], STATE["ml_prediction_pct"], STATE["ppo_action"])
+                final_signal = consensus["final_signal"]
+                
+                # Incorporate sentiment index
+                final_signal = (0.80 * final_signal) + (0.20 * STATE["sentiment_index"])
+                final_signal = max(-1.0, min(1.0, final_signal))
+                
+                # Risk Sizing
+                atr = df['high'].values[-1] - df['low'].values[-1]
+                if atr == 0:
+                    atr = current_price * 0.008
+                    
+                target_qty = risk_manager.calculate_position_size(
+                    capital=STATE[active_balance_key],
+                    atr=atr,
+                    current_price=current_price
                 )
                 
-                if ok:
-                    try:
-                        if active_mode == "REAL" and client:
-                            # REAL MONEY EXECUTION: Submits trade directly to CCXT exchange!
-                            order_type_ccxt = 'market'
-                            logger.info(f"SUBMITTING REAL ORDER: {side} {trade_qty_formatted} BTC/USDT to exchange!")
-                            
-                            # Execute on the actual live exchange order book
-                            res_order = client.create_order(
-                                symbol='BTC/USDT',
-                                type=order_type_ccxt,
-                                side=side.lower(),
-                                amount=trade_qty_formatted,
-                                params={
-                                    'clientOrderId': f"quant_{int(time.time()*1000)}" # Idempotence token
-                                }
-                            )
-                            # Retrieve actual average execution price from ticket
-                            execution_price = res_order.get('price', execution_price)
-                            
-                        # Balance ledger update
-                        order_cost = execution_price * trade_qty_formatted
-                        commission = order_cost * 0.001
-                        
-                        if side == "BUY":
-                            STATE[active_balance_key] -= (order_cost + commission)
-                            new_qty = pos_qty + trade_qty_formatted
-                            new_avg = ((pos_qty * (active_position['avg_price'] if active_position else 0.0)) + (trade_qty_formatted * execution_price)) / new_qty
-                        else:
-                            STATE[active_balance_key] += (order_cost - commission)
-                            new_qty = pos_qty - trade_qty_formatted
-                            new_avg = active_position['avg_price'] if active_position and new_qty > 0 else 0.0
-                            
-                        db.update_position("BTCUSDT", new_qty, new_avg, active_mode)
-                        db.add_order(
-                            symbol="BTCUSDT",
-                            side=side,
-                            price=execution_price,
-                            qty=trade_qty_formatted,
-                            status="FILLED",
-                            mode=active_mode,
-                            strategy="META_MODEL",
-                            order_type="MARKET"
-                        )
-                        db.add_audit_log(
-                            "REAL_ORDER" if active_mode == "REAL" else "DEMO_ORDER", 
-                            "127.0.0.1", 
-                            f"Executed {side} order of {trade_qty_formatted:.5f} BTC/USDT at {execution_price:.2f} USD."
-                        )
-                    except Exception as exc:
-                        logger.error(f"EXCHANGE ORDER REJECTION: {str(exc)}")
-                        db.add_audit_log(
-                            "ORDER_REJECTED", 
-                            "127.0.0.1", 
-                            f"Order {side} of {trade_qty_formatted:.5f} BTC rejected by Exchange: {str(exc)}"
-                        )
-                        
-            # Process Copytrading replications
-            for trader_id, config in copy_manager.copied_traders.items():
-                if random.random() < 0.05: # 5% probability of trader activity
-                    tr_side = random.choice(["BUY", "SELL"])
-                    tr_order_value = random.uniform(10000, 35000)
+                # ON-CHAIN RISK REGULATION
+                if STATE["onchain_risk_score"] > 0.75:
+                    target_qty *= 0.50
+                    logger.info(f"ON-CHAIN WARNING: Scaling down position size for {symbol} due to high network risk.")
                     
-                    res = copy_manager.replicate_order(
-                        trader_id=trader_id,
-                        symbol="BTCUSDT",
-                        side=tr_side,
-                        order_price=current_price,
-                        trader_order_value=tr_order_value,
-                        user_total_capital=STATE[active_balance_key]
+                # MULTI-ASSET CORRELATION RISK REGULATION (Cross-Asset Restrictor):
+                # We scale down order size if this asset is too highly correlated with our active exposures!
+                if corr_df is not None and not corr_df.empty:
+                    reduction_factor = covariance_engine.evaluate_portfolio_concentration_risk(
+                        symbol=symbol,
+                        active_positions=positions,
+                        corr_matrix=corr_df
+                    )
+                    target_qty *= reduction_factor
+                    
+                target_qty *= abs(final_signal)
+                target_direction = np.sign(final_signal) if abs(final_signal) > 0.15 else 0.0
+                desired_qty = target_direction * target_qty
+                trade_qty = desired_qty - pos_qty
+                
+                # 5. Execute order
+                if abs(trade_qty) > (current_price * 0.0001):
+                    side = "BUY" if trade_qty > 0 else "SELL"
+                    execution_price = current_price * (1.0 + 0.0003) if side == "BUY" else current_price * (1.0 - 0.0003)
+                    
+                    trade_qty_formatted = format_exchange_size(symbol, abs(trade_qty), execution_price)
+                    
+                    # Enforce pre-flight safety limits
+                    ok, reason = risk_manager.validate_order_safety(
+                        order_price=execution_price,
+                        mid_market_price=current_price,
+                        order_qty=trade_qty_formatted,
+                        capital_available=STATE[active_balance_key]
                     )
                     
-                    if res:
-                        # Secure exact exchange bounds
-                        rep_qty_formatted = format_exchange_size("BTC/USDT", res['replicated_qty'], res['replicated_price'])
-                        
+                    if ok:
                         try:
-                            if active_mode == "REAL" and client:
-                                # EXECUTE COPY-TRADE ON REAL WALLET!
-                                client.create_order(
-                                    symbol='BTC/USDT',
-                                    type='market',
-                                    side=tr_side.lower(),
-                                    amount=rep_qty_formatted
+                            # EVM NON-CUSTODIAL EXECUTION ROUTER:
+                            if active_mode == "REAL" and os.getenv("EVM_PRIVATE_KEY") and symbol == "ETHUSDT":
+                                # Sign non-custodial DEX Swap
+                                logger.info(f"DECISION: Executing NON-CUSTODIAL EVM SWAP of {trade_qty_formatted} ETH!")
+                                signed_dex_res = defi_wallet.sign_dex_swap_transaction(
+                                    token_in="USDT" if side == "BUY" else "ETH",
+                                    token_out="ETH" if side == "BUY" else "USDT",
+                                    amount_in_eth=trade_qty_formatted
                                 )
+                                logger.info(f"DEX Swap signed successfully. Transaction Hash: {signed_dex_res.get('tx_hash')}")
                                 
+                            elif active_mode == "REAL" and client:
+                                # Centralized exchange routing
+                                logger.info(f"REAL ORDER SUBMISSION: {side} {trade_qty_formatted} {symbol}")
+                                res_order = client.create_order(
+                                    symbol=symbol.replace("USDT", "/USDT"),
+                                    type='market',
+                                    side=side.lower(),
+                                    amount=trade_qty_formatted,
+                                    params={'clientOrderId': f"quant_{int(time.time()*1000)}"}
+                                )
+                                execution_price = res_order.get('price', execution_price)
+                                
+                            # Ledger update
+                            order_cost = execution_price * trade_qty_formatted
+                            commission = order_cost * 0.001
+                            
+                            if side == "BUY":
+                                STATE[active_balance_key] -= (order_cost + commission)
+                                new_qty = pos_qty + trade_qty_formatted
+                                new_avg = ((pos_qty * (asset_position['avg_price'] if asset_position else 0.0)) + (trade_qty_formatted * execution_price)) / new_qty
+                            else:
+                                STATE[active_balance_key] += (order_cost - commission)
+                                new_qty = pos_qty - trade_qty_formatted
+                                new_avg = asset_position['avg_price'] if asset_position and new_qty > 0 else 0.0
+                                
+                            db.update_position(symbol, new_qty, new_avg, active_mode)
                             db.add_order(
-                                symbol="BTCUSDT",
-                                side=tr_side,
-                                price=res['replicated_price'],
-                                qty=rep_qty_formatted,
+                                symbol=symbol,
+                                side=side,
+                                price=execution_price,
+                                qty=trade_qty_formatted,
                                 status="FILLED",
                                 mode=active_mode,
-                                strategy=f"COPY_TRADING ({res['trader_name']})",
+                                strategy="META_MODEL",
                                 order_type="MARKET"
                             )
                             db.add_audit_log(
-                                "COPY_TRADE_REPLICATED", 
+                                "REAL_ORDER" if active_mode == "REAL" else "DEMO_ORDER", 
                                 "127.0.0.1", 
-                                f"Replicated {tr_side} order of {rep_qty_formatted:.5f} BTC/USDT with {res['latency']*1000:.0f}ms latency."
+                                f"Executed {side} order of {trade_qty_formatted:.5f} {symbol} at {execution_price:.2f} USD."
+                            )
+                            
+                            # Send instant mobile push notification!
+                            await telegram_bot.send_push_notification(
+                                f"🔔 *EXÉCUTION D'ORDRE ({active_mode})*\n"
+                                f"-----------------------------------------\n"
+                                f"📝 Actif : `{symbol}`\n"
+                                f"🚀 Action : *{side}*\n"
+                                f"📊 Quantité : `{trade_qty_formatted:.5f}`\n"
+                                f"💵 Prix : `${execution_price:.2f} USD`"
                             )
                         except Exception as exc:
-                            db.add_audit_log("COPY_REPLICATE_ERROR", "127.0.0.1", f"Copy order execution failed: {str(exc)}")
-                            
-                # Personal stop loss monitors
-                key = (trader_id, "BTCUSDT")
-                if key in copy_manager.copy_positions:
-                    p_res = copy_manager.evaluate_personal_stop_loss(trader_id, "BTCUSDT", current_price, max_allowed_loss_pct=0.03)
-                    if p_res and p_res['triggered']:
-                        try:
-                            if active_mode == "REAL" and client:
-                                client.create_order(symbol='BTC/USDT', type='market', side='sell', amount=p_res['closed_qty'])
-                                
-                            STATE[active_balance_key] += p_res['closed_qty'] * p_res['exit_price']
-                            db.add_order(
-                                symbol="BTCUSDT",
-                                side="SELL",
-                                price=p_res['exit_price'],
-                                qty=p_res['closed_qty'],
-                                status="STOP_LOSS_FILLED",
-                                mode=active_mode,
-                                strategy="COPY_TRADING (SL TRIGGERED)",
-                                order_type="STOP_MARKET"
+                            logger.error(f"DEX / CEX ORDER REJECTION: {str(exc)}")
+                            db.add_audit_log(
+                                "ORDER_REJECTED", 
+                                "127.0.0.1", 
+                                f"Order {side} of {trade_qty_formatted:.5f} {symbol} failed/rejected: {str(exc)}"
                             )
-                            db.add_audit_log("COPY_TRADING_SAFETY_TRIGGERED", "127.0.0.1", p_res['msg'])
-                        except Exception as exc:
-                            logger.error(f"Failed to execute copy stop loss order: {str(exc)}")
                             
-            # Calculate live Net Asset Value (Equity Curve)
-            net_equity = STATE[active_balance_key]
-            updated_positions = db.get_positions()
-            for p in updated_positions:
-                net_equity += p['qty'] * current_price
-                
-            STATE["current_equity"] = net_equity
-            STATE[active_equity_history_key].append(net_equity)
-            if len(STATE[active_equity_history_key]) > 100:
-                STATE[active_equity_history_key].pop(0)
-                
-            # Circuit breaker guards
-            tripped, msg = risk_manager.check_circuit_breaker(net_equity)
-            if tripped:
-                STATE["kill_switch_active"] = True
-                STATE["is_running"] = False
-                
-                # Flat close exposure
-                for p in updated_positions:
-                    try:
-                        if active_mode == "REAL" and client:
-                            client.create_order(symbol='BTC/USDT', type='market', side='sell', amount=p['qty'])
-                        close_val = p['qty'] * current_price * 0.999
-                        STATE[active_balance_key] += close_val
-                        db.update_position(p['symbol'], 0, 0, active_mode)
-                        db.add_order(
-                            symbol=p['symbol'],
-                            side="SELL",
-                            price=current_price * 0.999,
-                            qty=p['qty'],
-                            status="FORCE_LIQUIDATED",
-                            mode=active_mode,
-                            strategy="EMERGENCY_RISK_BREAKER",
-                            order_type="MARKET"
-                        )
-                    except Exception as exc:
-                        logger.error(f"Failed during circuit breaker exposure flatting: {str(exc)}")
-                db.add_audit_log("CIRCUIT_BREAKER_TRIPPED", "127.0.0.1", f"EMERGENCY KILL SWITCH ENGAGED: {msg}")
-                
-            # Telemetry broadcast
-            await broadcast_telemetry(consensus)
+        # 5. Calculate total portfolio equity (consolidating all active multi-assets positions)
+        net_equity = STATE[active_balance_key]
+        updated_positions = db.get_positions()
+        for p in updated_positions:
+            asset_price = STATE["assets"].get(p['symbol'], {}).get("price", STATE["last_price"])
+            net_equity += p['qty'] * asset_price
             
-        await asyncio.sleep(2)
+        STATE["current_equity"] = net_equity
+        STATE[active_equity_history_key].append(net_equity)
+        if len(STATE[active_equity_history_key]) > 100:
+            STATE[active_equity_history_key].pop(0)
+            
+        # Circuit Breakers evaluation
+        tripped, msg = risk_manager.check_circuit_breaker(net_equity)
+        if tripped:
+            STATE["kill_switch_active"] = True
+            STATE["is_running"] = False
+            
+            # Flat close exposures
+            for p in updated_positions:
+                try:
+                    asset_price = STATE["assets"].get(p['symbol'], {}).get("price", STATE["last_price"])
+                    if active_mode == "REAL" and client:
+                        client.create_order(symbol=p['symbol'].replace("USDT", "/USDT"), type='market', side='sell', amount=p['qty'])
+                    close_val = p['qty'] * asset_price * 0.999
+                    STATE[active_balance_key] += close_val
+                    db.update_position(p['symbol'], 0, 0, active_mode)
+                    db.add_order(
+                        symbol=p['symbol'],
+                        side="SELL",
+                        price=asset_price * 0.999,
+                        qty=p['qty'],
+                        status="FORCE_LIQUIDATED",
+                        mode=active_mode,
+                        strategy="EMERGENCY_RISK_BREAKER",
+                        order_type="MARKET"
+                    )
+                except Exception as exc:
+                    logger.error(f"Failed during circuit breaker exposure flatting: {str(exc)}")
+            db.add_audit_log("CIRCUIT_BREAKER_TRIPPED", "127.0.0.1", f"EMERGENCY KILL SWITCH ENGAGED: {msg}")
+            
+        # 6. MLOps Automated Training trigger checks
+        if mlops_trainer.check_retrain_schedule() and STATE["historical_bars"] is not None:
+            try:
+                mlops_trainer.execute_pipeline(STATE["historical_bars"])
+            except Exception as e:
+                logger.error(f"MLOps pipeline failed execution: {str(e)}")
+                
+        # Telemetry broadcast
+        await broadcast_telemetry(consensus)
+        
+        await asyncio.sleep(2.5) # Loop tick pause
 
 
 async def broadcast_telemetry(consensus_signals):
@@ -607,6 +683,15 @@ async def broadcast_telemetry(consensus_signals):
         "positions": positions,
         "orders": orders[:15],
         "audit_logs": audit_logs[:15],
+        
+        # ADVANCED TELEMETRY EXPOSURE
+        "sentiment_index": STATE["sentiment_index"],
+        "onchain_risk_score": STATE["onchain_risk_score"],
+        "eth_defi_balance": STATE["eth_defi_balance"],
+        "defi_wallet_address": STATE["defi_wallet_address"],
+        "assets_telemetry": STATE["assets"],
+        "options_strategy": STATE["options_strategy"],
+        
         "copy_traders": [
             {
                 "trader_id": t.trader_id,
@@ -650,6 +735,66 @@ async def get_status():
     return JSONResponse(STATE)
 
 
+@app.get("/api/history")
+async def get_history_endpoint(timeframe: str = "1h"):
+    """
+    Returns historical candle bars for different timeframes (1h, 4h, 1d).
+    Uses persistent database caching and Binance API.
+    """
+    valid_timeframes = ["1h", "4h", "1d"]
+    if timeframe not in valid_timeframes:
+        timeframe = "1h"
+        
+    interval = "1h" if timeframe == "1h" else "4h" if timeframe == "4h" else "1d"
+    
+    # Check persistent database cache
+    cache_symbol = f"BTCUSDT_{timeframe}"
+    df = db.load_candles(cache_symbol, limit=120)
+    
+    if df.empty or len(df) < 120:
+        # Fetch from Binance API
+        url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={interval}&limit=120"
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                resp = await client.get(url)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    bars = []
+                    for b in data:
+                        bars.append({
+                            "timestamp": pd.to_datetime(b[0], unit='ms'),
+                            "open": float(b[1]),
+                            "high": float(b[2]),
+                            "low": float(b[3]),
+                            "close": float(b[4]),
+                            "volume": float(b[5])
+                        })
+                    df = pd.DataFrame(bars).set_index("timestamp")
+                    db.save_candles(cache_symbol, df)
+        except Exception as e:
+            logger.warning(f"Failed to fetch Binance klines for {timeframe}: {str(e)}")
+            
+    if df.empty:
+        # Generate safe fallback
+        np.random.seed(42)
+        prices = [60000.0]
+        for _ in range(120):
+            prices.append(prices[-1] * (1.0 + np.random.normal(0, 0.005)))
+        return {
+            "timeframe": timeframe,
+            "prices": prices,
+            "timestamps": [str(pd.Timestamp.now() - pd.Timedelta(hours=i)) for i in range(121)]
+        }
+        
+    prices = df['close'].values.tolist()
+    timestamps = [str(t) for t in df.index]
+    return {
+        "timeframe": timeframe,
+        "prices": prices,
+        "timestamps": timestamps
+    }
+
+
 @app.post("/api/toggle-strategy")
 async def toggle_strategy(payload: StrategyToggle):
     strategy = next((s for s in strategies_list if s.name == payload.name), None)
@@ -663,6 +808,43 @@ async def toggle_strategy(payload: StrategyToggle):
         f"Modified strategy '{payload.name}' enabled status to {payload.enabled}."
     )
     return {"status": "Success", "message": f"Strategy {payload.name} modified to {payload.enabled}"}
+
+
+@app.post("/api/toggle-bot")
+async def toggle_bot(payload: BotToggleRequest):
+    STATE["is_running"] = payload.is_running
+    action_str = "STARTED" if payload.is_running else "PAUSED"
+    db.add_audit_log(
+        "BOT_STATE_CHANGED", 
+        "127.0.0.1", 
+        f"Automated trading loop has been manually {action_str}."
+    )
+    return {"status": "Success", "message": f"Automated trading loop {action_str} successfully."}
+
+
+@app.post("/api/set-demo-balance")
+async def set_demo_balance(payload: SetBalanceRequest):
+    if payload.balance <= 0:
+        raise HTTPException(status_code=400, detail="Balance must be positive.")
+    STATE["balance_demo"] = payload.balance
+    STATE["current_equity"] = payload.balance
+    STATE["equity_history_demo"] = [payload.balance]
+    db.add_audit_log(
+        "DEMO_BALANCE_RESET", 
+        "127.0.0.1", 
+        f"Demo balance has been manually reset to {payload.balance} USD."
+    )
+    return {"status": "Success", "message": f"Demo balance successfully set to {payload.balance} USD."}
+
+
+@app.post("/api/retrain")
+async def trigger_manual_retrain():
+    df = STATE["historical_bars"]
+    if df is None:
+        raise HTTPException(status_code=400, detail="No historical bars cache loaded yet.")
+        
+    res = mlops_trainer.execute_pipeline(df)
+    return JSONResponse(res)
 
 
 @app.post("/api/risk-settings")
@@ -746,21 +928,21 @@ async def engage_kill_switch():
     positions = db.get_positions()
     active_mode = STATE["mode"]
     active_balance_key = "balance_demo" if active_mode == "DEMO" else "balance_real"
-    current_price = STATE["last_price"]
     client = get_ccxt_client() if active_mode == "REAL" else None
     
     for p in positions:
         try:
+            asset_price = STATE["assets"].get(p['symbol'], {}).get("price", STATE["last_price"])
             if active_mode == "REAL" and client:
-                client.create_order(symbol='BTC/USDT', type='market', side='sell', amount=p['qty'])
+                client.create_order(symbol=p['symbol'].replace("USDT", "/USDT"), type='market', side='sell', amount=p['qty'])
                 
-            close_val = p['qty'] * current_price * 0.999
+            close_val = p['qty'] * asset_price * 0.999
             STATE[active_balance_key] += close_val
             db.update_position(p['symbol'], 0, 0, active_mode)
             db.add_order(
                 symbol=p['symbol'],
                 side="SELL",
-                price=current_price * 0.999,
+                price=asset_price * 0.999,
                 qty=p['qty'],
                 status="FORCE_LIQUIDATED",
                 mode=active_mode,

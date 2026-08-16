@@ -28,14 +28,15 @@ class EventDrivenBacktester:
         df_bars: pandas DataFrame with datetime index or column, plus 'open', 'high', 'low', 'close', 'volume'
         """
         self.reset()
+        risk_manager.set_initial_capital(self.capital)
         
         # Ensure 'close' is present
         if 'close' not in df_bars.columns:
             raise ValueError("Dataframe must contain 'close' column.")
             
         N = len(df_bars)
-        # We need a minimum amount of data to start trading (e.g. 30 bars lookback)
-        min_bars = 30
+        # We need a minimum amount of data to start trading (e.g. 100 bars warm-up)
+        min_bars = 100
         
         for i in range(min_bars, N):
             current_bar = df_bars.iloc[i]
@@ -96,13 +97,34 @@ class EventDrivenBacktester:
             
             # Determine target trade action
             current_qty = self.positions.get('ACTIVE_ASSET', {}).get('qty', 0.0)
-            target_direction = np.sign(final_signal) if abs(final_signal) > 0.05 else 0.0
+            target_direction = np.sign(final_signal) if abs(final_signal) > 0.15 else 0.0
             
             desired_qty = target_direction * target_qty
             trade_qty = desired_qty - current_qty
             
-            # 4. Process execution (if threshold reached)
-            if abs(trade_qty) > (current_price * 0.0001): # Minimal trading lot size
+            # Enforce Rebalancing Hysteresis (Tolerance Band)
+            # Dynamically scale thresholds based on capital size (e.g. $10 on micro accounts)
+            is_significant = False
+            trade_val = abs(trade_qty) * current_price
+            current_val = abs(current_qty) * current_price
+            
+            min_start_val = min(15.0, self.capital * 0.15) # $15 on standard accounts, scaled down on micro
+            min_adj_val = min(10.0, self.capital * 0.10)
+            
+            if current_qty == 0:
+                if trade_val > min_start_val:
+                    is_significant = True
+            else:
+                if np.sign(desired_qty) != np.sign(current_qty):
+                    is_significant = True
+                elif trade_val > (current_val * 0.25) and trade_val > min_adj_val:
+                    is_significant = True
+            
+            if i % 100 == 0:
+                print(f"Index {i} | Price: {current_price:.1f} | Signal: {final_signal:.3f} | Dir: {target_direction} | Target Qty: {target_qty:.4f} | Current Qty: {current_qty:.4f} | Trade Qty: {trade_qty:.4f} | Sig? {is_significant}")
+            
+            # 4. Process execution (if threshold and hysteresis is met)
+            if is_significant:
                 side = "BUY" if trade_qty > 0 else "SELL"
                 
                 # Apply realistic slippage penalty
@@ -166,6 +188,9 @@ class EventDrivenBacktester:
                         "value": order_cost,
                         "commission": commissions
                     })
+                else:
+                    if i % 100 == 0:
+                        print(f"Order REJECTED at index {i}. Reason: {reason}")
             
             # Calculate current total net equity (AUM) including open positions value
             net_equity = self.capital

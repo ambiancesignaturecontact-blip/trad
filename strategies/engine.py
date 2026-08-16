@@ -358,60 +358,65 @@ class MetaAllocationEngine:
     def allocate(self, market_data, regime_state_id, ml_prediction, ppo_action):
         """
         Calculates final combined trade signal and capital allocation.
-        market_data: dict of market indicators and books
-        regime_state_id: active market regime (0=Bull, 1=Bear, 2=Range, 3=HighVol)
-        ml_prediction: predicted close price change % from LSTM-like model
-        ppo_action: recommended action from Reinforcement Learning agent (-1 to 1)
+        Enforces Regime-Specific Dominance Selection to prevent signal dilution
+        and maximize active trade entries.
         """
         raw_signals = []
         confidences = []
         
+        # Gather all strategy signals
+        signals_dict = {}
+        conf_dict = {}
         for s in self.strategies:
             if s.enabled:
                 sig, conf = s.generate_signal(market_data)
-                raw_signals.append(sig)
-                confidences.append(conf)
+                signals_dict[s.name] = sig
+                conf_dict[s.name] = conf
             else:
-                raw_signals.append(0.0)
-                confidences.append(0.0)
-                
-        # Fetch the regime-specific weight matrix
-        weights = np.array(self.regime_strategy_weights.get(regime_state_id, [0.14] * 7))
+                signals_dict[s.name] = 0.0
+                conf_dict[s.name] = 0.0
+
+        # Enforce Regime-Specific Dominance (Alpha-Switching)
+        # Select the single best matching strategy for the active regime
+        dominant_strategy = "Trend Following"
+        if regime_state_id == 0 or regime_state_id == 1:
+            dominant_strategy = "Trend Following"
+        elif regime_state_id == 2:
+            dominant_strategy = "Mean Reversion"
+        elif regime_state_id == 3:
+            dominant_strategy = "Scalping" if signals_dict.get("Scalping", 0.0) != 0.0 else "Statistical Arbitrage"
+
+        classical_signal = signals_dict.get(dominant_strategy, 0.0)
+        mean_confidence = conf_dict.get(dominant_strategy, 0.5)
+
+        # 2. Integrate ML LSTM-like Price Prediction (scaling log-return prediction % to [-1, 1])
+        # Scaling factor: if we predict +0.2% return, we consider it a very strong buy (+1.0)
+        ml_signal = np.clip(ml_prediction / 0.002, -1.0, 1.0)
         
-        # Normalize weights for enabled strategies
-        enabled_mask = np.array([1.0 if s.enabled else 0.0 for s in self.strategies])
-        active_weights = weights * enabled_mask
-        sum_weights = np.sum(active_weights)
-        if sum_weights > 0:
-            active_weights /= sum_weights
-        else:
-            active_weights = np.zeros_like(weights)
-            
-        # 1. Classical combined signal
-        classical_signal = np.sum(np.array(raw_signals) * active_weights)
-        mean_confidence = np.sum(np.array(confidences) * active_weights)
-        
-        # 2. Integrate ML LSTM-like Price Prediction (scaling output % change to [-1, 1])
-        # Scaling factor: if we predict +0.5% return, we consider it a very strong buy (+1.0)
-        ml_signal = np.clip(ml_prediction / 0.005, -1.0, 1.0)
-        
-        # 3. Consolidate: Stacking Classical, LSTM, and PPO
-        # Institutional weights: 50% Classical (Regime-Adjusted), 25% LSTM, 25% RL Agent
-        final_signal = (0.50 * classical_signal) + (0.25 * ml_signal) + (0.25 * ppo_action)
+        # 3. Consolidate: Stacking Classical (Regime-Dominant), LSTM, and PPO
+        # Institutional weighting: 80% Regime-Dominant, 10% LSTM, 10% PPO
+        final_signal = (0.80 * classical_signal) + (0.10 * ml_signal) + (0.10 * ppo_action)
         final_signal = np.clip(final_signal, -1.0, 1.0)
         
-        # Consolidation score of consensus
+        # If the dominant strategy is disabled or not present, fallback to simple average of any enabled
+        dom_strat_obj = next((s for s in self.strategies if s.name == dominant_strategy), None)
+        if dom_strat_obj is None or not dom_strat_obj.enabled:
+            enabled_sigs = [signals_dict[name] for name in signals_dict if signals_dict[name] != 0.0]
+            classical_signal = np.mean(enabled_sigs) if enabled_sigs else 0.0
+            final_signal = (0.50 * classical_signal) + (0.25 * ml_signal) + (0.25 * ppo_action)
+            final_signal = np.clip(final_signal, -1.0, 1.0)
+
         consensus_score = float(mean_confidence)
         
-        # Log active distribution for reporting
-        strategy_contributions = {
-            self.strategies[i].name: {
-                "signal": float(raw_signals[i]),
-                "confidence": float(confidences[i]),
-                "weight": float(active_weights[i])
+        # Create contributions dictionary
+        strategy_contributions = {}
+        for s in self.strategies:
+            is_dominant = (s.name == dominant_strategy)
+            strategy_contributions[s.name] = {
+                "signal": float(signals_dict.get(s.name, 0.0)),
+                "confidence": float(conf_dict.get(s.name, 0.0)),
+                "weight": 1.0 if is_dominant else 0.0
             }
-            for i in range(len(self.strategies))
-        }
         
         return {
             "final_signal": float(final_signal),

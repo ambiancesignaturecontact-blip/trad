@@ -64,6 +64,22 @@
                     </button>
                 </div>
 
+                <!-- Set Demo Capital -->
+                <div id="demo-capital-panel" class="flex items-center space-x-1 bg-slate-950/60 rounded-lg p-1 border border-slate-800">
+                    <input type="number" id="input-demo-balance" placeholder="Capital démo (USD)" value="100000" class="w-28 bg-slate-900 border-none rounded px-2 py-1 text-xxs font-bold text-slate-200 focus:outline-none focus:ring-1 focus:ring-cyan-500">
+                    <button onclick="setDemoBalance()" class="px-2 py-1.5 rounded font-black text-xxs bg-cyan-500 text-slate-950 hover:bg-cyan-600 transition-all">
+                        SET
+                    </button>
+                </div>
+
+                <!-- Global Toggle START/STOP Button -->
+                <div class="flex items-center space-x-2 bg-slate-950/60 rounded-lg p-1.5 border border-slate-800">
+                    <button id="btn-toggle-bot" onclick="toggleBotState()" class="px-4 py-1.5 rounded font-bold text-xs transition-all bg-emerald-500 text-slate-950 shadow-md uppercase tracking-wider flex items-center space-x-1.5 hover:scale-105" data-active="true">
+                        <span class="w-2 h-2 rounded-full bg-slate-950 animate-ping"></span>
+                        <span>BOT ACTIF</span>
+                    </button>
+                </div>
+
                 <!-- Global Lock switch -->
                 <div id="kill-switch-banner" class="hidden flex items-center bg-red-950/40 text-red-400 border border-red-900/50 px-3 py-1.5 rounded-lg text-xs font-bold">
                     <span class="w-2.5 h-2.5 rounded-full bg-red-500 mr-2 pulse-glow"></span>
@@ -130,6 +146,46 @@
                     </div>
                 </div>
 
+                <!-- ADVANCED SYSTEM HUD (Sentiment, On-Chain, DeFi Wallet, MLOps Retrain) -->
+                <div class="grid grid-cols-4 gap-4">
+                    <!-- Sentiment Index -->
+                    <div class="bg-slate-900/80 rounded-xl p-4 border border-slate-800 shadow-sm relative overflow-hidden">
+                        <p class="text-xs text-slate-400 uppercase font-semibold">NLP SENTIMENT INDEX</p>
+                        <h3 id="val-sentiment" class="text-xl font-black mt-2 text-cyan-400">0.00</h3>
+                        <p id="val-sentiment-desc" class="text-xxs text-slate-400 mt-1">Status: Neutre (Scraping live)</p>
+                    </div>
+
+                    <!-- On-Chain Risk -->
+                    <div class="bg-slate-900/80 rounded-xl p-4 border border-slate-800 shadow-sm relative overflow-hidden">
+                        <p class="text-xs text-slate-400 uppercase font-semibold">RISQUE ON-CHAIN (BALEINES)</p>
+                        <h3 id="val-onchain" class="text-xl font-black mt-2 text-yellow-400">0.50</h3>
+                        <p id="val-onchain-desc" class="text-xxs text-slate-400 mt-1">Inflows Exchange: Calme</p>
+                    </div>
+
+                    <!-- Non-Custodial Wallet EVM -->
+                    <div class="bg-slate-900/80 rounded-xl p-4 border border-slate-800 shadow-sm relative flex flex-col justify-between">
+                        <div>
+                            <p class="text-xs text-slate-400 uppercase font-semibold">EVM WALLET SECURE (ETH)</p>
+                            <h3 id="val-wallet-eth" class="text-xl font-black mt-2 text-emerald-400">0.00 ETH</h3>
+                            <p id="val-wallet-addr" class="text-xxs text-slate-400 mt-1 truncate">Non connecté</p>
+                        </div>
+                        <button onclick="connectBrowserWallet()" class="mt-1 w-full bg-emerald-500 hover:bg-emerald-600 text-slate-950 font-black text-xxs py-1 rounded transition-all">
+                            CONNECT METAMASK
+                        </button>
+                    </div>
+
+                    <!-- MLOps Pipeline Auto-learning -->
+                    <div class="bg-slate-900/80 rounded-xl p-4 border border-slate-800 shadow-sm relative flex flex-col justify-between">
+                        <div>
+                            <p class="text-xs text-slate-400 uppercase font-semibold">PIPELINE MLOps</p>
+                            <p class="text-xxs text-slate-500 mt-0.5">Retrain asynchrone auto</p>
+                        </div>
+                        <button onclick="triggerMLOpsRetrain()" class="mt-1 w-full bg-cyberViolet hover:bg-violet-700 text-white font-bold text-xxs py-1 rounded transition-all">
+                            RETRAIN MANUEL
+                        </button>
+                    </div>
+                </div>
+
                 <!-- MAIN LIVE CHART (Bloomberg Dark style) -->
                 <div class="bg-slate-900/80 rounded-xl p-5 border border-slate-800 shadow-sm">
                     <div class="flex items-center justify-between mb-4">
@@ -137,9 +193,20 @@
                             <i data-lucide="trending-up" class="w-4 h-4 mr-2 text-cyan-400"></i>
                             <span>TELEMETRIE ET COURBE D'EQUITE TEMPS REEL</span>
                         </h3>
-                        <div class="flex items-center space-x-2 text-xxs">
-                            <span class="flex items-center text-cyan-400"><span class="w-2 h-2 bg-cyan-400 rounded-full mr-1"></span> Equité</span>
-                            <span class="flex items-center text-slate-400"><span class="w-2 h-2 bg-slate-400 rounded-full mr-1"></span> Ticker</span>
+                        <div class="flex items-center space-x-4">
+                            <!-- Timeframe Selector -->
+                            <div class="flex items-center space-x-1.5 bg-slate-950/60 rounded px-2 py-1 border border-slate-800">
+                                <label class="text-xxs text-slate-500 font-bold uppercase">UT:</label>
+                                <select id="select-timeframe" onchange="changeTimeframe(this.value)" class="bg-transparent border-none text-xxs font-bold text-cyan-400 focus:outline-none cursor-pointer">
+                                    <option value="1h" selected class="bg-slate-900">1H</option>
+                                    <option value="4h" class="bg-slate-900">4H</option>
+                                    <option value="1d" class="bg-slate-900">1D</option>
+                                </select>
+                            </div>
+                            <div class="flex items-center space-x-2 text-xxs">
+                                <span class="flex items-center text-cyan-400"><span class="w-2 h-2 bg-cyan-400 rounded-full mr-1"></span> Equité</span>
+                                <span class="flex items-center text-slate-400"><span class="w-2 h-2 bg-slate-400 rounded-full mr-1"></span> Ticker</span>
+                            </div>
                         </div>
                     </div>
                     <div class="h-80 w-full relative">
@@ -386,6 +453,7 @@
         lucide.createIcons();
 
         let liveChartInstance = null;
+        let activeTimeframe = '1h';
         let ws_protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
         let ws_url = ws_protocol + '//' + window.location.host + '/ws';
         let ws = new WebSocket(ws_url);
@@ -454,9 +522,11 @@
             if (data.mode === "DEMO") {
                 document.getElementById('btn-mode-demo').className = "px-3 py-1.5 rounded font-bold text-xs bg-cyan-500 text-slate-950 shadow-md";
                 document.getElementById('btn-mode-real').className = "px-3 py-1.5 rounded font-bold text-xs text-slate-400 hover:text-slate-200 transition-all";
+                document.getElementById('demo-capital-panel').classList.remove('hidden');
             } else {
                 document.getElementById('btn-mode-demo').className = "px-3 py-1.5 rounded font-bold text-xs text-slate-400 hover:text-slate-200 transition-all";
                 document.getElementById('btn-mode-real').className = "px-3 py-1.5 rounded font-bold text-xs bg-yellow-500 text-slate-950 shadow-md";
+                document.getElementById('demo-capital-panel').classList.add('hidden');
             }
 
             // Emergency banner check
@@ -468,11 +538,33 @@
                 document.getElementById('btn-reset').classList.add('hidden');
             }
 
+            // Update Start/Stop Bot Button Status
+            const btnToggle = document.getElementById('btn-toggle-bot');
+            if (data.is_running) {
+                btnToggle.className = "px-4 py-1.5 rounded font-bold text-xs transition-all bg-emerald-500 text-slate-950 shadow-md uppercase tracking-wider flex items-center space-x-1.5 hover:scale-105";
+                btnToggle.innerHTML = `<span class="w-2 h-2 rounded-full bg-slate-950 animate-ping mr-1"></span><span>BOT ACTIF</span>`;
+                btnToggle.setAttribute('data-active', 'true');
+            } else {
+                btnToggle.className = "px-4 py-1.5 rounded font-bold text-xs transition-all bg-slate-800 text-slate-400 border border-slate-700 uppercase tracking-wider flex items-center space-x-1.5 hover:scale-105 hover:text-slate-200";
+                btnToggle.innerHTML = `<span class="w-2 h-2 rounded-full bg-rose-500 mr-1 animate-pulse"></span><span>BOT PAUSE</span>`;
+                btnToggle.setAttribute('data-active', 'false');
+            }
+
             // Cards telemetry
             document.getElementById('val-equity').innerText = `$${data.current_equity.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
             document.getElementById('val-balance').innerText = `Solde: $${data.balance.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
             document.getElementById('val-price').innerText = `$${data.last_price.toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`;
             document.getElementById('val-regime').innerText = data.regime_name;
+
+            // Advanced metrics telemetry
+            document.getElementById('val-sentiment').innerText = data.sentiment_index.toFixed(2);
+            document.getElementById('val-sentiment-desc').innerText = data.sentiment_index >= 0.15 ? "Status: Haussier (CryptoCompare)" : data.sentiment_index <= -0.15 ? "Status: Baissier (CryptoCompare)" : "Status: Neutre (Scraping live)";
+            
+            document.getElementById('val-onchain').innerText = data.onchain_risk_score.toFixed(2);
+            document.getElementById('val-onchain-desc').innerText = data.onchain_risk_score >= 0.70 ? "Inflows: Risque élevé (Whales)" : "Inflows: Calme (Accumulation)";
+            
+            document.getElementById('val-wallet-eth').innerText = `${data.eth_defi_balance.toFixed(4)} ETH`;
+            document.getElementById('val-wallet-addr').innerText = data.defi_wallet_address;
             
             // Colors for regimes
             const regimeCard = document.getElementById('val-regime').parentElement;
@@ -505,10 +597,12 @@
             else document.getElementById('bar-signal').className = "bg-slate-500 h-1.5 rounded-full";
 
             // Update live metrics charts
-            liveChartInstance.data.labels = Array.from({length: data.price_history.length}, (_, i) => i);
-            liveChartInstance.data.datasets[0].data = data.equity_history;
-            liveChartInstance.data.datasets[1].data = data.price_history;
-            liveChartInstance.update();
+            if (activeTimeframe === '1h') {
+                liveChartInstance.data.labels = Array.from({length: data.price_history.length}, (_, i) => i);
+                liveChartInstance.data.datasets[0].data = data.equity_history;
+                liveChartInstance.data.datasets[1].data = data.price_history;
+                liveChartInstance.update();
+            }
 
             // Open Positions Table
             const tblPositions = document.getElementById('tbl-positions');
@@ -677,6 +771,82 @@
             alert(res.message);
             form.api_key.value = '';
             form.secret_key.value = '';
+        }
+
+        async function toggleBotState() {
+            const btnToggle = document.getElementById('btn-toggle-bot');
+            const isActive = btnToggle.getAttribute('data-active') === 'true';
+            const targetState = !isActive;
+            
+            const resp = await fetch('/api/toggle-bot', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ is_running: targetState })
+            });
+            const res = await resp.json();
+            alert(res.message);
+        }
+
+        async function triggerMLOpsRetrain() {
+            const ok = confirm("Voulez-vous déclencher manuellement le pipeline MLOps de ré-apprentissage ? Cela recalculera tous les poids des modèles IA (HMM et Prédicteur) sur l'historique complet.");
+            if (ok) {
+                const resp = await fetch('/api/retrain', { method: 'POST' });
+                const res = await resp.json();
+                alert(`Pipeline exécuté avec succès en ${res.training_duration_seconds.toFixed(2)} secondes !`);
+            }
+        }
+
+        async function setDemoBalance() {
+            const val = parseFloat(document.getElementById('input-demo-balance').value);
+            if (isNaN(val) || val <= 0) {
+                alert("Veuillez entrer un montant valide supérieur à 0.");
+                return;
+            }
+            const resp = await fetch('/api/set-demo-balance', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ balance: val })
+            });
+            const res = await resp.json();
+            alert(res.message);
+        }
+
+        async function connectBrowserWallet() {
+            if (typeof window.ethereum !== 'undefined') {
+                try {
+                    const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+                    const address = accounts[0];
+                    const balanceHex = await window.ethereum.request({
+                        method: 'eth_getBalance',
+                        params: [address, 'latest']
+                    });
+                    const wei = parseInt(balanceHex, 16);
+                    const eth = wei / 1e18;
+                    
+                    document.getElementById('val-wallet-addr').innerText = address;
+                    document.getElementById('val-wallet-eth').innerText = `${eth.toFixed(4)} ETH`;
+                    alert(`Portefeuille connecté avec succès : ${address}`);
+                } catch (error) {
+                    alert("Erreur de connexion wallet : " + error.message);
+                }
+            } else {
+                alert("Extension MetaMask non détectée. Veuillez installer MetaMask ou utiliser un navigateur Web3.");
+            }
+        }
+
+        async function changeTimeframe(tf) {
+            activeTimeframe = tf;
+            if (tf === '1h') {
+                return;
+            }
+            const resp = await fetch(`/api/history?timeframe=${tf}`);
+            const data = await resp.json();
+            if (data.prices) {
+                liveChartInstance.data.labels = data.timestamps.map((_, i) => i);
+                liveChartInstance.data.datasets[1].data = data.prices;
+                liveChartInstance.data.datasets[0].data = Array(data.prices.length).fill(null);
+                liveChartInstance.update();
+            }
         }
 
         function promptModeChange(mode) {
