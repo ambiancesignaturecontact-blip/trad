@@ -1303,11 +1303,15 @@ async def store_keys(payload: KeyStorage):
 async def switch_mode(payload: SwitchModeRequest):
     """
     Secures the Demo <-> Real trading modes transitions.
+    Accepts both Ethereum addresses (MetaMask, starts with 0x) and test codes (backward compatible).
     """
     global ccxt_client
-    if payload.verification_2fa != "123456" and payload.verification_2fa != "888888":
-        db.add_audit_log("2FA_FAILURE", "127.0.0.1", f"Failed 2FA transit attempt to mode {payload.target_mode}.")
-        raise HTTPException(status_code=401, detail="Invalid 2FA token. Security block triggered.")
+    is_wallet = payload.verification_2fa.startswith("0x") and len(payload.verification_2fa) == 42
+    is_test_code = payload.verification_2fa in ["123456", "888888"]
+    
+    if not (is_wallet or is_test_code):
+        db.add_audit_log("AUTH_FAILURE", "127.0.0.1", f"Failed wallet/2FA transit attempt to mode {payload.target_mode}.")
+        raise HTTPException(status_code=401, detail="Invalid wallet connection or code. Security block triggered.")
         
     if payload.target_mode not in ["DEMO", "REAL"]:
         raise HTTPException(status_code=400, detail="Invalid target trading mode.")
@@ -1326,7 +1330,7 @@ async def switch_mode(payload: SwitchModeRequest):
     db.add_audit_log(
         "TRADING_MODE_CHANGED", 
         "127.0.0.1", 
-        f"Successfully changed system trading mode to {payload.target_mode} via 2FA Verification."
+        f"Successfully changed system trading mode to {payload.target_mode} via authorization {payload.verification_2fa[:12]}..."
     )
     return {"status": "Success", "message": f"Platform successfully switched to {payload.target_mode} Mode."}
 
