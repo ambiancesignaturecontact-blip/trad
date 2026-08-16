@@ -85,10 +85,33 @@ class RiskManager:
         # 3. Choose the most conservative size
         final_size_usd = min(kelly_size_usd, vol_size_usd)
         
-        # Apply exposure cap (max_exposure_per_asset_pct)
-        max_allowed_usd = capital * self.params['max_exposure_per_asset_pct']
-        final_size_usd = min(final_size_usd, max_allowed_usd)
+        # MICRO-BUDGET OPTIMIZER (For accounts under $1,000)
+        # If total capital is very small, we must scale up exposure limits and enforce a minimum notional floor,
+        # otherwise all trades will fall below the exchange's minimum limit ($10.00) and get skipped/rejected!
+        exchange_min_notional = 10.0 # Standard minimum allowed trade size on CEX
         
+        if capital < 1000.0:
+            # Scale exposure cap: up to 80% of capital for low budgets (instead of 25%)
+            max_allowed_usd = capital * 0.80
+            
+            # If the safe size is below the exchange limit, but we have enough room,
+            # we force the size to the minimum allowed limit ($10.00) so the bot can actually trade!
+            if final_size_usd < exchange_min_notional and max_allowed_usd >= exchange_min_notional:
+                final_size_usd = exchange_min_notional
+            else:
+                final_size_usd = min(final_size_usd, max_allowed_usd)
+        else:
+            # Standard institutional limits
+            max_allowed_usd = capital * self.params['max_exposure_per_asset_pct']
+            final_size_usd = min(final_size_usd, max_allowed_usd)
+            
+        # Safe-guard: never exceed available capital
+        final_size_usd = min(final_size_usd, capital * 0.95)
+        
+        # Fallback to zero if we can't even afford the exchange minimum
+        if final_size_usd < exchange_min_notional:
+            return 0.0
+            
         qty = final_size_usd / current_price
         return float(qty)
 
