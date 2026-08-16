@@ -83,8 +83,15 @@ microstructure_engine = MicrostructureEdgeEngine()
 almgren_chriss_optimizer = AlmgrenChrissExecutionOptimizer()
 macro_calendar = MacroeconomicCalendarEngine()
 
-# OMS / EMS & Reconciliation Engine
-oms = OrderManagementSystem(db)
+# Unified Exchange Adapters, EMS, OMS & Reconciliation Engine
+from adapters.exchange_adapter import BinanceExchangeAdapter, BybitExchangeAdapter
+from models.oms_ems import ExecutionManagementSystem
+
+binance_adapter = BinanceExchangeAdapter(None)
+bybit_adapter = BybitExchangeAdapter(None)
+
+ems = ExecutionManagementSystem(binance_adapter, bybit_adapter)
+oms = OrderManagementSystem(db, ems)
 reconciler = ReconciliationEngine(db)
 
 # Instantiate strategies
@@ -465,6 +472,9 @@ async def multi_exchange_websocket_listener():
 
 @app.on_event("startup")
 async def startup_event():
+    # Update CCXT client inside our Binance Adapter once authenticated!
+    binance_adapter.client = get_ccxt_client()
+    
     # Load default copytrade allocations
     global STATE
     allocations = db.get_copy_allocations()
@@ -478,12 +488,23 @@ async def startup_event():
     df = db.load_candles("BTCUSDT", limit=120)
     if df.empty or len(df) < 120:
         logger.info("Database cache is empty or incomplete. Fetching from Binance API...")
-        df = await fetch_historical_market_data("BTCUSDT")
-        db.save_candles("BTCUSDT", df)
+        try:
+            df = await fetch_historical_market_data("BTCUSDT")
+            if df is not None and not df.empty:
+                db.save_candles("BTCUSDT", df)
+            else:
+                logger.error("Failed to load historical candles. Binance API offline.")
+                df = pd.DataFrame()
+        except Exception as e:
+            logger.error(f"Failed to fetch historical market data: {str(e)}")
+            df = pd.DataFrame()
     else:
         logger.info("Successfully loaded 120 historical candles from persistent database cache.")
         
-    train_ai_models(df)
+    if not df.empty:
+        train_ai_models(df)
+    else:
+        logger.warning("Historical data is empty. AI models training skipped until real data arrives.")
     
     # Sync Web3 non-custodial EVM balance details
     STATE["defi_wallet_address"] = defi_wallet.get_wallet_address()

@@ -227,4 +227,3 @@ class TelegramBotManager:
             await self.send_push_notification(
                 "🟢 *ALERTE IGNORÉE :* Vous avez choisi de maintenir notre stratégie standard. Je continue mes investissements habituels."
             )
- McNeil = True

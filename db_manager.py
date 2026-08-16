@@ -9,7 +9,6 @@ import pandas as pd
 logger = logging.getLogger("DBManager")
 
 DATABASE_URL = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
-# Highly portable paths, dynamically resolved relative to the current working directory or environment variables
 DB_PATH = os.getenv("SQLITE_DB_PATH", os.path.join(os.getcwd(), "trading_platform.db"))
 KEY_PATH = os.getenv("SECRET_KEY_PATH", os.path.join(os.getcwd(), "secret.key"))
 
@@ -18,8 +17,10 @@ class DBManager:
     Dual-dialect, Multi-User SaaS DB manager supporting SQLite for local runs,
     and PostgreSQL (Supabase) for production environments.
     
-    Includes an automatic schema migration layer (adding user_id and hash columns to existing tables),
-    a cryptographically chained double-audit ledger, and zero-downtime failover.
+    Ties positions, orders, configurations, and copytrades to unique user_id keys.
+    Implements DELETE-then-INSERT transaction strategies to guarantee 100% compatibility
+    with pre-existing database constraint configurations on Supabase.
+    Strictly forbids any silent SQLite fallbacks in production REAL mode (Lot 10).
     """
     def __init__(self):
         self.initialize_key()
@@ -37,11 +38,19 @@ class DBManager:
                 conn.close()
                 logger.info("Successfully connected and authenticated with Supabase PostgreSQL!")
             except Exception as e:
-                logger.error(f"PostgreSQL Connection Failed: {str(e)}")
-                logger.warning("FALLING BACK TO LOCAL SQLITE DATABASE TO ENSURE 100% BOT UPTIME...")
-                self.is_postgres = False
+                logger.error(f"PostgreSQL Production Connection Failed: {str(e)}")
+                logger.critical("=========================================================================")
+                logger.critical("🚨 DATABASE_UNAVAILABLE: PRODUCTION POSTGRESQL CONNECTION FAILED!")
+                logger.critical("FORBIDDEN: SQLite fallback is strictly prohibited in Production REAL mode.")
+                logger.critical("HALTING STARTUP FOR SAFETY.")
+                logger.critical("=========================================================================")
+                
+                # In production/REAL mode, raise a fatal error to abort startup!
+                # Strictly forbids silent SQLite fallbacks (Lot 10)
+                raise RuntimeError("DATABASE_UNAVAILABLE: Production Supabase PostgreSQL offline. Trading halted.")
         else:
-            logger.info("Database Mode: Local SQLite Dev")
+            # SQLite is only authorized in isolated TEST and DEVELOPMENT/DEMO environments
+            logger.info("Database Mode: Local SQLite Dev (Authorized for Test & Development only)")
             
         self.init_db()
 
@@ -260,8 +269,6 @@ class DBManager:
                         PRIMARY KEY (symbol, timestamp)
                     )
                 """)
-                
-                # Fills Table (SQLite)
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS fills (
                         fill_id TEXT PRIMARY KEY,
@@ -318,29 +325,36 @@ class DBManager:
 
     # Settings API
     def save_setting(self, key: str, value: str, user_id=1, encrypt=False):
+        """
+        Saves a setting using a robust DELETE-then-INSERT transaction.
+        Enforces complete compatibility with any existing unique constraints on Supabase!
+        """
         final_val = self.encrypt_val(value) if encrypt else value
         with self.get_connection() as conn:
             cursor = conn.cursor()
             if self.is_postgres:
+                # 1. Delete first
+                cursor.execute("DELETE FROM system_settings WHERE user_id = %s AND key = %s", (int(user_id), str(key)))
+                # 2. Insert fresh record
                 cursor.execute("""
                     INSERT INTO system_settings (user_id, key, value)
                     VALUES (%s, %s, %s)
-                    ON CONFLICT (user_id, key) DO UPDATE SET value = EXCLUDED.value
-                """, (user_id, key, final_val))
+                """, (int(user_id), str(key), str(final_val)))
             else:
+                cursor.execute("DELETE FROM system_settings WHERE user_id = ? AND key = ?", (int(user_id), str(key)))
                 cursor.execute("""
-                    INSERT OR REPLACE INTO system_settings (user_id, key, value)
+                    INSERT INTO system_settings (user_id, key, value)
                     VALUES (?, ?, ?)
-                """, (user_id, key, final_val))
+                """, (int(user_id), str(key), str(final_val)))
             conn.commit()
 
     def get_setting(self, key: str, user_id=1, decrypt=False) -> str:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             if self.is_postgres:
-                cursor.execute("SELECT value FROM system_settings WHERE user_id = %s AND key = %s", (user_id, key))
+                cursor.execute("SELECT value FROM system_settings WHERE user_id = %s AND key = %s", (int(user_id), str(key)))
             else:
-                cursor.execute("SELECT value FROM system_settings WHERE user_id = ? AND key = ?", (user_id, key))
+                cursor.execute("SELECT value FROM system_settings WHERE user_id = ? AND key = ?", (int(user_id), str(key)))
             row = cursor.fetchone()
             if row:
                 val = row['value']
@@ -349,6 +363,10 @@ class DBManager:
 
     # Orders API
     def add_order(self, symbol, side, price, qty, status, mode, strategy, order_type, user_id=1):
+        """
+        Adds a new order. Forcibly casts all numerical parameters (price, qty)
+        to native Python float types to prevent psycopg2 schema 'np' errors!
+        """
         with self.get_connection() as conn:
             cursor = conn.cursor()
             if self.is_postgres:
@@ -356,13 +374,13 @@ class DBManager:
                     INSERT INTO orders (user_id, symbol, side, price, qty, status, mode, strategy, order_type)
                     VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                     RETURNING id
-                """, (user_id, symbol, side, price, qty, status, mode, strategy, order_type))
+                """, (int(user_id), str(symbol), str(side), float(price), float(qty), str(status), str(mode), str(strategy), str(order_type)))
                 order_id = cursor.fetchone()['id']
             else:
                 cursor.execute("""
                     INSERT INTO orders (user_id, symbol, side, price, qty, status, mode, strategy, order_type)
                     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (user_id, symbol, side, price, qty, status, mode, strategy, order_type))
+                """, (int(user_id), str(symbol), str(side), float(price), float(qty), str(status), str(mode), str(strategy), str(order_type)))
                 order_id = cursor.lastrowid
             conn.commit()
             return order_id
@@ -371,42 +389,45 @@ class DBManager:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             if self.is_postgres:
-                cursor.execute("SELECT * FROM orders WHERE user_id = %s ORDER BY timestamp DESC LIMIT 100", (user_id,))
+                cursor.execute("SELECT * FROM orders WHERE user_id = %s ORDER BY timestamp DESC LIMIT 100", (int(user_id),))
             else:
-                cursor.execute("SELECT * FROM orders WHERE user_id = ? ORDER BY timestamp DESC LIMIT 100", (user_id,))
+                cursor.execute("SELECT * FROM orders WHERE user_id = ? ORDER BY timestamp DESC LIMIT 100", (int(user_id),))
             rows = cursor.fetchall()
             return [dict(r) for r in rows]
 
     # Positions API
     def update_position(self, symbol, qty, avg_price, mode, user_id=1):
+        """
+        Updates an asset position using a clean DELETE-then-INSERT transaction.
+        Enforces complete compatibility with any existing constraints on Supabase!
+        """
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            if qty <= 0:
-                if self.is_postgres:
-                    cursor.execute("DELETE FROM positions WHERE user_id = %s AND symbol = %s", (user_id, symbol))
-                else:
-                    cursor.execute("DELETE FROM positions WHERE user_id = ? AND symbol = ?", (user_id, symbol))
+            if self.is_postgres:
+                cursor.execute("DELETE FROM positions WHERE user_id = %s AND symbol = %s", (int(user_id), str(symbol)))
             else:
+                cursor.execute("DELETE FROM positions WHERE user_id = ? AND symbol = ?", (int(user_id), str(symbol)))
+                
+            if qty > 0:
                 if self.is_postgres:
                     cursor.execute("""
                         INSERT INTO positions (user_id, symbol, qty, avg_price, mode)
                         VALUES (%s, %s, %s, %s, %s)
-                        ON CONFLICT (user_id, symbol) DO UPDATE SET qty = EXCLUDED.qty, avg_price = EXCLUDED.avg_price, mode = EXCLUDED.mode
-                    """, (user_id, symbol, qty, avg_price, mode))
+                    """, (int(user_id), str(symbol), float(qty), float(avg_price), str(mode)))
                 else:
                     cursor.execute("""
-                        INSERT OR REPLACE INTO positions (user_id, symbol, qty, avg_price, mode)
+                        INSERT INTO positions (user_id, symbol, qty, avg_price, mode)
                         VALUES (?, ?, ?, ?, ?)
-                    """, (user_id, symbol, qty, avg_price, mode))
+                    """, (int(user_id), str(symbol), float(qty), float(avg_price), str(mode)))
             conn.commit()
 
     def get_positions(self, user_id=1):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             if self.is_postgres:
-                cursor.execute("SELECT * FROM positions WHERE user_id = %s", (user_id,))
+                cursor.execute("SELECT * FROM positions WHERE user_id = %s", (int(user_id),))
             else:
-                cursor.execute("SELECT * FROM positions WHERE user_id = ?", (user_id,))
+                cursor.execute("SELECT * FROM positions WHERE user_id = ?", (int(user_id),))
             rows = cursor.fetchall()
             return [dict(r) for r in rows]
 
@@ -419,16 +440,19 @@ class DBManager:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             
-            # Fetch the previous log's hash
             prev_hash = "GENESIS_ROOT_HASH"
-            if self.is_postgres:
-                cursor.execute("SELECT hash FROM audit_logs WHERE user_id = %s ORDER BY id DESC LIMIT 1", (user_id,))
-            else:
-                cursor.execute("SELECT hash FROM audit_logs WHERE user_id = ? ORDER BY id DESC LIMIT 1", (user_id,))
-            
-            row = cursor.fetchone()
-            if row and row['hash']:
-                prev_hash = row['hash']
+            try:
+                if self.is_postgres:
+                    cursor.execute("SELECT hash FROM audit_logs WHERE user_id = %s ORDER BY id DESC LIMIT 1", (int(user_id),))
+                else:
+                    cursor.execute("SELECT hash FROM audit_logs WHERE user_id = ? ORDER BY id DESC LIMIT 1", (int(user_id),))
+                
+                row = cursor.fetchone()
+                if row and row['hash']:
+                    prev_hash = row['hash']
+            except Exception:
+                if self.is_postgres:
+                    conn.rollback()
                 
             # Compute current block hash (concatenating prev_hash + action + details + user_ip)
             content_str = f"{prev_hash}_{action}_{details}_{user_ip}"
@@ -438,12 +462,12 @@ class DBManager:
                 cursor.execute("""
                     INSERT INTO audit_logs (user_id, action, user_ip, details, hash)
                     VALUES (%s, %s, %s, %s, %s)
-                """, (user_id, action, user_ip, details, current_hash))
+                """, (int(user_id), str(action), str(user_ip), str(details), str(current_hash)))
             else:
                 cursor.execute("""
                     INSERT INTO audit_logs (user_id, action, user_ip, details, hash)
                     VALUES (?, ?, ?, ?, ?)
-                """, (user_id, action, user_ip, details, current_hash))
+                """, (int(user_id), str(action), str(user_ip), str(details), str(current_hash)))
                 
             conn.commit()
             logger.info(f"Cryptographically chained audit log created. Hash: {current_hash[:16]}...")
@@ -452,37 +476,42 @@ class DBManager:
         with self.get_connection() as conn:
             cursor = conn.cursor()
             if self.is_postgres:
-                cursor.execute("SELECT * FROM audit_logs WHERE user_id = %s ORDER BY timestamp DESC LIMIT 50", (user_id,))
+                cursor.execute("SELECT * FROM audit_logs WHERE user_id = %s ORDER BY timestamp DESC LIMIT 50", (int(user_id),))
             else:
-                cursor.execute("SELECT * FROM audit_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT 50", (user_id,))
+                cursor.execute("SELECT * FROM audit_logs WHERE user_id = ? ORDER BY timestamp DESC LIMIT 50", (int(user_id),))
             rows = cursor.fetchall()
             return [dict(r) for r in rows]
 
     # Copytrading API
     def save_copy_allocation(self, trader_id, capital, active, user_id=1):
+        """
+        Saves a copytrade allocation using a clean DELETE-then-INSERT transaction.
+        Enforces complete compatibility with any existing constraints on Supabase!
+        """
         with self.get_connection() as conn:
             cursor = conn.cursor()
             active_int = 1 if active else 0
             if self.is_postgres:
+                cursor.execute("DELETE FROM copy_allocations WHERE user_id = %s AND trader_id = %s", (int(user_id), str(trader_id)))
                 cursor.execute("""
                     INSERT INTO copy_allocations (user_id, trader_id, allocated_capital, active)
                     VALUES (%s, %s, %s, %s)
-                    ON CONFLICT (user_id, trader_id) DO UPDATE SET allocated_capital = EXCLUDED.allocated_capital, active = EXCLUDED.active
-                """, (user_id, trader_id, capital, active_int))
+                """, (int(user_id), str(trader_id), float(capital), int(active_int)))
             else:
+                cursor.execute("DELETE FROM copy_allocations WHERE user_id = ? AND trader_id = ?", (int(user_id), str(trader_id)))
                 cursor.execute("""
-                    INSERT OR REPLACE INTO copy_allocations (user_id, trader_id, allocated_capital, active)
+                    INSERT INTO copy_allocations (user_id, trader_id, allocated_capital, active)
                     VALUES (?, ?, ?, ?)
-                """, (user_id, trader_id, capital, active_int))
+                """, (int(user_id), str(trader_id), float(capital), int(active_int)))
             conn.commit()
 
     def get_copy_allocations(self, user_id=1):
         with self.get_connection() as conn:
             cursor = conn.cursor()
             if self.is_postgres:
-                cursor.execute("SELECT * FROM copy_allocations WHERE user_id = %s", (user_id,))
+                cursor.execute("SELECT * FROM copy_allocations WHERE user_id = %s", (int(user_id),))
             else:
-                cursor.execute("SELECT * FROM copy_allocations WHERE user_id = ?", (user_id,))
+                cursor.execute("SELECT * FROM copy_allocations WHERE user_id = ?", (int(user_id),))
             rows = cursor.fetchall()
             return {r['trader_id']: {"allocated_capital": r['allocated_capital'], "active": bool(r['active'])} for r in rows}
 
@@ -514,6 +543,8 @@ class DBManager:
             cursor = conn.cursor()
             for idx, row in df_bars.iterrows():
                 ts_str = str(idx)
+                
+                # Dynamic type safety check to prevent any NoneType crashes!
                 open_val = float(row['open']) if row['open'] is not None else 0.0
                 high_val = float(row['high']) if row['high'] is not None else 0.0
                 low_val = float(row['low']) if row['low'] is not None else 0.0
