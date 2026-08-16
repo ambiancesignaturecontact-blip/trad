@@ -188,7 +188,11 @@ STATE = {
     "data_quality_status": DataQualityStatus.UNAVAILABLE,
     "macro_scale_factor_tactile": 1.0,  # Controlled by interactive Telegram mobile buttons!
     "last_sent_macro_event": None,      # Tracks sent notifications to avoid spamming
-    "last_broadcast_time": 0.0          # For real-time telemetry throttling
+    "last_broadcast_time": 0.0,          # For real-time telemetry throttling
+    "cached_positions": [],
+    "cached_orders": [],
+    "cached_audit_logs": [],
+    "last_db_query_time": 0.0
 }
 
 telegram_bot = TelegramBotManager(state_dict=STATE, db_manager=db)
@@ -1091,13 +1095,25 @@ async def live_trading_loop():
 async def broadcast_telemetry(consensus_signals):
     """
     Broadcasts real-time trading metrics to all active dashboard connections.
+    Caches database queries for 3.0 seconds to avoid blocking the event loop on high-frequency ticks.
     """
     if not STATE["connected_websockets"]:
         return
         
-    positions = db.get_positions()
-    orders = db.get_all_orders()
-    audit_logs = db.get_audit_logs()
+    now = time.time()
+    # Cooldown of 3.0 seconds for external PostgreSQL/Supabase queries
+    if now - STATE.get("last_db_query_time", 0.0) >= 3.0 or consensus_signals is not None:
+        STATE["last_db_query_time"] = now
+        try:
+            STATE["cached_positions"] = db.get_positions()
+            STATE["cached_orders"] = db.get_all_orders()
+            STATE["cached_audit_logs"] = db.get_audit_logs()
+        except Exception as e:
+            logger.error(f"Failed to fetch telemetry data from database: {str(e)}")
+            
+    positions = STATE.get("cached_positions", [])
+    orders = STATE.get("cached_orders", [])
+    audit_logs = STATE.get("cached_audit_logs", [])
     
     # Packaged JSON
     telemetry = {

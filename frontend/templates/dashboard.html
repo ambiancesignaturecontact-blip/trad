@@ -683,27 +683,25 @@
 
                 // Active strategies switches render
                 const stratSwitches = document.getElementById('strategy-switches');
-                if (stratSwitches) {
+                if (stratSwitches && data.consensus && data.consensus.contributions) {
                     stratSwitches.innerHTML = '';
-                    if (data.consensus && data.consensus.contributions) {
-                        Object.keys(data.consensus.contributions).forEach(name => {
-                            const strat = data.consensus.contributions[name];
-                            stratSwitches.innerHTML += `
-                                <div class="flex items-center justify-between bg-slate-950/60 p-2.5 rounded-xl border border-slate-900">
-                                    <div>
-                                        <span class="font-bold text-xs text-slate-300 block">${name}</span>
-                                        <span class="text-[9px] text-slate-500 font-bold">Poids: ${(strat.weight*100).toFixed(0)}% | Conf: ${(strat.confidence*100).toFixed(0)}%</span>
-                                    </div>
-                                    <div class="flex items-center space-x-2">
-                                        <span class="text-[9px] font-black px-2 py-0.5 rounded ${strat.signal >= 0.1 ? 'bg-green-500/10 text-emerald-400' : strat.signal <= -0.1 ? 'bg-red-500/10 text-rose-500' : 'bg-slate-900 text-slate-600'}">
-                                            ${strat.signal >= 0 ? '+' : ''}${strat.signal.toFixed(2)}
-                                        </span>
-                                        <input type="checkbox" ${strat.weight > 0 ? 'checked' : ''} onchange="toggleStrategy('${name}', this.checked)" class="rounded-lg border-slate-800 text-cyan-400 focus:ring-0 bg-slate-900 w-4 h-4 cursor-pointer">
-                                    </div>
+                    Object.keys(data.consensus.contributions).forEach(name => {
+                        const strat = data.consensus.contributions[name];
+                        stratSwitches.innerHTML += `
+                            <div class="flex items-center justify-between bg-slate-950/60 p-2.5 rounded-xl border border-slate-900">
+                                <div>
+                                    <span class="font-bold text-xs text-slate-300 block">${name}</span>
+                                    <span class="text-[9px] text-slate-500 font-bold">Poids: ${(strat.weight*100).toFixed(0)}% | Conf: ${(strat.confidence*100).toFixed(0)}%</span>
                                 </div>
-                            `;
-                        });
-                    }
+                                <div class="flex items-center space-x-2">
+                                    <span class="text-[9px] font-black px-2 py-0.5 rounded ${strat.signal >= 0.1 ? 'bg-green-500/10 text-emerald-400' : strat.signal <= -0.1 ? 'bg-red-500/10 text-rose-500' : 'bg-slate-900 text-slate-600'}">
+                                        ${strat.signal >= 0 ? '+' : ''}${strat.signal.toFixed(2)}
+                                    </span>
+                                    <input type="checkbox" ${strat.weight > 0 ? 'checked' : ''} onchange="toggleStrategy('${name}', this.checked)" class="rounded-lg border-slate-800 text-cyan-400 focus:ring-0 bg-slate-900 w-4 h-4 cursor-pointer">
+                                </div>
+                            </div>
+                        `;
+                    });
                 }
 
                 // Audit Logs
