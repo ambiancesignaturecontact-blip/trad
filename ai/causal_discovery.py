@@ -139,5 +139,3 @@ class CausalDiscoveryEngine:
                     adjustment -= 0.25 * abs(parent_signal)
 
         return np.clip(signal + adjustment, -1.0, 1.0)
-PYEOF
-echo "✅ LOT 53: Advanced Causal Discovery Engine created"

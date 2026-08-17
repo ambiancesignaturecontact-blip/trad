@@ -46,33 +46,59 @@ class CopyTradingManager:
         Tente de charger de vrais traders depuis l'API Bybit Copy Trading.
         Si l'API est indisponible ou retourne des données vides, le module reste
         en mode UNAVAILABLE (aucune simulation, aucune donnée fictive).
+
+        NOTE: Bybit n'expose PAS de endpoint public documenté pour le leaderboard
+        Copy Trading (le endpoint /v5/copy-trading/leaderboard renvoie 404).
+        Les données réelles requièrent des clés API institutionnelles dédiées,
+        ou un scraper du site bybit.com. Le module reste donc volontairement
+        en UNAVAILABLE tant qu'aucune source réelle n'est configurée.
         """
         logger.info("Polling Bybit Copy Trading Elite Leaderboard (REAL DATA ONLY)...")
+        # Endpoints candidats (le premier est le legacy, renvoie 404 aujourd'hui)
+        candidate_urls = [
+            "https://api.bybit.com/v5/copy-trading/leaderboard",
+            "https://api.bybit.com/v5/copy-trading/trading-traders",
+        ]
         try:
             import httpx
-            url = "https://api.bybit.com/v5/copy-trading/leaderboard"
-            resp = httpx.get(url, timeout=6.0)
-            
-            if resp.status_code == 200:
+
+            for url in candidate_urls:
+                try:
+                    resp = httpx.get(url, timeout=6.0)
+                except Exception as e:
+                    logger.debug(f"Bybit endpoint {url} unreachable: {e}")
+                    continue
+
+                if resp.status_code == 404:
+                    logger.info(
+                        f"Bybit Copy Trading: endpoint {url} n'existe pas "
+                        "(404) - pas d'API publique de leaderboard."
+                    )
+                    continue
+
+                if resp.status_code != 200:
+                    logger.debug(f"Bybit endpoint {url} HTTP {resp.status_code}")
+                    continue
+
                 data = resp.json().get("result", {}).get("list", [])
                 self.traders = {}
-                
+
                 for item in data[:8]:  # Top 8 traders réels
-                    tr_id = item.get("leaderId")
+                    tr_id = item.get("leaderId") or item.get("uid")
                     if not tr_id:
                         continue
-                        
+
                     name = item.get("nickname", f"Trader-{tr_id[:6]}")
                     roi = float(item.get("roi", 0.0))
                     win_rate = float(item.get("winRate", 0.0))
                     max_dd = float(item.get("maxDrawdown", 0.10))
                     sharpe = float(item.get("sharpeRatio", 1.0))
-                    
+
                     # On n'accepte que les traders avec des données réelles valides
                     if roi != 0 or win_rate != 0:
                         t = CopyTrader(tr_id, name, roi, win_rate, max_dd, sharpe)
                         self.traders[tr_id] = t
-                
+
                 if self.traders:
                     self.status = "LIVE"
                     self.status_message = f"Connected to {len(self.traders)} real traders"
@@ -80,9 +106,10 @@ class CopyTradingManager:
                     return
                 else:
                     logger.warning("Bybit returned empty or invalid trader data.")
+                    break
         except Exception as e:
             logger.warning(f"Bybit Copy Trading API unavailable: {str(e)}")
-        
+
         # Mode UNAVAILABLE strict - aucune donnée fictive
         self.traders = {}
         self.status = "UNAVAILABLE"

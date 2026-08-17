@@ -13,4 +13,3 @@ def test_latency_simulation():
     sim = ExecutionSimulator()
     latency = sim.simulate_latency(network_jitter=True)
     assert 50 < latency < 200
-PYEOF

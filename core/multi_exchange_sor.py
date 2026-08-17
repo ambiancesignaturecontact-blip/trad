@@ -161,5 +161,3 @@ class MultiExchangeSmartOrderRouter:
             "latency_ms": best.latency_ms,
             "liquidity_usd": best.liquidity_usd
         }
-PYEOF
-echo "✅ LOT 47++: Complete Multi-Exchange SOR created"

@@ -114,4 +114,3 @@ class AdvancedSmartOrderRouter:
         best = max(quotes, key=lambda x: x.final_score)
         logger.info(f"[SOR] Best venue: {best.exchange} | Score: {best.final_score:.4f}")
         return best
-PYEOF

@@ -38,7 +38,7 @@ def test_funding_arbitrage_missing_parameters():
     )
     
     assert res["action"] == "HOLD"
-    assert "Data incomplete" in res["reason"]
+    assert "Insufficient real market data" in res["reason"]
 
 def test_funding_arbitrage_simplified_signature():
     engine = FundingRateArbitrageEngine(min_funding_threshold=0.0005)

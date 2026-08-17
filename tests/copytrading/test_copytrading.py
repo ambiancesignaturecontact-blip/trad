@@ -7,7 +7,7 @@ def test_copytrading_unavailable_by_default():
     # By default, without specific private keys, the real API should fail or be offline,
     # leading strictly to UNAVAILABLE status!
     assert manager.status == "UNAVAILABLE"
-    assert manager.status_message == "Real trader data unavailable"
+    assert manager.status_message == "Real trader data unavailable - No simulation"
     assert manager.get_ranked_traders() == []
     
     # Starting copy should fail

@@ -133,8 +133,9 @@ async def lot46_model_selection_scheduler():
         except Exception as e:
             logger.warning(f"LOT 46 scheduler error: {e}")
 
-asyncio.create_task(lot46_model_selection_scheduler())
-logger.info("✅ LOT 46 scheduler started")
+# NOTE: The LOT 46 scheduler task is started inside the FastAPI startup event,
+# because asyncio.create_task() at module level crashes with
+# "RuntimeError: no running event loop" (the loop only exists once uvicorn runs).
 
 # === LOT 47++: Complete Multi-Exchange Smart Order Router ===
 from core.multi_exchange_sor import MultiExchangeSmartOrderRouter
@@ -660,6 +661,10 @@ async def startup_event():
     
     # Start the tactile Telegram remote control worker
     asyncio.create_task(telegram_bot.poll_telegram_commands_loop())
+
+    # Start the LOT 46 model-selection scheduler (needs a running event loop)
+    asyncio.create_task(lot46_model_selection_scheduler())
+    logger.info("✅ LOT 46 scheduler started")
 
 
 async def live_trading_loop():
@@ -1262,11 +1267,21 @@ def serialize_helper(obj):
     """
     Safely converts any datetime or non-serializable database object into standard string/types
     before sending over WebSockets or JSON responses.
+    Also strips NaN/Infinity floats which are not valid JSON (would crash the endpoint with
+    "ValueError: Out of range float values are not JSON compliant").
     """
     if isinstance(obj, dict):
         return {k: serialize_helper(v) for k, v in obj.items()}
     elif isinstance(obj, list):
         return [serialize_helper(i) for i in obj]
+    elif isinstance(obj, tuple):
+        return [serialize_helper(i) for i in obj]
+    elif isinstance(obj, float):
+        if obj != obj or obj in (float("inf"), float("-inf")):
+            return None
+        return obj
+    elif isinstance(obj, int):
+        return obj
     elif hasattr(obj, "isoformat"):  # Matches datetime.datetime, date, etc.
         return obj.isoformat()
     return obj
@@ -1344,7 +1359,8 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
             for t in copy_manager.get_ranked_traders()
         ]
     }
-    return telemetry
+    # Sanitize the full payload: strips NaN/Inf (invalid JSON) and datetimes
+    return serialize_helper(telemetry)
 
 
 async def broadcast_telemetry(consensus_signals):
@@ -1391,6 +1407,8 @@ async def get_dashboard(request: Request):
 async def get_status():
     # Safe serialization - remove non-serializable objects (DataFrames, etc.)
     safe_state = {k: v for k, v in STATE.items() if not isinstance(v, (pd.DataFrame, pd.Series))}
+    # Also sanitize NaN/Infinity floats (invalid JSON) and convert datetimes
+    safe_state = serialize_helper(safe_state)
     return JSONResponse(safe_state)
 
 
@@ -1432,6 +1450,18 @@ async def get_history_endpoint(timeframe: str = "1h"):
                     db.save_candles(cache_symbol, df)
         except Exception as e:
             logger.warning(f"Failed to fetch Binance klines for {timeframe}: {str(e)}")
+
+        # Fallback: Yahoo Finance (works even when Binance is geo-blocked / offline)
+        if df.empty or len(df) < 120:
+            logger.info(f"Binance unavailable for {timeframe}. Falling back to Yahoo Finance...")
+            yahoo_ticker = "BTC-USD"
+            try:
+                df_yahoo = await fetch_yahoo_finance_candles(yahoo_ticker, interval=interval, range_str="5d")
+                if df_yahoo is not None and not df_yahoo.empty:
+                    df = df_yahoo
+                    db.save_candles(cache_symbol, df)
+            except Exception as e:
+                logger.warning(f"Yahoo Finance fallback failed for {timeframe}: {str(e)}")
             
     if df.empty:
         logger.error(f"Failed to load historical candles for {timeframe}. No database or CEX feed active.")

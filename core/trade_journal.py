@@ -105,5 +105,3 @@ class TradeJournal:
             "sell_count": len(df[df["side"] == "SELL"]),
             "avg_trade_size": round(df["qty"].mean(), 4) if len(df) > 0 else 0
         }
-PYEOF
-echo "✅ LOT 52: Trade Journal created"

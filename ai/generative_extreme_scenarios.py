@@ -4,45 +4,56 @@ Lightweight but powerful implementation using PyTorch.
 Supports: Conditional GAN-style generation + Simple Diffusion-like sampling.
 """
 
-import torch
-import torch.nn as nn
 import numpy as np
 import pandas as pd
 import logging
 from typing import Dict, List, Optional
 
+# PyTorch is a heavy optional dependency. The module degrades gracefully to
+# fallback random-noise scenarios when torch is not installed, so the platform
+# still boots. Install torch to enable the GAN-based extreme scenario engine.
+try:
+    import torch
+    import torch.nn as nn
+    TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    nn = None
+    TORCH_AVAILABLE = False
+
 logger = logging.getLogger("GenerativeExtremeScenarios")
 
-class Generator(nn.Module):
-    """Simple Generator network for synthetic returns"""
-    def __init__(self, latent_dim=16, output_dim=5, hidden=64):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(latent_dim, hidden),
-            nn.LeakyReLU(0.2),
-            nn.Linear(hidden, hidden),
-            nn.LeakyReLU(0.2),
-            nn.Linear(hidden, output_dim),
-            nn.Tanh()
-        )
+if TORCH_AVAILABLE:
+    class Generator(nn.Module):
+        """Simple Generator network for synthetic returns"""
+        def __init__(self, latent_dim=16, output_dim=5, hidden=64):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(latent_dim, hidden),
+                nn.LeakyReLU(0.2),
+                nn.Linear(hidden, hidden),
+                nn.LeakyReLU(0.2),
+                nn.Linear(hidden, output_dim),
+                nn.Tanh()
+            )
 
-    def forward(self, z):
-        return self.net(z)
+        def forward(self, z):
+            return self.net(z)
 
 
-class Discriminator(nn.Module):
-    """Simple Discriminator"""
-    def __init__(self, input_dim=5, hidden=64):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden),
-            nn.LeakyReLU(0.2),
-            nn.Linear(hidden, 1),
-            nn.Sigmoid()
-        )
+    class Discriminator(nn.Module):
+        """Simple Discriminator"""
+        def __init__(self, input_dim=5, hidden=64):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(input_dim, hidden),
+                nn.LeakyReLU(0.2),
+                nn.Linear(hidden, 1),
+                nn.Sigmoid()
+            )
 
-    def forward(self, x):
-        return self.net(x)
+        def forward(self, x):
+            return self.net(x)
 
 
 class ExtremeScenarioGenerator:
@@ -54,6 +65,17 @@ class ExtremeScenarioGenerator:
     def __init__(self, latent_dim: int = 16, seq_len: int = 20):
         self.latent_dim = latent_dim
         self.seq_len = seq_len
+        self.is_trained = False
+
+        if not TORCH_AVAILABLE:
+            logger.warning(
+                "LOT 54: PyTorch not installed - extreme scenario generator running "
+                "in fallback mode (random-noise scenarios). Install torch to enable GANs."
+            )
+            self.generator = None
+            self.discriminator = None
+            return
+
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.generator = Generator(latent_dim, output_dim=5).to(self.device)
@@ -62,11 +84,13 @@ class ExtremeScenarioGenerator:
         self.g_optimizer = torch.optim.Adam(self.generator.parameters(), lr=2e-4)
         self.d_optimizer = torch.optim.Adam(self.discriminator.parameters(), lr=2e-4)
 
-        self.is_trained = False
         logger.info("LOT 54: ExtremeScenarioGenerator initialized")
 
     def train(self, real_returns: np.ndarray, epochs: int = 800):
         """Train the GAN on historical returns"""
+        if not TORCH_AVAILABLE or self.generator is None:
+            logger.warning("LOT 54: Cannot train - PyTorch not available.")
+            return
         real_returns = torch.tensor(real_returns, dtype=torch.float32).to(self.device)
 
         for epoch in range(epochs):
@@ -130,5 +154,3 @@ class ExtremeScenarioGenerator:
             paths[:, t+1] = paths[:, t] * (1 + returns[:, t])
 
         return paths
-PYEOF
-echo "✅ LOT 54: Generative Models for Extreme Scenarios created"

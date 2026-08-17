@@ -99,5 +99,3 @@ class AdvancedAlmgrenChrissModel:
 
         score = (adv_factor * 0.5) + (spread_factor * 0.3) + (vol_factor * 0.2)
         return float(np.clip(score, 0.05, 1.0))
-PYEOF
-echo "✅ LOT 57: Advanced Almgren-Chriss Model created"

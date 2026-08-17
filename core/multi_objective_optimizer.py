@@ -104,5 +104,3 @@ class MultiObjectivePortfolioOptimizer:
 
     def get_last_weights(self) -> Optional[np.ndarray]:
         return self.last_weights
-PYEOF
-echo "✅ LOT 56: multi_objective_optimizer.py created"

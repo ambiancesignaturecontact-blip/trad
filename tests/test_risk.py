@@ -9,4 +9,3 @@ def test_risk_manager_exists():
 def test_portfolio_var_calculation():
     # Placeholder test
     assert True
-PYEOF

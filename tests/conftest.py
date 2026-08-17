@@ -12,4 +12,3 @@ def sample_returns():
         "BTCUSDT": np.random.randn(100) * 0.02,
         "ETHUSDT": np.random.randn(100) * 0.025
     }
-PYEOF

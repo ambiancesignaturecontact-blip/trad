@@ -22,4 +22,3 @@ def test_cost_basis_calculation():
     
     cost = engine.get_cost_basis("ETHUSDT")
     assert cost == 24600.0  # (5*3000) + (3*3200)
-PYEOF

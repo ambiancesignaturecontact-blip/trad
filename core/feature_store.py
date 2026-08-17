@@ -141,5 +141,3 @@ class FeatureStore:
             "total_symbols": len(self.features),
             "storage_path": self.storage_path
         }
-PYEOF
-echo "✅ LOT 48+: Robust Feature Store with Versioning created"

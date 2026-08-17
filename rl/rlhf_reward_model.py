@@ -2,30 +2,40 @@
 LOT 55: RLHF (Reinforcement Learning from Human Feedback) for Trading
 """
 
-import torch
-import torch.nn as nn
 import numpy as np
 import logging
 from typing import List, Dict, Tuple, Optional
 from collections import deque
 
+# PyTorch is a heavy OPTIONAL dependency. Without it, the RLHF reward model
+# degrades gracefully (returns neutral scores) so the platform still boots.
+try:
+    import torch
+    import torch.nn as nn
+    TORCH_AVAILABLE = True
+except ImportError:
+    torch = None
+    nn = None
+    TORCH_AVAILABLE = False
+
 logger = logging.getLogger("RLHFRewardModel")
 
-class RewardModel(nn.Module):
-    """Neural network that predicts human preference score for a trade"""
-    def __init__(self, input_dim: int = 10, hidden_dim: int = 64):
-        super().__init__()
-        self.net = nn.Sequential(
-            nn.Linear(input_dim, hidden_dim),
-            nn.ReLU(),
-            nn.Linear(hidden_dim, hidden_dim // 2),
-            nn.ReLU(),
-            nn.Linear(hidden_dim // 2, 1),
-            nn.Tanh()  # Output between -1 and 1
-        )
+if TORCH_AVAILABLE:
+    class RewardModel(nn.Module):
+        """Neural network that predicts human preference score for a trade"""
+        def __init__(self, input_dim: int = 10, hidden_dim: int = 64):
+            super().__init__()
+            self.net = nn.Sequential(
+                nn.Linear(input_dim, hidden_dim),
+                nn.ReLU(),
+                nn.Linear(hidden_dim, hidden_dim // 2),
+                nn.ReLU(),
+                nn.Linear(hidden_dim // 2, 1),
+                nn.Tanh()  # Output between -1 and 1
+            )
 
-    def forward(self, x):
-        return self.net(x)
+        def forward(self, x):
+            return self.net(x)
 
 
 class RLHFRewardModel:
@@ -37,14 +47,23 @@ class RLHFRewardModel:
     """
 
     def __init__(self, input_dim: int = 10):
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.model = RewardModel(input_dim).to(self.device)
-        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
-        
         self.feedback_buffer: List[Tuple[np.ndarray, float]] = []
         self.max_buffer_size = 1000
         self.is_trained = False
         self.input_dim = input_dim
+
+        if not TORCH_AVAILABLE:
+            logger.warning(
+                "LOT 55: PyTorch not installed - RLHF reward model running in "
+                "fallback mode (neutral scores). Install torch to enable it."
+            )
+            self.model = None
+            self.optimizer = None
+            return
+
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        self.model = RewardModel(input_dim).to(self.device)
+        self.optimizer = torch.optim.Adam(self.model.parameters(), lr=1e-3)
 
     def add_feedback(self, features: np.ndarray, human_preference_score: float):
         """
@@ -62,6 +81,9 @@ class RLHFRewardModel:
 
     def train_reward_model(self, epochs: int = 400):
         """Train the reward model on collected feedback"""
+        if not TORCH_AVAILABLE or self.model is None:
+            logger.warning("LOT 55: Cannot train - PyTorch not available.")
+            return False
         if len(self.feedback_buffer) < 30:
             logger.warning("Not enough feedback to train RLHF model")
             return False
@@ -85,7 +107,7 @@ class RLHFRewardModel:
 
     def predict_reward(self, features: np.ndarray) -> float:
         """Predict how much a human would like this trade situation"""
-        if not self.is_trained:
+        if not TORCH_AVAILABLE or not self.is_trained:
             return 0.0
 
         x = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(self.device)
@@ -111,5 +133,3 @@ class RLHFRewardModel:
         if regime_id in [0, 2]:  # Bull or Range
             score += 0.1
         return float(np.clip(score, -1.0, 1.0))
-PYEOF
-echo "✅ LOT 55: rlhf_reward_model.py created"

@@ -137,5 +137,3 @@ class ModelExplainer:
             "lime_available": LIME_AVAILABLE,
             "feature_count": len(self.feature_names)
         }
-PYEOF
-echo "✅ LOT 59: model_explainability.py created"

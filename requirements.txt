@@ -14,3 +14,10 @@ web3>=7.0.0
 tenacity>=8.2.0
 python-dotenv>=1.0.0
 aiolimiter>=1.0.0
+scipy>=1.12.0
+bcrypt>=4.1.0
+PyJWT>=2.8.0
+pyotp>=2.9.0
+# PyTorch (CPU) — OPTIONAL, heavy (~800MB installed). Required only for the
+# LOT 54 GAN extreme-scenario engine; the platform degrades gracefully without it.
+# torch>=2.2.0

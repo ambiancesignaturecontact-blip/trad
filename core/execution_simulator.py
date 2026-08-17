@@ -86,5 +86,3 @@ class ExecutionSimulator:
 
         logger.info(f"[SIM] {side} {symbol} @ {executed_price} | Slippage: {slippage_bps:.1f}bps | Latency: {latency_ms}ms")
         return result
-PYEOF
-echo "✅ LOT 49: Execution Simulator (Slippage + Latency) created"

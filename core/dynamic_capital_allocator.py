@@ -88,5 +88,3 @@ class DynamicCapitalAllocator:
 
     def get_current_exposure(self) -> float:
         return self.current_exposure
-PYEOF
-echo "✅ LOT 50: Dynamic Capital Allocator created"

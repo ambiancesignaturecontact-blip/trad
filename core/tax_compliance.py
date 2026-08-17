@@ -138,5 +138,3 @@ class TaxComplianceEngine:
             "short_term_pnl": round(df[df["timestamp"].apply(lambda x: (datetime.now() - pd.to_datetime(x)).days <= 365)]["realized_pnl"].sum(), 2),
             "long_term_pnl": round(df[df["timestamp"].apply(lambda x: (datetime.now() - pd.to_datetime(x)).days > 365)]["realized_pnl"].sum(), 2)
         }
-PYEOF
-echo "✅ LOT 58: tax_compliance.py created"

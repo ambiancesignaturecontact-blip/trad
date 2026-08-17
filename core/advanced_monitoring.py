@@ -125,5 +125,3 @@ class AdvancedMonitoringSystem:
             "auto_scaling_actions": len(self.auto_scaling_actions),
             "monitored_models": list(self.model_performance.keys())
         }
-PYEOF
-echo "✅ LOT 60: Advanced Monitoring & Auto-Scaling System created"

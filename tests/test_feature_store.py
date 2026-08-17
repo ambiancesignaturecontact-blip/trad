@@ -34,4 +34,3 @@ def test_feature_store_versioning():
     versions = fs.list_versions("ETHUSDT")
     assert "v1.0" in versions
     assert "v2.0" in versions
-PYEOF

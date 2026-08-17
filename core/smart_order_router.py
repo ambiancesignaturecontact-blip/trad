@@ -129,5 +129,3 @@ class SmartOrderRouter:
         except Exception as e:
             logger.error(f"LOT 47 SOR: Order failed on {best.exchange}: {e}")
             return {"success": False, "reason": str(e)}
-PYEOF
-echo "✅ LOT 47: Smart Order Router created"
