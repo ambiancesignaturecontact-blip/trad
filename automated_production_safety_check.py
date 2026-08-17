@@ -42,7 +42,7 @@ def test_hmm():
 
 # Test 2: Portfolio VaR/CVaR Covariance Matrix Edge Cases
 def test_covariance():
-    from quant.risk_covariance import RiskCovarianceEngine
+    from models.risk_covariance import RiskCovarianceEngine
     engine = RiskCovarianceEngine()
     
     # Empty positions
@@ -57,7 +57,7 @@ def test_covariance():
 
 # Test 3: Almgren-Chriss Sizing and Slicing Bounds
 def test_almgren_chriss():
-    from quant.almgren_chriss import AlmgrenChrissExecutionOptimizer, calculate_cvar_constrained_sizing
+    from models.almgren_chriss import AlmgrenChrissExecutionOptimizer, calculate_cvar_constrained_sizing
     optimizer = AlmgrenChrissExecutionOptimizer()
     
     # 0 shares or 0 steps or zero volatility
@@ -75,7 +75,7 @@ def test_almgren_chriss():
 
 # Test 4: Lopez de Prado Meta Labeling and Cross Validation
 def test_lopez_de_prado():
-    from quant.lopez_de_prado import PurgedKFoldEmbargo, calculate_deflated_sharpe_ratio, MetaLabelingTripleBarrier
+    from models.lopez_de_prado import PurgedKFoldEmbargo, calculate_deflated_sharpe_ratio, MetaLabelingTripleBarrier
     
     # Deflated Sharpe with 1 trial or extremely low trials
     dsr = calculate_deflated_sharpe_ratio(1.5, num_trials=0, trials_variance_sharpe=0.1, sample_length=100)

@@ -600,3 +600,55 @@ class DBManager:
                 })
             df = pd.DataFrame(data).set_index("timestamp")
             return df
+
+    def create_backup(self) -> str:
+        """
+        Institutional daily backup (roadmap priority #3).
+        - SQLite : consistent snapshot copy via the sqlite3 backup API (safe while live).
+        - PostgreSQL : exports system settings to JSON (full dumps are handled by
+          Supabase's built-in daily backups - recommended in production).
+        Returns the backup path.
+        """
+        import shutil
+        from datetime import datetime
+        stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+        backup_dir = os.path.join(os.getcwd(), "backups")
+        os.makedirs(backup_dir, exist_ok=True)
+
+        # 1) Settings export (both dialects) - never contains the raw Fernet key
+        try:
+            settings_path = os.path.join(backup_dir, f"settings_{stamp}.json")
+            rows = {}
+            with self.get_connection() as conn:
+                cursor = conn.cursor()
+                table = "system_settings"
+                if self.is_postgres:
+                    cursor.execute(f"SELECT key, value FROM {table} WHERE user_id = 1")
+                else:
+                    cursor.execute(f"SELECT key, value FROM {table} WHERE user_id = 1")
+                for r in cursor.fetchall():
+                    rows[r['key']] = r['value']
+            with open(settings_path, "w") as f:
+                json.dump(rows, f, indent=2, default=str)
+            logger.info(f"DB backup: settings exported -> {settings_path}")
+        except Exception as e:
+            logger.warning(f"DB backup: settings export failed: {e}")
+
+        # 2) SQLite snapshot (consistent even while the bot is running)
+        if not self.is_postgres:
+            backup_path = os.path.join(backup_dir, f"trading_platform_{stamp}.db")
+            try:
+                src = sqlite3.connect(DB_PATH)
+                dst = sqlite3.connect(backup_path)
+                src.backup(dst)
+                dst.close()
+                src.close()
+                logger.info(f"DB backup: SQLite snapshot -> {backup_path}")
+                return backup_path
+            except Exception as e:
+                logger.error(f"DB backup: SQLite snapshot failed: {e}")
+                return settings_path if os.path.exists(settings_path) else ""
+
+        # PostgreSQL: rely on Supabase built-in backups (documented)
+        logger.info("DB backup: PostgreSQL mode - Supabase managed backups are authoritative.")
+        return settings_path if os.path.exists(settings_path) else ""

@@ -88,3 +88,35 @@ d'un data scientist/quant, et c'est la partie que **personne ne peut garantir pa
 4. Attribution par modèle + qualité de données explicite (précision)
 5. Backtest walk-forward long + paper-trading (rentabilité)
 6. Nettoyage code mort (maintenabilité)
+
+
+---
+
+## ✅ 6. ÉTAT D'APPLICATION DE LA ROADMAP (17 août 2026 — TOUT APPLIQUÉ)
+
+| # | Priorité | Élément | Statut |
+|---|---|---|---|
+| 1 | HAUTE | Idempotence / anti-doublons d'ordres (cooldown par symbole) | ✅ Fait |
+| 2 | HAUTE | Confirmation de fill réelle (polling `fetch_order` avant ledger) | ✅ Fait |
+| 3 | HAUTE | Sauvegardes DB automatiques (`db.create_backup()` + scheduler LOT 64) | ✅ Fait |
+| 4 | HAUTE | Auth JWT sur tous les endpoints d'action (login + TOTP, forcé en REAL) | ✅ Fait |
+| 5 | HAUTE | Graceful shutdown (journal + WebSockets) | ✅ Fait |
+| 6 | HAUTE | Smoke tests CI (`tests/test_smoke.py`) + backtest integrity (anti look-ahead) | ✅ Fait |
+| 7 | HAUTE | Multi-instance : 1 worker forcé + documenté (Redis = chantier futur) | ⚠️ Documenté |
+| 8 | MOYENNE | Attribution par modèle (stratégie dominante logguée, `strategy_weights`) | ✅ Fait |
+| 9 | MOYENNE | Qualité de données explicite (`set_data_quality` LIVE/STALE + gauge + télémétrie) | ✅ Fait |
+| 10 | MOYENNE | Candles de repli flaggées (`using_fallback_data` dans la télémétrie) | ✅ Fait |
+| 11 | MOYENNE | Feature store branché (snapshot à chaque entraînement) | ✅ Fait |
+| 12 | BASSE | Nettoyage code mort (8 packages/2 fichiers supprimés, vérifiés inatteignables) | ✅ Fait |
+| 13 | BASSE | Clé CryptoCompare via env (`CRYPTOCOMPARE_API_KEY`) | ✅ Fait |
+| 14 | BASSE | Mini-App Telegram : données 100 % réelles (zéro Math.random), SDK Telegram, mobile-first, auth | ✅ Fait |
+| 15 | BASSE | Dashboard : login intégré + mobile + `strategy_weights`/`active_models` | ✅ Fait |
+| 16 | BASSE | README complet + .env.example enrichi | ✅ Fait |
+
+**Résultat final :** 56/56 tests ✅ · import complet ✅ · démarrage propre ✅ · endpoints 200 ✅ ·
+mini-app `/telegram` servie ✅ · auth JWT opérationnelle ✅ · données 100 % réelles ✅.
+
+### Reste en dehors du code (décisions d'exploitation)
+- **Source réelle du leaderboard Copy Trading** : aucune API publique Bybit → scraper agréé ou clés institutionnelles. Module volontairement `UNAVAILABLE` (zéro donnée fictive).
+- **Rentabilité** : à prouver par backtest walk-forward honnête + paper-trading (processus décrit section 5).
+- **Multi-réplicas** : passer l'état dans Redis/PostgreSQL si vous voulez scaler au-delà d'un worker.

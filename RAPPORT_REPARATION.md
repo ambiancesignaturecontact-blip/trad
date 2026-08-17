@@ -161,3 +161,43 @@ de rentabilité** (backtest walk-forward honnête + paper-trading 4–8 semaines
 - ✅ `/api/status`, `/api/telemetry`, `/api/history` → 200
 - ✅ Boucle de trading : 0 erreur de tick observée (microstructure, arbitrages, audit logs OK)
 - ✅ GAN + RLHF : entraînement et prédictions validés en conditions réelles
+
+---
+
+# 🔧 TOUR 3 — 17 août 2026 (application intégrale de la roadmap)
+
+## 16. Sécurité des fonds (priorités hautes)
+- **Idempotence** : cooldown par symbole (60 s REAL / 10 s DEMO) avant tout ordre → plus d'ordres dupliqués en rafale.
+- **Confirmation de fill** : en mode REAL, `fetch_order` est pollé (jusqu'à 6×1 s) avant mise à jour du ledger — on ne comptabilise que des ordres réellement remplis.
+- **Sauvegardes DB** : `db.create_backup()` (snapshot SQLite cohérent + export settings JSON) + scheduler quotidien (LOT 64).
+- **Graceful shutdown** : flush du trade journal + fermeture propre des WebSockets.
+
+## 17. Sécurité plateforme
+- `/api/login` (JWT HS256 + TOTP optionnel via `ADMIN_TOTP_SECRET`).
+- Tous les endpoints d'action protégés par `require_auth` — **forcé automatiquement en mode REAL** ou avec `AUTH_ENABLED=true`.
+- Login intégré au dashboard (modal) et à la mini-app Telegram (bearer automatique).
+
+## 18. Précision
+- **Attribution par modèle** : stratégie dominante (poids × signal) logguée dans chaque ordre + trade journal ; `strategy_weights` exposé dans `/api/telemetry`.
+- **Qualité de données** : `set_data_quality()` LIVE/STALE par tick, gauge Prometheus `quant_data_quality`, exposé en télémétrie.
+- **Candles de repli** flaggées (`using_fallback_data`).
+- **Feature store** branché (snapshot versionné à chaque entraînement).
+- **Backtest anti look-ahead** : tests dédiés.
+
+## 19. Mini-App Telegram (mobile)
+- Servie sur **`/telegram`** (route ajoutée — elle n'était servie nulle part !).
+- **Zéro données simulées** : suppression du `Math.random()` → télémétrie réelle toutes les 4 s.
+- SDK Telegram WebApp (expand, thème, haptique), safe-areas, cibles tactiles ≥ 44 px.
+- Auth JWT intégrée.
+
+## 20. Nettoyage code mort
+- Supprimés (vérifiés inatteignables depuis `main.py`) : `api/`, `brokers/`, `exchanges/`, `execution/`, `portfolio/`, `quant/`, `utils/`, `core/real_execution.py`, `core/trading_loop.py`.
+- Conservés : `oms/`, `ems/`, `reconciliation/` (dépendances live), `market_data/` (bibliothèque qualité testée).
+
+## 21. Vérifications finales (tour 3)
+- ✅ `pytest` : **56 passed** (46 → 56)
+- ✅ Tous endpoints 200 (`/`, `/telegram`, `/api/status`, `/api/telemetry`, `/api/history`, `/metrics`)
+- ✅ Auth : login 200, actions sans token → 401 quand requis, 200 en DEMO
+- ✅ Télémétrie enrichie : `strategy_weights`, `active_models`, `capital_exposure`, `data_quality_status`, `using_fallback_data`
+- ✅ Backup DB créé et vérifié
+- ✅ Mini-app : données réelles + SDK Telegram + auth

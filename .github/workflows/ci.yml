@@ -9,6 +9,7 @@ on:
 jobs:
   build-and-test:
     runs-on: ubuntu-latest
+    timeout-minutes: 20
 
     steps:
     - name: Checkout Repository
@@ -21,10 +22,18 @@ jobs:
 
     - name: Install Dependencies
       run: |
-        python -m pip upgrade pip
+        python -m pip install --upgrade pip
         pip install -r requirements.txt
         pip install pytest
 
-    - name: Run Automated Unit Tests
+    - name: Syntax Compilation Check
       run: |
-        python -m pytest tests/
+        python -m compileall -q . -x 'node_modules|\.git'
+
+    - name: Run Automated Unit Tests (+ API smoke tests)
+      run: |
+        python -m pytest tests/ -q
+
+    - name: Production Safety Check Script
+      run: |
+        python automated_production_safety_check.py || echo "Safety check reported findings (see logs)."

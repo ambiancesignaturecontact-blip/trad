@@ -29,3 +29,7 @@ Thumbs.db
 # Frontend build artifacts
 frontend/node_modules/
 frontend/dist/
+
+# Database backups
+backups/
+trade_journal*.json

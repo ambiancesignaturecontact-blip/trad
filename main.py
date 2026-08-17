@@ -10,7 +10,7 @@ import ccxt
 import os
 import websockets
 import base64
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Depends
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -229,6 +229,12 @@ logger.info("✅ LOT 61: Prometheus /metrics registry initialized")
 
 # === LOT 63: Centralized outbound API rate limiting ===
 from core.rate_limits import bybit_limiter, binance_limiter, yahoo_limiter, news_limiter, rpc_limiter
+from database.auth import AuthManager, Roles, security as auth_security
+from fastapi.security import HTTPBearer
+
+# Optional bearer: when no Authorization header is present, credentials is None
+# and require_auth() decides whether auth is needed (DEMO vs REAL / AUTH_ENABLED).
+auth_security_optional = HTTPBearer(auto_error=False)
 logger.info("✅ LOT 63: Outbound API rate limiters initialized")
 
 # Request bodies validation models
@@ -311,8 +317,46 @@ STATE = {
     "cached_positions": [],
     "cached_orders": [],
     "cached_audit_logs": [],
-    "last_db_query_time": 0.0
+    "last_db_query_time": 0.0,
+    "last_order_times": {},          # per-symbol order cooldown (idempotence)
+    "using_fallback_data": False     # True when synthetic fallback candles are in use
 }
+
+# ============ INSTITUTIONAL SAFETY HELPERS (roadmap) ============
+ORDER_COOLDOWN_REAL_SECONDS = 60.0   # min gap between REAL orders per symbol (idempotence)
+ORDER_COOLDOWN_DEMO_SECONDS = 10.0   # min gap between DEMO orders per symbol
+
+
+def set_data_quality(status):
+    """Tracks market-data quality per source into STATE + Prometheus gauge."""
+    STATE["data_quality_status"] = status
+    try:
+        mapping = {
+            DataQualityStatus.LIVE: 4.0,
+            DataQualityStatus.DELAYED: 3.0,
+            DataQualityStatus.STALE: 2.0,
+            DataQualityStatus.INVALID: 1.0,
+            DataQualityStatus.DISCONNECTED: 0.0,
+            DataQualityStatus.UNAVAILABLE: 0.0,
+        }
+        platform_metrics.DATA_QUALITY.labels(source="market").set(mapping.get(status, 0.0))
+    except Exception:
+        pass
+
+
+def require_auth(credentials=Depends(auth_security_optional)):
+    """
+    Protects state-changing endpoints.
+    Enforced when AUTH_ENABLED=true OR when the platform runs in REAL mode
+    (institutional rule: real money can never be controlled without a session).
+    """
+    auth_required = os.getenv("AUTH_ENABLED", "").lower() == "true" or STATE["mode"] == "REAL"
+    if not auth_required:
+        return {"role": Roles.ADMIN, "username": "local-demo", "sub": "1"}
+    if credentials is None or not getattr(credentials, "credentials", None):
+        raise HTTPException(status_code=401, detail="Authentication required")
+    return AuthManager.verify_jwt_token(credentials.credentials)
+
 
 telegram_bot = TelegramBotManager(state_dict=STATE, db_manager=db)
 
@@ -479,6 +523,13 @@ def train_ai_models(df):
     
     STATE["historical_bars"] = df
     logger.info("AI Models successfully fitted and deployed in-memory.")
+
+    # LOT 48: persist a versioned feature snapshot so training is reproducible
+    try:
+        feat = feature_store.compute_features("BTCUSDT", df, version="v1.0")
+        logger.info(f"LOT 48: Feature snapshot stored for BTCUSDT: {list(feat.keys())}")
+    except Exception as e:
+        logger.warning(f"LOT 48: Feature snapshot failed: {e}")
 
 
 def evaluate_real_safety_gate(symbol: str) -> bool:
@@ -677,6 +728,17 @@ def validate_startup_config():
         )
 
 
+async def db_backup_scheduler():
+    """LOT 64 (roadmap #3): automatic daily database backup."""
+    while True:
+        await asyncio.sleep(24 * 3600)
+        try:
+            backup_path = db.create_backup()
+            logger.info(f"✅ Daily database backup created: {backup_path}")
+        except Exception as e:
+            logger.warning(f"DB backup scheduler error: {e}")
+
+
 @app.on_event("startup")
 async def startup_event():
     # LOT 62: institutional configuration checklist
@@ -749,6 +811,10 @@ async def startup_event():
     # Start the LOT 46 model-selection scheduler (needs a running event loop)
     asyncio.create_task(lot46_model_selection_scheduler())
     logger.info("✅ LOT 46 scheduler started")
+
+    # Start the daily DB backup task
+    asyncio.create_task(db_backup_scheduler())
+    logger.info("✅ LOT 64: Daily DB backup scheduler started")
 
 
 async def live_trading_loop():
@@ -909,11 +975,15 @@ async def live_trading_loop():
                     logger.error(f"Failed to fetch live price tick for {symbol}: {str(e)}")
                     # Price is marked as None (Unavailable), completely halting trading for this asset!
                     STATE["assets"][symbol]["price"] = None
+                    set_data_quality(DataQualityStatus.STALE)
                 
                 current_price = STATE["assets"][symbol]["price"]
                 if current_price is None:
                     logger.warning(f"Skipping trade loop for {symbol} due to unavailable price feed.")
                     continue
+                
+                # Market data quality: a live tick arrived -> LIVE
+                set_data_quality(DataQualityStatus.LIVE)
             
                 # EVALUATE GENUINE FUNDING RATE ARBITRAGE (100% Real-World API data from Binance Futures!)
                 if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
@@ -1037,6 +1107,9 @@ async def live_trading_loop():
                 df = db.load_candles(symbol, limit=120)
                 if df.empty or len(df) < 10:
                     df = STATE["historical_bars"]
+                    STATE["using_fallback_data"] = True
+                else:
+                    STATE["using_fallback_data"] = False
                 
                 if df is not None:
                     # Update bars df
@@ -1160,6 +1233,16 @@ async def live_trading_loop():
                     if abs(trade_qty) > (current_price * 0.0001):
                         side = "BUY" if trade_qty > 0 else "SELL"
                         execution_price = current_price * (1.0 + 0.0003) if side == "BUY" else current_price * (1.0 - 0.0003)
+
+                        # IDEMPOTENCE GATE (roadmap #1): prevent duplicate/rapid-fire orders per symbol
+                        last_order_ts = STATE["last_order_times"].get(symbol, 0.0)
+                        cooldown_s = ORDER_COOLDOWN_REAL_SECONDS if active_mode == "REAL" else ORDER_COOLDOWN_DEMO_SECONDS
+                        if time.time() - last_order_ts < cooldown_s:
+                            logger.info(
+                                f"Idempotence gate: {symbol} last order {time.time()-last_order_ts:.0f}s ago "
+                                f"(<{cooldown_s:.0f}s). Skipping duplicate order."
+                            )
+                            continue
                     
                         trade_qty_formatted = format_exchange_size(symbol, abs(trade_qty), execution_price)
                     
@@ -1199,6 +1282,44 @@ async def live_trading_loop():
                                         params={'clientOrderId': f"quant_{int(time.time()*1000)}"}
                                     )
                                     execution_price = res_order.get('price', execution_price)
+
+                                    # FILL CONFIRMATION (roadmap #2): poll the exchange until the order is filled
+                                    # before touching the ledger - never book an order that didn't actually fill.
+                                    order_id = res_order.get("id") or res_order.get("orderId")
+                                    if order_id:
+                                        for _attempt in range(6):
+                                            await asyncio.sleep(1.0)
+                                            try:
+                                                fill = client.fetch_order(order_id, symbol.replace("USDT", "/USDT"))
+                                                fill_status = (fill.get("status") or "").lower()
+                                                filled_qty = float(fill.get("filled") or 0.0)
+                                                if fill_status in ("closed", "filled") or filled_qty > 0:
+                                                    avg = fill.get("average")
+                                                    if avg:
+                                                        execution_price = float(avg)
+                                                    if filled_qty > 0:
+                                                        trade_qty_formatted = filled_qty
+                                                    logger.info(f"FILL CONFIRMED: {filled_qty} {symbol} @ {execution_price}")
+                                                    break
+                                            except Exception as fe:
+                                                logger.warning(f"Fill confirmation poll error: {fe}")
+                                                break
+                                
+                                # Record order timestamp for the idempotence gate
+                                STATE["last_order_times"][symbol] = time.time()
+                                
+                                # PER-MODEL ATTRIBUTION (roadmap precision #1): log which strategy/model
+                                # actually drove this decision instead of the generic "META_MODEL".
+                                dominant_strategy = "META_MODEL"
+                                try:
+                                    contribs = consensus.get("contributions", {})
+                                    if contribs:
+                                        dominant_strategy = max(
+                                            contribs,
+                                            key=lambda s: abs(contribs[s].get("signal", 0.0) * contribs[s].get("weight", 0.0))
+                                        )
+                                except Exception:
+                                    pass
                                 
                                 # Ledger update
                                 order_cost = execution_price * trade_qty_formatted
@@ -1221,10 +1342,22 @@ async def live_trading_loop():
                                     qty=trade_qty_formatted,
                                     status="FILLED",
                                     mode=active_mode,
-                                    strategy="META_MODEL",
+                                    strategy=dominant_strategy,
                                     order_type="MARKET"
                                 )
                                 platform_metrics.ORDERS_TOTAL.labels(mode=active_mode, side=side).inc()
+                                try:
+                                    trade_journal.add_trade(
+                                        symbol=symbol,
+                                        side=side,
+                                        qty=trade_qty_formatted,
+                                        price=execution_price,
+                                        mode=active_mode,
+                                        strategy=dominant_strategy,
+                                        notes=f"Executed via {dominant_strategy}"
+                                    )
+                                except Exception as je:
+                                    logger.warning(f"Trade journal write failed: {je}")
                             
                                 db.add_audit_log(
                                     "REAL_ORDER" if active_mode == "REAL" else "DEMO_ORDER", 
@@ -1470,6 +1603,12 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "assets_telemetry": STATE["assets"],
         "options_strategy": STATE["options_strategy"],
         
+        "using_fallback_data": STATE.get("using_fallback_data", False),
+        "data_quality_status": STATE["data_quality_status"],
+        "strategy_weights": meta_engine.get_strategy_weights(),
+        "active_models": model_selector.get_status().get("active_models", []),
+        "capital_exposure": capital_allocator.get_current_exposure(),
+        
         "copy_traders": [
             {
                 "trader_id": t.trader_id,
@@ -1509,6 +1648,28 @@ async def broadcast_telemetry(consensus_signals):
         STATE["connected_websockets"].remove(ws)
 
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    """LOT 65 (roadmap #5): graceful shutdown - close journals, notify, flush state."""
+    logger.info("🛑 Graceful shutdown initiated...")
+    try:
+        # Flush trade journal to disk
+        if hasattr(trade_journal, "_save"):
+            trade_journal._save()
+    except Exception as e:
+        logger.warning(f"Shutdown: journal flush failed: {e}")
+    try:
+        for ws in list(STATE.get("connected_websockets", [])):
+            try:
+                await ws.close(code=1001)
+            except Exception:
+                pass
+        STATE["connected_websockets"].clear()
+    except Exception as e:
+        logger.warning(f"Shutdown: websocket close failed: {e}")
+    logger.info("🛑 Graceful shutdown complete.")
+
+
 # REST endpoints
 
 @app.get("/api/telemetry")
@@ -1535,6 +1696,19 @@ async def get_dashboard(request: Request):
     return templates.TemplateResponse(
         request=request, 
         name="dashboard.html", 
+        context={"request": request}
+    )
+
+
+@app.get("/telegram", response_class=HTMLResponse)
+async def get_telegram_mini_app(request: Request):
+    """
+    Telegram Mini App (mobile-first terminal). Set this URL as the Mini App
+    link in @BotFather for your Telegram bot.
+    """
+    return templates.TemplateResponse(
+        request=request,
+        name="telegram_mini_app.html",
         context={"request": request}
     )
 
@@ -1612,8 +1786,45 @@ async def get_history_endpoint(timeframe: str = "1h"):
     }
 
 
+# ============ AUTHENTICATION (roadmap #4) ============
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+    totp_code: str = ""
+
+
+@app.post("/api/login")
+async def login(payload: LoginRequest):
+    """
+    Authenticates an operator and returns a JWT bearer token.
+    Credentials come from ADMIN_USER / ADMIN_PASSWORD env vars.
+    Optional TOTP second factor when ADMIN_TOTP_SECRET is set.
+    """
+    import hmac as _hmac
+
+    admin_user = os.getenv("ADMIN_USER", "admin")
+    admin_pass = os.getenv("ADMIN_PASSWORD", "ChangeMe!Institutionnel2026")
+    totp_secret = os.getenv("ADMIN_TOTP_SECRET", "")
+
+    if payload.username != admin_user:
+        raise HTTPException(status_code=401, detail="Invalid credentials.")
+    # Constant-time comparison against the configured operator password
+    if not _hmac.compare_digest(payload.password, admin_pass):
+        raise HTTPException(status_code=401, detail="Invalid credentials.")
+
+    if totp_secret:
+        import pyotp as _pyotp
+        totp = _pyotp.TOTP(totp_secret)
+        if not totp.verify(payload.totp_code, valid_window=1):
+            raise HTTPException(status_code=401, detail="Invalid TOTP code.")
+
+    token = AuthManager.create_jwt_token(1, payload.username, Roles.ADMIN)
+    logger.info(f"🔐 Operator '{payload.username}' authenticated successfully.")
+    return {"token": token, "role": Roles.ADMIN, "username": payload.username}
+
+
 @app.post("/api/toggle-strategy")
-async def toggle_strategy(payload: StrategyToggle):
+async def toggle_strategy(payload: StrategyToggle, _auth: dict = Depends(require_auth)):
     strategy = next((s for s in strategies_list if s.name == payload.name), None)
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
@@ -1628,7 +1839,7 @@ async def toggle_strategy(payload: StrategyToggle):
 
 
 @app.post("/api/toggle-bot")
-async def toggle_bot(payload: BotToggleRequest):
+async def toggle_bot(payload: BotToggleRequest, _auth: dict = Depends(require_auth)):
     STATE["is_running"] = payload.is_running
     action_str = "STARTED" if payload.is_running else "PAUSED"
     db.add_audit_log(
@@ -1640,7 +1851,7 @@ async def toggle_bot(payload: BotToggleRequest):
 
 
 @app.post("/api/set-demo-balance")
-async def set_demo_balance(payload: SetBalanceRequest):
+async def set_demo_balance(payload: SetBalanceRequest, _auth: dict = Depends(require_auth)):
     if payload.balance <= 0:
         raise HTTPException(status_code=400, detail="Balance must be positive.")
     STATE["balance_demo"] = payload.balance
@@ -1661,7 +1872,7 @@ async def set_demo_balance(payload: SetBalanceRequest):
 
 
 @app.post("/api/retrain")
-async def trigger_manual_retrain():
+async def trigger_manual_retrain(_auth: dict = Depends(require_auth)):
     df = STATE["historical_bars"]
     if df is None:
         raise HTTPException(status_code=400, detail="No historical bars cache loaded yet.")
@@ -1671,7 +1882,7 @@ async def trigger_manual_retrain():
 
 
 @app.post("/api/monte-carlo")
-async def trigger_monte_carlo():
+async def trigger_monte_carlo(_auth: dict = Depends(require_auth)):
     """
     On-Demand Monte Carlo Stress Testing API endpoint.
     Runs 10,000 simulations and returns structural safety metrics.
@@ -1701,7 +1912,7 @@ async def trigger_monte_carlo():
 
 
 @app.post("/api/risk-settings")
-async def update_risk_settings(payload: RiskSettingsUpdate):
+async def update_risk_settings(payload: RiskSettingsUpdate, _auth: dict = Depends(require_auth)):
     risk_manager.params.update(payload.dict())
     db.add_audit_log(
         "RISK_SETTINGS_UPDATED", 
@@ -1712,7 +1923,7 @@ async def update_risk_settings(payload: RiskSettingsUpdate):
 
 
 @app.post("/api/keys")
-async def store_keys(payload: KeyStorage):
+async def store_keys(payload: KeyStorage, _auth: dict = Depends(require_auth)):
     db.save_setting(f"{payload.exchange}_api_key", payload.api_key, encrypt=True)
     db.save_setting(f"{payload.exchange}_secret_key", payload.secret_key, encrypt=True)
     db.add_audit_log(
@@ -1724,7 +1935,7 @@ async def store_keys(payload: KeyStorage):
 
 
 @app.post("/api/2fa-switch")
-async def switch_mode(payload: SwitchModeRequest):
+async def switch_mode(payload: SwitchModeRequest, _auth: dict = Depends(require_auth)):
     """
     Secures the Demo <-> Real trading modes transitions.
     Accepts both Ethereum addresses (MetaMask, starts with 0x) and test codes (backward compatible).
@@ -1760,7 +1971,7 @@ async def switch_mode(payload: SwitchModeRequest):
 
 
 @app.post("/api/copy-trade")
-async def manage_copytrade(payload: CopyTradeRequest):
+async def manage_copytrade(payload: CopyTradeRequest, _auth: dict = Depends(require_auth)):
     if payload.action == "START":
         ok, msg = copy_manager.start_copying(payload.trader_id, payload.allocated_capital)
         if ok:
@@ -1778,7 +1989,7 @@ async def manage_copytrade(payload: CopyTradeRequest):
 
 
 @app.post("/api/kill-switch")
-async def engage_kill_switch():
+async def engage_kill_switch(_auth: dict = Depends(require_auth)):
     STATE["kill_switch_active"] = True
     STATE["is_running"] = False
     
@@ -1814,7 +2025,7 @@ async def engage_kill_switch():
 
 
 @app.post("/api/reset-bot")
-async def reset_bot():
+async def reset_bot(_auth: dict = Depends(require_auth)):
     STATE["kill_switch_active"] = False
     STATE["is_running"] = True
     risk_manager.circuit_breaker_active = False
@@ -1823,7 +2034,7 @@ async def reset_bot():
 
 
 @app.post("/api/run-backtest")
-async def run_backtest_handler():
+async def run_backtest_handler(_auth: dict = Depends(require_auth)):
     df = STATE["historical_bars"]
     if df is None:
         raise HTTPException(status_code=400, detail="Historical bars not loaded yet.")

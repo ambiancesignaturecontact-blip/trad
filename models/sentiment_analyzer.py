@@ -44,9 +44,15 @@ class NewsSentimentAnalyzer:
 
     async def fetch_cryptocompare_news(self) -> list:
         try:
+            # Optional CryptoCompare API key (roadmap ecosystem #3) removes 401s
+            import os
+            api_key = os.getenv("CRYPTOCOMPARE_API_KEY", "")
             url = "https://min-api.cryptocompare.com/data/v2/news/?lang=EN"
+            params = {"extraParams": "quant-portal"}
+            if api_key:
+                params["api_key"] = api_key
             async with httpx.AsyncClient(timeout=4.0) as client:
-                resp = await client.get(url)
+                resp = await client.get(url, params=params)
                 if resp.status_code == 200:
                     data = resp.json().get("Data", [])
                     return [art.get("title", "") for art in data[:10]]

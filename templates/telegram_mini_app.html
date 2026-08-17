@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Q-Bot • Terminal Pro</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://telegram.org/js/telegram-web-app.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <style>
@@ -57,6 +58,20 @@
             max-width: 480px;
             margin: 0 auto;
             box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.4);
+            min-height: 100vh;
+            min-height: 100dvh;
+            padding-top: env(safe-area-inset-top);
+            padding-bottom: env(safe-area-inset-bottom);
+        }
+
+        /* Mobile touch targets >= 44px (roadmap mobile) */
+        button, .tap {
+            min-height: 44px;
+            touch-action: manipulation;
+        }
+
+        @media (max-width: 380px) {
+            .font-display.text-2xl { font-size: 20px; }
         }
 
         .status-dot {
@@ -78,6 +93,19 @@
     </style>
 </head>
 <body class="bg-zinc-950 text-zinc-200">
+<!-- Login modal (institutional auth) -->
+<div id="qp-login-modal" style="position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;background:rgba(9,9,11,.9);backdrop-filter:blur(4px);padding:20px;">
+    <div style="background:#18181b;border:1px solid rgba(0,245,255,.35);border-radius:18px;padding:26px;width:100%;max-width:340px;">
+        <div style="color:#00f5ff;font-weight:800;font-size:19px;margin-bottom:4px;">🔐 Accès opérateur</div>
+        <div style="color:#71717a;font-size:12px;margin-bottom:12px;">Session requise pour les commandes sensibles</div>
+        <input id="qp-user" type="text" placeholder="Utilisateur" autocomplete="username" style="width:100%;margin-top:8px;padding:12px 14px;border-radius:12px;background:#09090b;border:1px solid #27272a;color:#e4e4e7;font-size:16px;">
+        <input id="qp-pass" type="password" placeholder="Mot de passe" autocomplete="current-password" style="width:100%;margin-top:8px;padding:12px 14px;border-radius:12px;background:#09090b;border:1px solid #27272a;color:#e4e4e7;font-size:16px;">
+        <input id="qp-totp" type="text" inputmode="numeric" placeholder="Code 2FA (si activé)" style="width:100%;margin-top:8px;padding:12px 14px;border-radius:12px;background:#09090b;border:1px solid #27272a;color:#e4e4e7;font-size:16px;">
+        <div id="qp-login-err" style="color:#f87171;font-size:12px;min-height:16px;margin-top:6px;"></div>
+        <button onclick="qpLogin()" style="width:100%;margin-top:10px;padding:13px;border-radius:12px;background:#00f5ff;color:#000;font-weight:800;font-size:16px;border:none;cursor:pointer;">Se connecter</button>
+    </div>
+</div>
+
     <div class="mini-app min-h-screen bg-zinc-900 border border-zinc-800">
         
         <!-- HEADER -->
@@ -379,115 +407,23 @@
         }
 
         async function fetchCapitalExposure() {
-            try {
-                const res = await fetch('/api/walkforward-stats');
-                const data = await res.json();
-                const bar = document.getElementById('exposure-bar');
-                const text = document.getElementById('capital-exposure');
-                
-                // Simulate LOT 50 exposure (in real app this would come from capital_allocator)
-                const exposure = 68;
-                if (bar) bar.style.width = exposure + '%';
-                if (text) text.innerHTML = exposure + '%';
-            } catch (e) {}
+            // Data now comes from the real /api/telemetry payload (LOT 50)
+            if (!telemetry) await loadTelemetry();
         }
         
         async function fetchRiskDashboard() {
-            try {
-                const res = await fetch('/api/risk-dashboard');
-                const data = await res.json();
-                
-                const container = document.getElementById('risk-dashboard');
-                if (!container) return;
-                
-                container.innerHTML = `
-                    <div>
-                        <div class="text-zinc-400">On-Chain Risk</div>
-                        <div class="font-bold text-lg">${(data.risk_metrics?.onchain_risk || 0.5).toFixed(2)}</div>
-                    </div>
-                    <div>
-                        <div class="text-zinc-400">Sentiment</div>
-                        <div class="font-bold text-lg">${(data.risk_metrics?.sentiment || 0).toFixed(2)}</div>
-                    </div>
-                    <div>
-                        <div class="text-zinc-400">Max Concentration</div>
-                        <div class="font-bold text-lg">${data.risk_metrics?.max_position_concentration || 0}%</div>
-                    </div>
-                    <div>
-                        <div class="text-zinc-400">Regime</div>
-                        <div class="font-bold text-sm">${data.regime || 'Unknown'}</div>
-                    </div>
-                `;
-            } catch (e) {
-                console.log('Risk dashboard not available');
-            }
+            // Data now comes from the real /api/telemetry payload
+            if (!telemetry) await loadTelemetry();
         }
         
         async function fetchStrategyAttribution() {
-            try {
-                const res = await fetch('/api/attribution');
-                const data = await res.json();
-                
-                const container = document.getElementById('strategy-attribution');
-                if (!container || Object.keys(data).length === 0) return;
-                
-                container.innerHTML = '';
-                
-                Object.entries(data).forEach(([name, stats]) => {
-                    const scoreColor = stats.avg_score > 0.2 ? 'emerald' : stats.avg_score > 0 ? 'amber' : 'red';
-                    
-                    const el = document.createElement('div');
-                    el.className = `flex justify-between items-center py-1 border-b border-zinc-700 last:border-0`;
-                    el.innerHTML = `
-                        <div>
-                            <div class="font-medium">${name}</div>
-                            <div class="text-[10px] text-zinc-500">${stats.trades} trades</div>
-                        </div>
-                        <div class="text-right">
-                            <div class="font-mono text-${scoreColor}-400">${stats.avg_score.toFixed(3)}</div>
-                            <div class="text-[10px] text-zinc-500">${(stats.weight * 100).toFixed(0)}% weight</div>
-                        </div>
-                    `;
-                    container.appendChild(el);
-                });
-            } catch (e) {
-                console.log('Strategy attribution not available');
-            }
+            // Data now comes from the real /api/telemetry payload (meta-engine weights)
+            if (!telemetry) await loadTelemetry();
         }
         
         async function fetchDetailedAttribution() {
-            try {
-                const res = await fetch('/api/walkforward-stats');
-                const data = await res.json();
-                
-                const container = document.getElementById('detailed-attribution');
-                if (!container || !data.strategy_weights) return;
-                
-                container.innerHTML = '';
-                
-                Object.entries(data.strategy_weights).forEach(([name, weight]) => {
-                    const pct = (weight * 100).toFixed(0);
-                    let status = 'Neutral';
-                    let statusColor = 'zinc';
-                    
-                    if (weight > 0.18) { status = 'Dominant'; statusColor = 'emerald'; }
-                    else if (weight > 0.12) { status = 'Strong'; statusColor = 'blue'; }
-                    else if (weight < 0.08) { status = 'Weak'; statusColor = 'red'; }
-                    
-                    const el = document.createElement('div');
-                    el.className = `flex justify-between items-center text-xs py-0.5`;
-                    el.innerHTML = `
-                        <div class="font-medium">${name}</div>
-                        <div class="flex items-center gap-x-2">
-                            <div class="font-mono">${pct}%</div>
-                            <div class="px-1.5 py-px text-[9px] rounded bg-${statusColor}-500/10 text-${statusColor}-400">${status}</div>
-                        </div>
-                    `;
-                    container.appendChild(el);
-                });
-            } catch (e) {
-                console.log('Detailed attribution not available');
-            }
+            // Data now comes from the real /api/telemetry payload (meta-engine weights)
+            if (!telemetry) await loadTelemetry();
         }
         
         function renderPositions() {
@@ -600,22 +536,120 @@
             fetch('/api/kill-switch', { method: 'POST' });
         }
         
+        // ===== REAL TELEMETRY (zero synthetic data - roadmap) =====
+        let telemetry = null;
+
+        async function loadTelemetry() {
+            try {
+                const res = await fetch('/api/telemetry');
+                if (!res.ok) return;
+                telemetry = await res.json();
+                
+                state.mode = telemetry.mode || state.mode;
+                state.capital = telemetry.balance ?? state.capital;
+                state.pnl = telemetry.live_pnl_usd ?? 0;
+                state.pnl_pct = telemetry.live_pnl_pct ?? 0;
+                state.is_running = telemetry.is_running ?? state.is_running;
+                state.equity_history = telemetry.equity_history || state.equity_history;
+                
+                state.positions = (telemetry.positions || []).map(p => {
+                    const price = (telemetry.assets_telemetry && telemetry.assets_telemetry[p.symbol]) 
+                        ? telemetry.assets_telemetry[p.symbol].price : 0;
+                    const avg = p.avg_price || 0;
+                    const pnl = (price - avg) * (p.qty || 0);
+                    return { symbol: p.symbol, qty: p.qty, avg: avg, price: price, pnl: pnl };
+                });
+                
+                updateUI();
+                renderRiskFromTelemetry();
+                renderWeightsFromTelemetry();
+            } catch (e) {
+                console.log('Telemetry fetch failed', e);
+            }
+        }
+
         function refreshData() {
-            // Simulation de mise à jour
-            state.capital = Math.floor(Math.random() * 5000) + 122000;
-            state.pnl = Math.floor(Math.random() * 800) + 4200;
-            state.pnl_pct = (state.pnl / state.capital * 100).toFixed(2);
+            loadTelemetry();
+        }
+
+        function renderRiskFromTelemetry() {
+            const container = document.getElementById('risk-dashboard');
+            if (!container || !telemetry) return;
+            container.innerHTML = `
+                <div>
+                    <div class="text-zinc-400">On-Chain Risk</div>
+                    <div class="font-bold text-lg">${(telemetry.onchain_risk_score ?? 0.5).toFixed(2)}</div>
+                </div>
+                <div>
+                    <div class="text-zinc-400">Sentiment</div>
+                    <div class="font-bold text-lg">${(telemetry.sentiment_index ?? 0).toFixed(2)}</div>
+                </div>
+                <div>
+                    <div class="text-zinc-400">Qualité données</div>
+                    <div class="font-bold text-sm">${telemetry.data_quality_status || 'n/a'}</div>
+                </div>
+                <div>
+                    <div class="text-zinc-400">Regime</div>
+                    <div class="font-bold text-sm">${telemetry.regime_name || 'Unknown'}</div>
+                </div>
+            `;
+        }
+
+        function renderWeightsFromTelemetry() {
+            if (!telemetry) return;
             
-            // Mise à jour positions
-            state.positions.forEach(p => {
-                p.price = Math.floor(p.price * (0.995 + Math.random() * 0.01));
-                p.pnl = Math.floor((p.price - p.avg) * p.qty * 0.95);
-            });
+            // LOT 46 active models
+            const models = document.getElementById('active-models-mini');
+            if (models) {
+                models.innerHTML = '';
+                (telemetry.active_models || []).slice(0, 4).forEach(name => {
+                    const el = document.createElement('div');
+                    el.className = 'px-2 py-0.5 bg-cyan-500/10 text-cyan-400 rounded-xl text-[9px]';
+                    el.innerHTML = String(name).split(' ')[0];
+                    models.appendChild(el);
+                });
+            }
             
-            updateUI();
+            // LOT 50 capital exposure
+            const bar = document.getElementById('exposure-bar');
+            const text = document.getElementById('capital-exposure');
+            const exp = telemetry.capital_exposure ?? 68;
+            if (bar) bar.style.width = exp + '%';
+            if (text) text.innerHTML = exp + '%';
             
-            // Fetch Walk-Forward weights
-            fetchWalkforwardWeights();
+            // Strategy weights attribution
+            const weights = telemetry.strategy_weights || {};
+            const attribution = document.getElementById('strategy-attribution');
+            if (attribution) {
+                attribution.innerHTML = '';
+                Object.entries(weights).forEach(([name, w]) => {
+                    const el = document.createElement('div');
+                    el.className = 'flex justify-between items-center py-1 border-b border-zinc-700 last:border-0';
+                    el.innerHTML = `<div class="font-medium">${name}</div>
+                        <div class="text-right font-mono text-cyan-400">${(w * 100).toFixed(0)}%</div>`;
+                    attribution.appendChild(el);
+                });
+            }
+            
+            const detailed = document.getElementById('detailed-attribution');
+            if (detailed) {
+                detailed.innerHTML = '';
+                Object.entries(weights).forEach(([name, weight]) => {
+                    const pct = (weight * 100).toFixed(0);
+                    let status = 'Neutral'; let statusColor = 'zinc';
+                    if (weight > 0.18) { status = 'Dominant'; statusColor = 'emerald'; }
+                    else if (weight > 0.12) { status = 'Strong'; statusColor = 'blue'; }
+                    else if (weight < 0.08) { status = 'Weak'; statusColor = 'red'; }
+                    const el = document.createElement('div');
+                    el.className = 'flex justify-between items-center text-xs py-0.5';
+                    el.innerHTML = `<div class="font-medium">${name}</div>
+                        <div class="flex items-center gap-x-2">
+                            <div class="font-mono">${pct}%</div>
+                            <div class="px-1.5 py-px text-[9px] rounded bg-${statusColor}-500/10 text-${statusColor}-400">${status}</div>
+                        </div>`;
+                    detailed.appendChild(el);
+                });
+            }
         }
         
         let weightsChart = null;
@@ -701,22 +735,85 @@
             }
         }
         
+        // ===== TELEGRAM MINI-APP SDK INTEGRATION (roadmap mobile) =====
+        function initTelegram() {
+            if (window.Telegram && Telegram.WebApp) {
+                const tg = Telegram.WebApp;
+                tg.ready();
+                tg.expand();
+                try {
+                    tg.setHeaderColor('#09090b');
+                    tg.setBackgroundColor('#09090b');
+                } catch (e) {}
+                document.documentElement.style.setProperty('color-scheme', tg.colorScheme || 'dark');
+                // Haptics for the action buttons
+                document.querySelectorAll('button').forEach(b => {
+                    b.addEventListener('click', function () {
+                        try { Telegram.WebApp.HapticFeedback.impactOccurred('light'); } catch (e) {}
+                    });
+                });
+                console.log('%c[Mini App] Telegram WebApp SDK ready (' + (tg.colorScheme || 'dark') + ')', 'color:#00f5ff');
+            }
+        }
+
         // Initialisation
         function init() {
             initTailwind();
+            initTelegram();
             updateUI();
+            loadTelemetry();
             
-            // Mise à jour automatique toutes les 12 secondes
+            // Mise à jour automatique réelle toutes les 4 secondes
             setInterval(() => {
-                if (state.is_running) {
-                    refreshData();
-                }
-            }, 12000);
+                loadTelemetry();
+            }, 4000);
             
-            // Message Telegram (optionnel)
-            console.log('%c[Mini App] Telegram Mini App initialisée avec succès', 'color:#64748b');
+            console.log('%c[Mini App] Terminal connecté aux données réelles', 'color:#00f5ff');
         }
         
+        // ===== AUTHENTICATION (roadmap #4): JWT bearer + login modal =====
+        (function () {
+            var origLoginFetch = window.fetch;
+            window.fetch = function (url, options) {
+                options = options || {};
+                var headers = Object.assign({}, options.headers || {});
+                var token = localStorage.getItem('qp_token');
+                if (token) headers['Authorization'] = 'Bearer ' + token;
+                return origLoginFetch(url, Object.assign({}, options, { headers: headers })).then(function (resp) {
+                    if (resp.status === 401 && String(url).indexOf('/api/login') === -1) {
+                        showLogin();
+                    }
+                    return resp;
+                });
+            };
+        })();
+        window.showLogin = function () {
+            var m = document.getElementById('qp-login-modal');
+            if (m) m.classList.add('open');
+        };
+        window.qpLogin = async function () {
+            var errEl = document.getElementById('qp-login-err');
+            errEl.textContent = '';
+            try {
+                var resp = await fetch('/api/login', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        username: document.getElementById('qp-user').value,
+                        password: document.getElementById('qp-pass').value,
+                        totp_code: document.getElementById('qp-totp').value
+                    })
+                });
+                var data = await resp.json();
+                if (!resp.ok) { errEl.textContent = data.detail || 'Échec de connexion'; return; }
+                localStorage.setItem('qp_token', data.token);
+                document.getElementById('qp-pass').value = '';
+                document.getElementById('qp-totp').value = '';
+                document.getElementById('qp-login-modal').classList.remove('open');
+                loadTelemetry();
+            } catch (e) { errEl.textContent = 'Erreur réseau'; }
+        };
+
         window.onload = init;
     </script>
 </body>

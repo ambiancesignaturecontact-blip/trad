@@ -65,6 +65,76 @@
 </head>
 <body class="h-full antialiased text-slate-200 overflow-hidden flex flex-col">
 
+<!-- ===== AUTHENTICATION LAYER (roadmap #4): JWT bearer + login modal ===== -->
+<style>
+    #qp-login-modal { position: fixed; inset: 0; z-index: 9999; display: none; align-items: center; justify-content: center; background: rgba(4,8,21,.85); backdrop-filter: blur(4px); }
+    #qp-login-modal.open { display: flex; }
+    .qp-login-card { background:#0b132b; border:1px solid rgba(0,240,255,.3); border-radius:16px; padding:28px; width:min(92vw,360px); box-shadow:0 0 30px rgba(0,240,255,.15); }
+    .qp-login-card h2 { color:#00f0ff; font-weight:800; margin-bottom:4px; font-size:20px; }
+    .qp-login-card input { width:100%; margin-top:10px; padding:12px 14px; border-radius:10px; background:#040815; border:1px solid #1e2b4f; color:#e2e8f0; font-size:16px; }
+    .qp-login-card button { width:100%; margin-top:14px; padding:12px; border-radius:10px; background:#00f0ff; color:#040815; font-weight:800; font-size:16px; cursor:pointer; border:none; }
+    .qp-login-card .err { color:#ff4d6d; font-size:13px; min-height:16px; margin-top:8px; }
+</style>
+<div id="qp-login-modal">
+    <div class="qp-login-card">
+        <h2>🔐 Accès opérateur</h2>
+        <p style="color:#64748b;font-size:13px;">Session requise pour les commandes sensibles</p>
+        <input id="qp-user" type="text" placeholder="Utilisateur" autocomplete="username">
+        <input id="qp-pass" type="password" placeholder="Mot de passe" autocomplete="current-password">
+        <input id="qp-totp" type="text" inputmode="numeric" placeholder="Code 2FA (si activé)">
+        <div class="err" id="qp-login-err"></div>
+        <button onclick="qpLogin()">Se connecter</button>
+    </div>
+</div>
+<script>
+(function () {
+    var origLoginFetch = window.fetch;   // captured BEFORE wrapping
+    var origFetch = origLoginFetch;
+    window.fetch = function (url, options) {
+        options = options || {};
+        var headers = Object.assign({}, options.headers || {});
+        var token = localStorage.getItem('qp_token');
+        if (token) headers['Authorization'] = 'Bearer ' + token;
+        return origFetch(url, Object.assign({}, options, { headers: headers })).then(function (resp) {
+            if (resp.status === 401 && String(url).indexOf('/api/login') === -1) {
+                qpShowLogin();
+            }
+            return resp;
+        });
+    };
+})();
+window.qpShowLogin = function () {
+    document.getElementById('qp-login-modal').classList.add('open');
+    document.getElementById('qp-user').focus();
+};
+window.qpHideLogin = function () {
+    document.getElementById('qp-login-modal').classList.remove('open');
+};
+window.qpLogin = async function () {
+    var errEl = document.getElementById('qp-login-err');
+    errEl.textContent = '';
+    try {
+        var resp = await origLoginFetch('/api/login', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                username: document.getElementById('qp-user').value,
+                password: document.getElementById('qp-pass').value,
+                totp_code: document.getElementById('qp-totp').value
+            })
+        });
+        var data = await resp.json();
+        if (!resp.ok) { errEl.textContent = data.detail || 'Échec de connexion'; return; }
+        localStorage.setItem('qp_token', data.token);
+        document.getElementById('qp-pass').value = '';
+        document.getElementById('qp-totp').value = '';
+        qpHideLogin();
+        if (window.qpRefresh) window.qpRefresh();
+    } catch (e) { errEl.textContent = 'Erreur réseau'; }
+};
+</script>
+
+
     <!-- HEADER NAVIGATION -->
     <header class="bg-slate-950/80 border-b border-slate-900 px-6 py-3 flex items-center justify-between backdrop-blur-md z-40">
         <div class="flex items-center space-x-4">
@@ -1205,5 +1275,9 @@
             }
         }
     </script>
+<script>
+document.getElementById('qp-pass').addEventListener('keydown', function (e) { if (e.key === 'Enter') qpLogin(); });
+document.getElementById('qp-totp').addEventListener('keydown', function (e) { if (e.key === 'Enter') qpLogin(); });
+</script>
 </body>
 </html>

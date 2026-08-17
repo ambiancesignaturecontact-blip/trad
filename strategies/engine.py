@@ -344,6 +344,19 @@ class MetaAllocationEngine:
                 if len(self.recent_performance[s.name]) > 80:
                     self.recent_performance[s.name].pop(0)
 
+    def get_strategy_weights(self) -> dict:
+        """
+        Returns the current live allocation weights per strategy
+        (Thompson Sampling bandit + walk-forward). Used by the mini-app
+        attribution panel and the LOT 46 telemetry.
+        """
+        weights = {}
+        for i, s in enumerate(self.strategies):
+            name = getattr(s, "name", f"Strategy_{i}")
+            w = float(self.walkforward_weights[i]) if i < len(self.walkforward_weights) else 0.0
+            weights[name] = round(w, 4)
+        return weights
+
     def allocate(self, market_data, regime_state_id, ml_prediction, ppo_action):
         """
         Calculates final combined trade signal and capital allocation.
