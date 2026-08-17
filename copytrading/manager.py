@@ -43,43 +43,50 @@ class CopyTradingManager:
 
     def refresh_real_copytrader_leaderboard(self):
         """
-        Attempts to scrape the actual, live Bybit Copy Trading Elite Leaderboard.
-        If unconfigured or offline, strictly sets status to UNAVAILABLE (Phase 34).
+        Tente de charger de vrais traders depuis l'API Bybit Copy Trading.
+        Si l'API est indisponible ou retourne des données vides, le module reste
+        en mode UNAVAILABLE (aucune simulation, aucune donnée fictive).
         """
-        logger.info("Polling Bybit Copy Trading Elite Leaderboard network...")
+        logger.info("Polling Bybit Copy Trading Elite Leaderboard (REAL DATA ONLY)...")
         try:
-            # Query Bybit V5 Copy Trading Public Leaderboard API
-            # Real endpoint: https://api.bybit.com/v5/copy-trading/leaderboard
-            # In standard environment, this requires specialized institutional API keys.
-            url = "https://api.bybit.com/v5/copy-trading/leaderboard"
-            # Using a secure timeout
             import httpx
-            resp = httpx.get(url, timeout=4.0)
+            url = "https://api.bybit.com/v5/copy-trading/leaderboard"
+            resp = httpx.get(url, timeout=6.0)
+            
             if resp.status_code == 200:
                 data = resp.json().get("result", {}).get("list", [])
                 self.traders = {}
-                for item in data[:5]:
+                
+                for item in data[:8]:  # Top 8 traders réels
                     tr_id = item.get("leaderId")
-                    name = item.get("nickname", tr_id)
+                    if not tr_id:
+                        continue
+                        
+                    name = item.get("nickname", f"Trader-{tr_id[:6]}")
                     roi = float(item.get("roi", 0.0))
                     win_rate = float(item.get("winRate", 0.0))
                     max_dd = float(item.get("maxDrawdown", 0.10))
-                    sharpe = float(item.get("sharpeRatio", 1.5))
+                    sharpe = float(item.get("sharpeRatio", 1.0))
                     
-                    t = CopyTrader(tr_id, name, roi, win_rate, max_dd, sharpe)
-                    self.traders[tr_id] = t
-                    
-                self.status = "LIVE"
-                self.status_message = "Bybit Leaderboard Connected"
-                logger.info(f"CopyTrading: Successfully loaded {len(self.traders)} real elite traders.")
-                return
+                    # On n'accepte que les traders avec des données réelles valides
+                    if roi != 0 or win_rate != 0:
+                        t = CopyTrader(tr_id, name, roi, win_rate, max_dd, sharpe)
+                        self.traders[tr_id] = t
+                
+                if self.traders:
+                    self.status = "LIVE"
+                    self.status_message = f"Connected to {len(self.traders)} real traders"
+                    logger.info(f"CopyTrading: Loaded {len(self.traders)} REAL traders from Bybit.")
+                    return
+                else:
+                    logger.warning("Bybit returned empty or invalid trader data.")
         except Exception as e:
-            logger.warning(f"Copy Trading real API connection offline or unconfigured: {str(e)}.")
-            
-        # Fail-Safe Gate: Set strictly to UNAVAILABLE. No fake fallbacks allowed!
+            logger.warning(f"Bybit Copy Trading API unavailable: {str(e)}")
+        
+        # Mode UNAVAILABLE strict - aucune donnée fictive
         self.traders = {}
         self.status = "UNAVAILABLE"
-        self.status_message = "Real trader data unavailable"
+        self.status_message = "Real trader data unavailable - No simulation"
 
     def get_ranked_traders(self) -> list:
         """

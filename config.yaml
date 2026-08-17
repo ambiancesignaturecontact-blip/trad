@@ -1,0 +1,28 @@
+# Configuration Institutionnelle - Trading Bot
+trading:
+  min_notional_usd_micro: 3.0      # Pour capital < 200$
+  min_notional_usd_small: 5.0      # Pour capital 200-1000$
+  min_notional_usd_normal: 10.0    # Pour capital > 1000$
+  signal_threshold: 0.08           # Seuil de signal pour trader (abaissé)
+  loop_sleep_seconds: 2.5
+
+risk:
+  max_exposure_micro: 0.85         # 85% max pour micro-capital
+  max_exposure_normal: 0.25
+  daily_drawdown_micro: 0.18
+  daily_drawdown_normal: 0.025
+
+data:
+  use_real_data_only: true         # Toujours utiliser données réelles
+  yahoo_fallback: true
+  bybit_fallback: true
+
+strategies:
+  all_enabled: true
+  enable_stat_arb: true
+  enable_inter_exchange_arb: true
+  enable_scalping: true
+
+logging:
+  level: INFO
+  structured: false

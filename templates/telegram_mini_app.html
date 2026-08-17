@@ -1,0 +1,723 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Q-Bot • Terminal Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap');
+        
+        :root {
+            --primary: #00f5ff;
+        }
+        
+        body {
+            font-family: 'Inter', system_ui, sans-serif;
+        }
+        
+        .font-display {
+            font-family: 'Space Grotesk', 'Inter', sans-serif;
+            font-weight: 600;
+        }
+
+        .glass {
+            background: rgba(255,255,255,0.08);
+            backdrop-filter: blur(20px);
+            border: 1px solid rgba(255,255,255,0.1);
+        }
+
+        .metric-card {
+            transition: transform 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        
+        .metric-card:hover {
+            transform: translateY(-2px);
+        }
+
+        .section-header {
+            font-size: 13px;
+            letter-spacing: -.5px;
+            font-weight: 600;
+        }
+
+        .pro-table {
+            font-size: 13px;
+        }
+
+        .nav-active {
+            background: linear-gradient(90deg, #00f5ff, #00d4ff);
+            color: #000;
+            font-weight: 700;
+        }
+
+        .mini-app {
+            max-width: 480px;
+            margin: 0 auto;
+            box-shadow: 0 25px 50px -12px rgb(0 0 0 / 0.4);
+        }
+
+        .status-dot {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+
+        .trading-value {
+            font-variant-numeric: tabular-nums;
+        }
+
+        .chart-container {
+            position: relative;
+        }
+
+        .modern-shadow {
+            box-shadow: 0 10px 15px -3px rgb(0 0 0 / 0.1), 
+                       0 4px 6px -4px rgb(0 0 0 / 0.1);
+        }
+    </style>
+</head>
+<body class="bg-zinc-950 text-zinc-200">
+    <div class="mini-app min-h-screen bg-zinc-900 border border-zinc-800">
+        
+        <!-- HEADER -->
+        <div class="px-5 pt-5 pb-4 bg-zinc-950 border-b border-zinc-800">
+            <div class="flex items-center justify-between">
+                <div class="flex items-center gap-x-3">
+                    <div class="w-9 h-9 rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-500 flex items-center justify-center shadow-lg">
+                        <i class="fa-solid fa-robot text-white text-2xl"></i>
+                    </div>
+                    <div>
+                        <div class="font-display text-2xl font-bold tracking-tighter">Q-Bot</div>
+                        <div class="text-[10px] text-zinc-500 -mt-1">v4.2 • INSTITUTIONAL</div>
+                    </div>
+                </div>
+                
+                <div class="flex items-center gap-x-2">
+                    <div id="status-badge" 
+                         class="px-3 py-1 rounded-3xl text-xs font-bold flex items-center gap-x-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                        <div class="w-2 h-2 rounded-full bg-emerald-400 status-dot"></div>
+                        <span id="status-text">LIVE</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- MODE & CAPITAL -->
+        <div class="px-5 py-4 bg-zinc-900 border-b border-zinc-800">
+            <div class="flex items-center justify-between">
+                <div>
+                    <div class="text-xs text-zinc-400">MODE</div>
+                    <div id="mode-display" class="font-bold text-xl tracking-tight">DEMO</div>
+                </div>
+                
+                <div class="text-right">
+                    <div class="text-xs text-zinc-400">CAPITAL ACTUEL</div>
+                    <div id="capital-display" class="font-display text-3xl font-bold tabular-nums tracking-tighter">$124,850</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- KPIs -->
+        <div class="grid grid-cols-3 gap-px bg-zinc-800 p-px">
+            <div class="glass p-4">
+                <div class="flex justify-between items-start">
+                    <div>
+                        <div class="text-xs text-zinc-400">P&amp;L LIVE</div>
+                        <div id="pnl-value" class="font-display text-2xl font-bold tabular-nums">+$4,820</div>
+                    </div>
+                    <div id="pnl-pct" class="text-emerald-400 text-sm font-bold">+3.87%</div>
+                </div>
+            </div>
+            
+            <div class="glass p-4">
+                <div class="text-xs text-zinc-400">SHARPE</div>
+                <div id="sharpe-value" class="font-display text-2xl font-bold tabular-nums">1.84</div>
+                <div class="text-xs text-emerald-400">Excellent</div>
+            </div>
+            
+            <div class="glass p-4">
+                <div class="text-xs text-zinc-400">DRAWDOWN</div>
+                <div id="drawdown-value" class="font-display text-2xl font-bold tabular-nums text-amber-400">-2.1%</div>
+            </div>
+        </div>
+
+        <!-- CHART -->
+        <div class="px-5 py-6 bg-zinc-900">
+            <div class="flex items-center justify-between mb-3 px-1">
+                <div class="font-semibold text-sm">Performance 24h</div>
+                <div class="text-xs px-2.5 py-1 bg-zinc-800 rounded-2xl text-zinc-400">BTC • 1H</div>
+            </div>
+            
+            <div class="chart-container h-52 bg-zinc-950 rounded-3xl p-3 border border-zinc-800">
+                <canvas id="equity-chart"></canvas>
+            </div>
+        </div>
+
+        <!-- POSITIONS -->
+        <div class="px-5 pb-2">
+            <div class="flex items-center justify-between mb-3 px-1">
+                <div class="font-semibold text-sm">Positions ouvertes</div>
+                <div id="position-count" class="text-xs px-3 py-1 bg-zinc-800 text-zinc-400 rounded-2xl">3 actifs</div>
+            </div>
+            
+            <div id="positions-table" class="space-y-2">
+                <!-- Rempli dynamiquement par JS -->
+            </div>
+        </div>
+
+        <!-- STRATÉGIES ACTIVES + ADVANCED MODELS (LOT 46-57) -->
+        <div class="px-5 py-4 bg-zinc-900 border-t border-zinc-800">
+            <div class="font-semibold text-sm mb-3 px-1 flex justify-between">
+                <span>Stratégies actives (9)</span>
+                <span class="text-[10px] text-cyan-400">+ LOT 46-57</span>
+            </div>
+            
+            <div class="grid grid-cols-3 gap-2 text-xs">
+                <div class="glass px-3 py-2 rounded-2xl flex items-center justify-between">
+                    <div>Trend</div>
+                    <div class="text-emerald-400">82%</div>
+                </div>
+                <div class="glass px-3 py-2 rounded-2xl flex items-center justify-between">
+                    <div>Momentum</div>
+                    <div class="text-emerald-400">74%</div>
+                </div>
+                <div class="glass px-3 py-2 rounded-2xl flex items-center justify-between">
+                    <div>Breakout</div>
+                    <div class="text-emerald-400">68%</div>
+                </div>
+            </div>
+
+            <!-- LOT 46 Active Models -->
+            <div class="mt-4">
+                <div class="text-xs text-zinc-400 mb-1.5 px-1">Active Models (LOT 46)</div>
+                <div id="active-models-mini" class="flex flex-wrap gap-1 text-[10px]">
+                    <!-- Populated by JS -->
+                </div>
+            </div>
+
+            <!-- LOT 50 Capital Exposure -->
+            <div class="mt-3 px-1">
+                <div class="flex justify-between text-xs">
+                    <span class="text-zinc-400">Capital Exposure (LOT 50)</span>
+                    <span id="capital-exposure" class="font-mono text-emerald-400">68%</span>
+                </div>
+                <div class="h-1.5 bg-zinc-800 rounded mt-1">
+                    <div id="exposure-bar" class="h-1.5 bg-emerald-400 rounded transition-all" style="width: 68%"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- ACTIONS -->
+        <div class="px-5 py-6 border-t border-zinc-800 bg-zinc-950">
+            <div class="grid grid-cols-2 gap-3">
+                <button onclick="pauseBot()" 
+                        class="flex items-center justify-center gap-x-2 px-5 py-3.5 rounded-3xl bg-zinc-800 hover:bg-zinc-700 active:scale-[0.985] transition-all text-sm font-semibold">
+                    <i class="fa-solid fa-pause"></i>
+                    <span>PAUSE</span>
+                </button>
+                
+                <button onclick="killSwitch()" 
+                        class="flex items-center justify-center gap-x-2 px-5 py-3.5 rounded-3xl bg-red-500/90 hover:bg-red-600 active:scale-[0.985] transition-all text-sm font-bold text-white">
+                    <i class="fa-solid fa-skull"></i>
+                    <span>KILL SWITCH</span>
+                </button>
+            </div>
+            
+            <div class="mt-4 text-center">
+                <button onclick="refreshData()" 
+                        class="text-xs flex items-center justify-center gap-x-2 mx-auto text-zinc-400 hover:text-zinc-300">
+                    <i class="fa-solid fa-sync fa-sm"></i>
+                    <span>Actualiser les données</span>
+                </button>
+            </div>
+            
+            <!-- Walk-Forward Weights -->
+            <div class="mt-6 px-1">
+                <div class="font-semibold text-xs mb-2 text-zinc-400">STRATÉGIES (Walk-Forward)</div>
+                <div id="strategy-weights" class="grid grid-cols-3 gap-1.5 text-[10px]">
+                    <!-- Rempli dynamiquement -->
+                </div>
+                
+                <!-- Performance Chart -->
+                <div class="mt-4">
+                    <canvas id="weights-chart" height="80"></canvas>
+                </div>
+            </div>
+
+            <!-- Risk Dashboard -->
+            <div class="mt-6 px-1">
+                <div class="font-semibold text-xs mb-2 text-zinc-400">RISK DASHBOARD</div>
+                <div id="risk-dashboard" class="glass rounded-3xl p-3 text-xs grid grid-cols-2 gap-3">
+                    <!-- Rempli dynamiquement -->
+                </div>
+            </div>
+
+            <!-- Strategy Attribution -->
+            <div class="mt-6 px-1">
+                <div class="font-semibold text-xs mb-2 text-zinc-400">STRATEGY ATTRIBUTION (30 trades)</div>
+                <div id="strategy-attribution" class="glass rounded-3xl p-3 text-xs">
+                    <!-- Rempli dynamiquement -->
+                </div>
+            </div>
+
+            <!-- Detailed Performance Attribution -->
+            <div class="mt-6 px-1">
+                <div class="font-semibold text-xs mb-2 text-zinc-400">DETAILED ATTRIBUTION</div>
+                <div id="detailed-attribution" class="glass rounded-3xl p-3 text-xs space-y-1">
+                    <!-- Rempli dynamiquement avec plus de détails -->
+                </div>
+            </div>
+        </div>
+        
+        <div class="h-5"></div>
+    </div>
+
+    <script>
+        // Tailwind script
+        function initTailwind() {
+            document.documentElement.style.setProperty('--accent', '#00f5ff');
+        }
+        
+        let equityChart = null;
+        
+        // Données simulées (à remplacer par WebSocket réel)
+        let state = {
+            mode: "DEMO",
+            capital: 124850,
+            pnl: 4820,
+            pnl_pct: 3.87,
+            sharpe: 1.84,
+            drawdown: -2.1,
+            is_running: true,
+            positions: [
+                { symbol: "BTCUSDT", qty: 0.0842, avg: 61240, price: 62850, pnl: 135.4 },
+                { symbol: "ETHUSDT", qty: 1.85, avg: 2980, price: 3120, pnl: 258.2 },
+                { symbol: "SOLUSDT", qty: 12.4, avg: 148, price: 162, pnl: 172.8 }
+            ],
+            equity_history: [120000, 121400, 119800, 122300, 124850]
+        };
+        
+        function updateUI() {
+            // Mode
+            document.getElementById('mode-display').innerHTML = state.mode;
+            document.getElementById('mode-display').className = 
+                state.mode === 'REAL' ? 'font-bold text-xl tracking-tight text-red-400' : 'font-bold text-xl tracking-tight';
+            
+            // Capital
+            document.getElementById('capital-display').innerHTML = 
+                '$' + state.capital.toLocaleString();
+            
+            // PnL
+            const pnlEl = document.getElementById('pnl-value');
+            const pnlPctEl = document.getElementById('pnl-pct');
+            
+            pnlEl.innerHTML = (state.pnl >= 0 ? '+' : '') + '$' + state.pnl.toLocaleString();
+            pnlPctEl.innerHTML = (state.pnl_pct >= 0 ? '+' : '') + state.pnl_pct + '%';
+            
+            pnlEl.style.color = state.pnl >= 0 ? '#4ade80' : '#f87171';
+            pnlPctEl.style.color = state.pnl_pct >= 0 ? '#4ade80' : '#f87171';
+            
+            // Sharpe & Drawdown
+            document.getElementById('sharpe-value').innerHTML = state.sharpe;
+            document.getElementById('drawdown-value').innerHTML = state.drawdown + '%';
+            
+            // Status
+            const statusBadge = document.getElementById('status-badge');
+            const statusText = document.getElementById('status-text');
+            
+            if (state.is_running) {
+                statusBadge.className = 'px-3 py-1 rounded-3xl text-xs font-bold flex items-center gap-x-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30';
+                statusText.innerHTML = 'LIVE';
+            } else {
+                statusBadge.className = 'px-3 py-1 rounded-3xl text-xs font-bold flex items-center gap-x-1.5 bg-amber-500/10 text-amber-400 border border-amber-500/30';
+                statusText.innerHTML = 'PAUSE';
+            }
+            
+            // Positions
+            renderPositions();
+            
+            // Chart
+            if (!equityChart) {
+                initEquityChart();
+            } else {
+                equityChart.data.datasets[0].data = state.equity_history;
+                equityChart.update();
+            }
+            
+            // Fetch Risk Dashboard
+            fetchRiskDashboard();
+            
+            // Fetch Strategy Attribution
+            fetchStrategyAttribution();
+            
+            // Fetch Detailed Attribution
+            fetchDetailedAttribution();
+
+            // LOT 46 Active Models
+            fetchActiveModels();
+
+            // LOT 50 Capital Exposure
+            fetchCapitalExposure();
+        }
+
+        async function fetchActiveModels() {
+            try {
+                const res = await fetch('/api/walkforward-stats');
+                const data = await res.json();
+                const container = document.getElementById('active-models-mini');
+                if (!container || !data.strategy_weights) return;
+
+                container.innerHTML = '';
+                Object.keys(data.strategy_weights).slice(0, 4).forEach(name => {
+                    const el = document.createElement('div');
+                    el.className = 'px-2 py-0.5 bg-cyan-500/10 text-cyan-400 rounded-xl text-[9px]';
+                    el.innerHTML = name.split(' ')[0];
+                    container.appendChild(el);
+                });
+            } catch (e) {}
+        }
+
+        async function fetchCapitalExposure() {
+            try {
+                const res = await fetch('/api/walkforward-stats');
+                const data = await res.json();
+                const bar = document.getElementById('exposure-bar');
+                const text = document.getElementById('capital-exposure');
+                
+                // Simulate LOT 50 exposure (in real app this would come from capital_allocator)
+                const exposure = 68;
+                if (bar) bar.style.width = exposure + '%';
+                if (text) text.innerHTML = exposure + '%';
+            } catch (e) {}
+        }
+        
+        async function fetchRiskDashboard() {
+            try {
+                const res = await fetch('/api/risk-dashboard');
+                const data = await res.json();
+                
+                const container = document.getElementById('risk-dashboard');
+                if (!container) return;
+                
+                container.innerHTML = `
+                    <div>
+                        <div class="text-zinc-400">On-Chain Risk</div>
+                        <div class="font-bold text-lg">${(data.risk_metrics?.onchain_risk || 0.5).toFixed(2)}</div>
+                    </div>
+                    <div>
+                        <div class="text-zinc-400">Sentiment</div>
+                        <div class="font-bold text-lg">${(data.risk_metrics?.sentiment || 0).toFixed(2)}</div>
+                    </div>
+                    <div>
+                        <div class="text-zinc-400">Max Concentration</div>
+                        <div class="font-bold text-lg">${data.risk_metrics?.max_position_concentration || 0}%</div>
+                    </div>
+                    <div>
+                        <div class="text-zinc-400">Regime</div>
+                        <div class="font-bold text-sm">${data.regime || 'Unknown'}</div>
+                    </div>
+                `;
+            } catch (e) {
+                console.log('Risk dashboard not available');
+            }
+        }
+        
+        async function fetchStrategyAttribution() {
+            try {
+                const res = await fetch('/api/attribution');
+                const data = await res.json();
+                
+                const container = document.getElementById('strategy-attribution');
+                if (!container || Object.keys(data).length === 0) return;
+                
+                container.innerHTML = '';
+                
+                Object.entries(data).forEach(([name, stats]) => {
+                    const scoreColor = stats.avg_score > 0.2 ? 'emerald' : stats.avg_score > 0 ? 'amber' : 'red';
+                    
+                    const el = document.createElement('div');
+                    el.className = `flex justify-between items-center py-1 border-b border-zinc-700 last:border-0`;
+                    el.innerHTML = `
+                        <div>
+                            <div class="font-medium">${name}</div>
+                            <div class="text-[10px] text-zinc-500">${stats.trades} trades</div>
+                        </div>
+                        <div class="text-right">
+                            <div class="font-mono text-${scoreColor}-400">${stats.avg_score.toFixed(3)}</div>
+                            <div class="text-[10px] text-zinc-500">${(stats.weight * 100).toFixed(0)}% weight</div>
+                        </div>
+                    `;
+                    container.appendChild(el);
+                });
+            } catch (e) {
+                console.log('Strategy attribution not available');
+            }
+        }
+        
+        async function fetchDetailedAttribution() {
+            try {
+                const res = await fetch('/api/walkforward-stats');
+                const data = await res.json();
+                
+                const container = document.getElementById('detailed-attribution');
+                if (!container || !data.strategy_weights) return;
+                
+                container.innerHTML = '';
+                
+                Object.entries(data.strategy_weights).forEach(([name, weight]) => {
+                    const pct = (weight * 100).toFixed(0);
+                    let status = 'Neutral';
+                    let statusColor = 'zinc';
+                    
+                    if (weight > 0.18) { status = 'Dominant'; statusColor = 'emerald'; }
+                    else if (weight > 0.12) { status = 'Strong'; statusColor = 'blue'; }
+                    else if (weight < 0.08) { status = 'Weak'; statusColor = 'red'; }
+                    
+                    const el = document.createElement('div');
+                    el.className = `flex justify-between items-center text-xs py-0.5`;
+                    el.innerHTML = `
+                        <div class="font-medium">${name}</div>
+                        <div class="flex items-center gap-x-2">
+                            <div class="font-mono">${pct}%</div>
+                            <div class="px-1.5 py-px text-[9px] rounded bg-${statusColor}-500/10 text-${statusColor}-400">${status}</div>
+                        </div>
+                    `;
+                    container.appendChild(el);
+                });
+            } catch (e) {
+                console.log('Detailed attribution not available');
+            }
+        }
+        
+        function renderPositions() {
+            const container = document.getElementById('positions-table');
+            container.innerHTML = '';
+            
+            state.positions.forEach(pos => {
+                const pnlColor = pos.pnl >= 0 ? 'text-emerald-400' : 'text-red-400';
+                const pnlSign = pos.pnl >= 0 ? '+' : '';
+                
+                const unrealized = ((pos.price - pos.avg) / pos.avg * 100).toFixed(1);
+                
+                const html = `
+                    <div class="glass rounded-3xl px-4 py-3 flex justify-between items-center">
+                        <div class="flex items-center gap-x-3">
+                            <div>
+                                <div class="font-bold">${pos.symbol}</div>
+                                <div class="text-xs text-zinc-400">${pos.qty} @ $${pos.avg}</div>
+                            </div>
+                        </div>
+                        
+                        <div class="text-right">
+                            <div class="font-bold tabular-nums">$${pos.price}</div>
+                            <div class="${pnlColor} text-xs font-bold">
+                                ${pnlSign}$${pos.pnl} <span class="font-normal">(${unrealized}%)</span>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                container.innerHTML += html;
+            });
+            
+            document.getElementById('position-count').innerHTML = `${state.positions.length} actifs`;
+        }
+        
+        function initEquityChart() {
+            const ctx = document.getElementById('equity-chart');
+            
+            equityChart = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: ['14:00', '15:00', '16:00', '17:00', '18:00'],
+                    datasets: [{
+                        label: 'Equity',
+                        data: state.equity_history,
+                        borderColor: '#00f5ff',
+                        borderWidth: 3,
+                        fill: true,
+                        backgroundColor: 'rgba(0, 245, 255, 0.08)',
+                        tension: 0.4,
+                        pointRadius: 0,
+                        pointHoverRadius: 4
+                    }]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: {
+                        legend: { display: false },
+                        tooltip: {
+                            backgroundColor: '#18181b',
+                            displayColors: false,
+                            callbacks: {
+                                label: (ctx) => '$' + ctx.raw.toLocaleString()
+                            }
+                        }
+                    },
+                    scales: {
+                        x: { 
+                            grid: { color: '#27251f', lineWidth: 0.5 },
+                            ticks: { color: '#52525b', font: { size: 10 } }
+                        },
+                        y: { 
+                            grid: { color: '#27251f', lineWidth: 0.5 },
+                            ticks: { 
+                                color: '#52525b', 
+                                font: { size: 10 },
+                                callback: (val) => '$' + (val/1000) + 'k'
+                            }
+                        }
+                    },
+                    elements: {
+                        line: { borderJoinStyle: 'round' }
+                    }
+                }
+            });
+        }
+        
+        // Actions
+        function pauseBot() {
+            state.is_running = false;
+            updateUI();
+            
+            // TODO: Appel API réel
+            fetch('/api/toggle-bot', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({is_running: false})
+            });
+        }
+        
+        function killSwitch() {
+            if (!confirm('⚠️ KILL SWITCH ? Toutes les positions seront liquidées.')) return;
+            
+            state.is_running = false;
+            state.positions = [];
+            
+            updateUI();
+            
+            fetch('/api/kill-switch', { method: 'POST' });
+        }
+        
+        function refreshData() {
+            // Simulation de mise à jour
+            state.capital = Math.floor(Math.random() * 5000) + 122000;
+            state.pnl = Math.floor(Math.random() * 800) + 4200;
+            state.pnl_pct = (state.pnl / state.capital * 100).toFixed(2);
+            
+            // Mise à jour positions
+            state.positions.forEach(p => {
+                p.price = Math.floor(p.price * (0.995 + Math.random() * 0.01));
+                p.pnl = Math.floor((p.price - p.avg) * p.qty * 0.95);
+            });
+            
+            updateUI();
+            
+            // Fetch Walk-Forward weights
+            fetchWalkforwardWeights();
+        }
+        
+        let weightsChart = null;
+        
+        async function fetchWalkforwardWeights() {
+            try {
+                const res = await fetch('/api/walkforward-stats');
+                const data = await res.json();
+                
+                const container = document.getElementById('strategy-weights');
+                if (!container || !data.strategy_weights) return;
+                
+                container.innerHTML = '';
+                
+                const labels = [];
+                const values = [];
+                const colors = [];
+                
+                Object.entries(data.strategy_weights).forEach(([name, weight]) => {
+                    const pct = (weight * 100).toFixed(0);
+                    let colorClass = 'bg-zinc-700 text-zinc-400';
+                    let chartColor = '#52525b';
+                    
+                    if (weight > 0.15) {
+                        colorClass = 'bg-emerald-500/10 text-emerald-400';
+                        chartColor = '#10b981';
+                    } else if (weight > 0.10) {
+                        colorClass = 'bg-amber-500/10 text-amber-400';
+                        chartColor = '#f59e0b';
+                    }
+                    
+                    const el = document.createElement('div');
+                    el.className = `px-2 py-1 ${colorClass} rounded-xl text-center`;
+                    el.innerHTML = `
+                        <div class="font-mono text-[9px]">${name.split(' ')[0]}</div>
+                        <div class="font-bold">${pct}%</div>
+                    `;
+                    container.appendChild(el);
+                    
+                    labels.push(name.split(' ')[0]);
+                    values.push(parseFloat(pct));
+                    colors.push(chartColor);
+                });
+                
+                // Update chart
+                updateWeightsChart(labels, values, colors);
+                
+            } catch (e) {
+                console.log('Walkforward stats not available');
+            }
+        }
+        
+        function updateWeightsChart(labels, values, colors) {
+            const ctx = document.getElementById('weights-chart');
+            if (!ctx) return;
+            
+            if (weightsChart) {
+                weightsChart.data.labels = labels;
+                weightsChart.data.datasets[0].data = values;
+                weightsChart.data.datasets[0].backgroundColor = colors;
+                weightsChart.update();
+            } else {
+                weightsChart = new Chart(ctx, {
+                    type: 'bar',
+                    data: {
+                        labels: labels,
+                        datasets: [{
+                            data: values,
+                            backgroundColor: colors,
+                            borderWidth: 0
+                        }]
+                    },
+                    options: {
+                        responsive: true,
+                        maintainAspectRatio: false,
+                        plugins: { legend: { display: false } },
+                        scales: {
+                            x: { grid: { display: false }, ticks: { font: { size: 8 }, color: '#52525b' } },
+                            y: { display: false }
+                        }
+                    }
+                });
+            }
+        }
+        
+        // Initialisation
+        function init() {
+            initTailwind();
+            updateUI();
+            
+            // Mise à jour automatique toutes les 12 secondes
+            setInterval(() => {
+                if (state.is_running) {
+                    refreshData();
+                }
+            }, 12000);
+            
+            // Message Telegram (optionnel)
+            console.log('%c[Mini App] Telegram Mini App initialisée avec succès', 'color:#64748b');
+        }
+        
+        window.onload = init;
+    </script>
+</body>
+</html>

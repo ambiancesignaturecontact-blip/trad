@@ -1,0 +1,47 @@
+{
+  "dashboard": {
+    "title": "Q-Bot Institutional Dashboard",
+    "tags": ["trading", "institutional"],
+    "time": { "from": "now-6h", "to": "now" },
+    "panels": [
+      {
+        "title": "Equity & PnL",
+        "type": "stat",
+        "targets": [
+          { "expr": "trading_equity_demo", "legendFormat": "Equity" },
+          { "expr": "trading_pnl_usd", "legendFormat": "PnL" }
+        ]
+      },
+      {
+        "title": "Strategy Weights (Walk-Forward)",
+        "type": "bargauge",
+        "targets": [
+          { "expr": "strategy_weight", "legendFormat": "{{strategy}}" }
+        ]
+      },
+      {
+        "title": "Paper Trading Performance",
+        "type": "stat",
+        "targets": [
+          { "expr": "paper_equity", "legendFormat": "Paper Equity" },
+          { "expr": "paper_pnl", "legendFormat": "Paper PnL" }
+        ]
+      },
+      {
+        "title": "Real Execution Stats",
+        "type": "stat",
+        "targets": [
+          { "expr": "real_success_rate", "legendFormat": "Success Rate %" }
+        ]
+      },
+      {
+        "title": "Risk Metrics",
+        "type": "gauge",
+        "targets": [
+          { "expr": "onchain_risk_score", "legendFormat": "On-Chain Risk" },
+          { "expr": "sentiment_index", "legendFormat": "Sentiment" }
+        ]
+      }
+    ]
+  }
+}

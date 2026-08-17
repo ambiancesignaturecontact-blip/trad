@@ -300,6 +300,9 @@ class MetaAllocationEngine:
     
     Implements a **Multi-Armed Bandit (Thompson Sampling)** algorithm 
     to dynamically reallocate capital weights based on rolling Sharpe performance!
+    
+    + Walk-Forward dynamique (LOT 11) : les poids sont ajustés en fonction
+      des performances récentes des stratégies sur les 80 derniers trades.
     """
     def __init__(self, strategies=None):
         self.strategies = strategies or []
@@ -311,12 +314,18 @@ class MetaAllocationEngine:
         
         # Rolling historical performance records of each strategy
         self.strategy_returns = {s.name: [] for s in self.strategies}
+        
+        # === WALK-FORWARD DYNAMIQUE (LOT 11) ===
+        self.recent_performance = {s.name: [] for s in self.strategies}  # Sharpe-like score récent
+        self.walkforward_weights = np.ones(self.num_strategies) / self.num_strategies
 
     def update_bandit_feedback(self, symbol: str, strategy_signals: dict, actual_return: float):
         """
         Updates Thompson Sampling Bandit successes/failures based on trade direction feedback.
         If a strategy's signal aligned with actual return, we reward it (increment alpha).
         Otherwise, we penalize it (increment beta).
+        
+        + Walk-Forward dynamique : mise à jour des performances récentes.
         """
         for i, s in enumerate(self.strategies):
             sig_obj = strategy_signals.get(s.name, 0.0)
@@ -326,14 +335,23 @@ class MetaAllocationEngine:
                 # If signal direction matches actual price return direction -> Success!
                 if np.sign(sig_val) == np.sign(actual_return):
                     self.alpha_bandit[i] += 1.0
+                    self.recent_performance[s.name].append(1.0)
                 else:
                     self.beta_bandit[i] += 1.0
+                    self.recent_performance[s.name].append(-0.5)
+                
+                # Garder seulement les 80 dernières performances
+                if len(self.recent_performance[s.name]) > 80:
+                    self.recent_performance[s.name].pop(0)
 
     def allocate(self, market_data, regime_state_id, ml_prediction, ppo_action):
         """
         Calculates final combined trade signal and capital allocation.
         Enforces Thompson Sampling (Multi-Armed Bandit) weighting over classical strategies
         to route more capital dynamically to historically outperforming models!
+        
+        + Walk-Forward dynamique (LOT 11) : les poids sont ajustés selon les
+          performances récentes des stratégies (derniers 80 trades).
         """
         raw_signals = []
         confidences = []
@@ -350,18 +368,38 @@ class MetaAllocationEngine:
                 signals_dict[s.name] = 0.0
                 conf_dict[s.name] = 0.0
 
+        # === WALK-FORWARD DYNAMIQUE (LOT 11) ===
+        # Calcul des poids dynamiques basés sur les performances récentes
+        for i, s in enumerate(self.strategies):
+            recent = self.recent_performance.get(s.name, [])
+            if len(recent) >= 10:
+                recent_score = np.mean(recent[-20:])  # moyenne des 20 derniers
+                self.walkforward_weights[i] = max(0.25, 1.0 + recent_score * 0.9)
+            else:
+                self.walkforward_weights[i] = 1.0
+        
+        # Normalisation des poids walk-forward
+        wf_sum = sum(self.walkforward_weights)
+        if wf_sum > 0:
+            self.walkforward_weights = self.walkforward_weights / wf_sum
+
+        # === AUTO-REBALANCING (LOT 12) ===
+        # Si une stratégie a un poids walk-forward très faible (< 0.08), on la désactive temporairement
+        for i, s in enumerate(self.strategies):
+            if self.walkforward_weights[i] < 0.08:
+                s.enabled = False
+            elif self.walkforward_weights[i] > 0.12:
+                s.enabled = True
+
         # 2. Thompson Sampling (MAB) Weight Calculation:
-        # We sample from a Beta distribution for each strategy's arm
         sampled_performance = np.zeros(self.num_strategies)
         for i in range(self.num_strategies):
             sampled_performance[i] = np.random.beta(self.alpha_bandit[i], self.beta_bandit[i])
             
-        # Softmax normalize sampled performance to get strategy weights
-        exp_perf = np.exp(sampled_performance - np.max(sampled_performance)) # shift for stability
+        exp_perf = np.exp(sampled_performance - np.max(sampled_performance))
         mab_weights = exp_perf / np.sum(exp_perf)
 
-        # 3. Enforce Regime-Specific Dominance (Alpha-Switching) as a risk-filter
-        # Select the single best matching strategy for the active regime
+        # 3. Enforce Regime-Specific Dominance + Walk-Forward
         dominant_strategy = "Trend Following"
         if regime_state_id == 0 or regime_state_id == 1:
             dominant_strategy = "Trend Following"
@@ -370,14 +408,13 @@ class MetaAllocationEngine:
         elif regime_state_id == 3:
             dominant_strategy = "Scalping" if signals_dict.get("Scalping", 0.0) != 0.0 else "Statistical Arbitrage"
 
-        # Blend MAB weights with the Regime-specific dominant filter:
-        # We assign 60% of the classical signal to the MAB-optimized weights,
-        # and 40% directly to the regime-dominant strategy to protect during regime shifts!
         classical_signal = 0.0
         for i, s in enumerate(self.strategies):
-            weight = mab_weights[i] * 0.60
+            # Combinaison : MAB + Walk-Forward + Regime dominance
+            weight = mab_weights[i] * 0.50
+            weight += self.walkforward_weights[i] * 0.30
             if s.name == dominant_strategy:
-                weight += 0.40
+                weight += 0.20
             classical_signal += signals_dict.get(s.name, 0.0) * weight
 
         mean_confidence = conf_dict.get(dominant_strategy, 0.5)
@@ -391,14 +428,14 @@ class MetaAllocationEngine:
 
         consensus_score = float(mean_confidence)
         
-        # Create contributions dictionary
+        # Create contributions dictionary (avec poids walk-forward)
         strategy_contributions = {}
         for i, s in enumerate(self.strategies):
             is_dominant = (s.name == dominant_strategy)
             strategy_contributions[s.name] = {
                 "signal": float(signals_dict.get(s.name, 0.0)),
                 "confidence": float(conf_dict.get(s.name, 0.0)),
-                "weight": float(mab_weights[i] * 0.60 + (0.40 if is_dominant else 0.0))
+                "weight": float(mab_weights[i] * 0.50 + self.walkforward_weights[i] * 0.30 + (0.20 if is_dominant else 0.0))
             }
         
         return {
@@ -407,5 +444,6 @@ class MetaAllocationEngine:
             "classical_signal": float(classical_signal),
             "ml_signal": float(ml_signal),
             "ppo_signal": float(ppo_action),
-            "contributions": strategy_contributions
+            "contributions": strategy_contributions,
+            "walkforward_weights": {s.name: float(self.walkforward_weights[i]) for i, s in enumerate(self.strategies)}
         }

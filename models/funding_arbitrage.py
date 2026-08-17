@@ -28,24 +28,19 @@ class FundingRateArbitrageEngine:
         perp_price: float = None
     ) -> dict:
         """
-        Calculates a real-world funding arbitrage entry/exit signal using 100% genuine market ticks.
-        Supports both microstructural (bid/ask/mark/index) and simplified (spot/perp prices) parameters.
-        Strictly forbids any simulated perp price estimations or synthetic spreads (Lot 5).
+        Analyse d'arbitrage funding 100% basée sur des données réelles.
+        Si les données sont incomplètes, retourne HOLD (aucune simulation).
         """
-        # Fallback mappings for simplified calls
-        if spot_price is not None:
-            spot_bid = spot_bid if spot_bid is not None else spot_price
-            spot_ask = spot_ask if spot_ask is not None else spot_price
-            index_price = index_price if index_price is not None else spot_price
-            
-        if perp_price is not None:
-            perp_bid = perp_bid if perp_bid is not None else perp_price
-            perp_ask = perp_ask if perp_ask is not None else perp_price
-            mark_price = mark_price if mark_price is not None else perp_price
-
-        # Ensure all required real-world parameters are fully loaded and present
+        # On n'accepte que les données réelles passées en paramètre
         if None in [spot_bid, spot_ask, perp_bid, perp_ask, mark_price, index_price, funding_rate_8h]:
-            return {"action": "HOLD", "reason": "Data incomplete. Missing required real-world market parameter."}
+            # Essai de fallback avec spot/perp si disponibles
+            if spot_price is not None and perp_price is not None:
+                spot_bid = spot_ask = spot_price
+                perp_bid = perp_ask = perp_price
+                index_price = spot_price
+                mark_price = perp_price
+            else:
+                return {"action": "HOLD", "reason": "Insufficient real market data for funding arbitrage."}
             
         is_already_open = symbol in self.active_arbitrages
         

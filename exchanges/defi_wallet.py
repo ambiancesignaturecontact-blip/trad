@@ -86,23 +86,34 @@ class NonCustodialDeFiWallet:
 
     async def get_1inch_aggregator_quote(self, token_in: str, token_out: str, amount_in_wei: int, chain_id: int = 42161) -> dict:
         """
-        Queries 1inch Aggregator API for the optimal dynamic route 
-        across multiple liquidity pools (Uniswap, Sushi, Balancer) to guarantee slippage-free execution.
+        Queries 1inch Aggregator API for real quotes.
+        Returns UNAVAILABLE if the API cannot be reached (no simulation).
         """
-        # Under standard production, we poll: https://api.1inch.dev/swap/v6.0/{chain_id}/quote
-        # Using a highly reliable mock/direct router if API key is not present.
         try:
-            # 1inch public query proxy simulator
-            quote_value = int(amount_in_wei * 0.998) # deduct tiny aggregator routing fees
-            return {
-                "status": "Success",
-                "quote_wei": quote_value,
-                "protocols": [["Uniswap_V3", 60], ["Sushiswap", 30], ["Balancer", 10]], # split route
-                "aggregator": "1inch Swap Router v6"
+            import httpx
+            url = f"https://api.1inch.dev/swap/v6.0/{chain_id}/quote"
+            params = {
+                "src": token_in,
+                "dst": token_out,
+                "amount": str(amount_in_wei),
+                "includeProtocols": "true"
             }
+            headers = {"Authorization": f"Bearer {os.getenv('ONEINCH_API_KEY', '')}"}
+            
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                resp = await client.get(url, params=params, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return {
+                        "status": "Success",
+                        "quote_wei": int(data.get("toAmount", amount_in_wei)),
+                        "protocols": data.get("protocols", []),
+                        "aggregator": "1inch v6"
+                    }
         except Exception as e:
-            logger.warning(f"Failed to query 1inch API: {str(e)}")
-            return {"status": "Fallback", "quote_wei": amount_in_wei}
+            logger.warning(f"1inch API unavailable: {str(e)}")
+        
+        return {"status": "UNAVAILABLE", "quote_wei": amount_in_wei}
 
     def sign_dex_swap_transaction(self, token_in: str, token_out: str, amount_in_eth: float, slippage_pct=0.003) -> dict:
         """

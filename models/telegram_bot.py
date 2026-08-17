@@ -209,7 +209,7 @@ class TelegramBotManager:
             if not web_app_url.startswith("http"):
                 web_app_url = f"https://{web_app_url}"
             keyboard["inline_keyboard"].insert(0, [
-                {"text": "🖥️ OUVRIR MINI APP TERMINAL", "web_app": {"url": web_app_url}}
+                {"text": "🖥️ OUVRIR MINI APP PRO", "web_app": {"url": web_app_url + "/telegram_mini_app.html"}}
             ])
         
         if cmd_lower.startswith("/set "):
