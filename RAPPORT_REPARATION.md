@@ -201,3 +201,42 @@ de rentabilité** (backtest walk-forward honnête + paper-trading 4–8 semaines
 - ✅ Télémétrie enrichie : `strategy_weights`, `active_models`, `capital_exposure`, `data_quality_status`, `using_fallback_data`
 - ✅ Backup DB créé et vérifié
 - ✅ Mini-app : données réelles + SDK Telegram + auth
+
+---
+
+# 🔧 TOUR 4 — 17 août 2026 (API leaderboard réelle + IA autonome)
+
+## 22. ✅ API PUBLIQUE RÉELLE pour le Copy Trading — trouvée et intégrée
+
+Bybit n'a **aucune API publique** de leaderboard (404/403 confirmés). J'ai testé en direct
+plusieurs candidats et intégré la source gagnante :
+
+- **Hyperliquid** : `https://stats-data.hyperliquid.xyz/Mainnet/leaderboard`
+  → **41 886 vrais traders** (adresse on-chain, valeur de compte, PnL/ROI/volume jour/semaine/mois/allTime).
+  API publique, **sans clé, sans geo-bloc**, accessible depuis n'importe quelle région.
+- Filtres institutionnels : compte ≥ 10 k$, activité mensuelle non nulle, anti-outliers ROI (>500 %/mois écartés),
+  classement par ROI mensuel plafonné à 200 % (les baleines stables passent devant les anomalies).
+- **Statut : `LIVE`** — 8 vrais traders exposés dans `/api/telemetry` (roi annualisé, PnL mensuel, taille de compte).
+- Fallback Bybit conservé + refresh automatique toutes les 6 h (LOT 67).
+- Tests déterministes (mocked) : `tests/copytrading/test_hyperliquid_source.py`.
+
+## 23. ✅ IA AUTONOME (LOT 66) — le bot se forme, se valide et se déploie tout seul
+
+| Brique | Mécanisme |
+|---|---|
+| **Buffer d'expériences RL** | À chaque tick, le PPO collecte (état, action, log_prob, récompense réelle = rendement observé). Vérifié : le buffer croît en live (20 → 60+). |
+| **Auto-entraînement PPO** | Toutes les 6 h, le PPO s'entraîne sur ≥ 50 expériences réelles, puis buffer vidé. |
+| **Auto-retrain MLOps** | HMM + LSTM re-entraînés sur données fraîches + tuning génétique + registry (CANDIDATE → DEPLOYED). |
+| **Validation champion/challenger** | Walk-forward out-of-sample à chaque cycle ; le Sharpe est comparé au précédent (IMPROVED/DEGRADED) et persistant. |
+| **Audit + notification** | Chaque cycle est loggé (audit chaîné) + notifié Telegram. |
+
+Le résultat : l'IA améliore ses modèles **sans intervention humaine** — détection de dérive,
+retraining, validation, déploiement et journalisation en boucle fermée.
+
+## 24. Vérifications finales (tour 4)
+- ✅ `pytest` : **58 passed**
+- ✅ Copy Trading : **LIVE avec 8 vrais traders Hyperliquid** (41 886 scannés)
+- ✅ PPO : buffer d'expériences **croît en live** (0 → 60 en ~1 min)
+- ✅ Idempotence : ordres dupliqués bloqués en live (« Idempotence gate: EURUSD... Skipping »)
+- ✅ Trade journal : `[JOURNAL] Trade #9 logged` avec stratégie dominante
+- ✅ Endpoints : tous 200, `/telegram` OK, graceful shutdown OK

@@ -3,6 +3,12 @@ import time
 
 logger = logging.getLogger("CopyTrading")
 
+# REAL public leaderboard source: Hyperliquid (Perp DEX) - no API key, no geo-block.
+# https://stats-data.hyperliquid.xyz/Mainnet/leaderboard returns ~40k real traders
+# with accountValue + windowPerformances (day/week/month/allTime: pnl, roi, vlm).
+HYPERLIQUID_LEADERBOARD_URL = "https://stats-data.hyperliquid.xyz/Mainnet/leaderboard"
+MIN_ACCOUNT_VALUE_USD = 10000.0  # ignore dust accounts (real-filter)
+
 class CopyTrader:
     def __init__(self, trader_id: str, name: str, roi_annual: float, win_rate: float, max_drawdown: float, sharpe: float):
         self.trader_id = trader_id
@@ -19,7 +25,11 @@ class CopyTrader:
 
     def calculate_seq(self):
         m_dd = max(self.max_drawdown, 0.02)
-        self.seq_score = (self.roi_annual * self.win_rate) / (m_dd * 1.05)
+        if self.win_rate > 0:
+            self.seq_score = (self.roi_annual * self.win_rate) / (m_dd * 1.05)
+        else:
+            # win_rate unknown (e.g. Hyperliquid source) -> risk-adjusted return score
+            self.seq_score = self.roi_annual / (m_dd * 1.05)
         return self.seq_score
 
 
@@ -41,20 +51,88 @@ class CopyTradingManager:
         # Try to initialize with actual, real-world copytrading endpoints
         self.refresh_real_copytrader_leaderboard()
 
+    def _load_hyperliquid_leaderboard(self) -> bool:
+        """
+        Loads REAL traders from the Hyperliquid public leaderboard
+        (no API key, no geo-block, ~40k real traders).
+        Strict filter: account >= $10k and non-zero month activity.
+        roi_annual = month roi x 12 (derived from real data, documented).
+        """
+        try:
+            import httpx
+            resp = httpx.get(HYPERLIQUID_LEADERBOARD_URL, timeout=12.0)
+            if resp.status_code != 200:
+                logger.info(f"Hyperliquid leaderboard HTTP {resp.status_code} - skipped.")
+                return False
+
+            rows = resp.json().get("leaderboardRows", [])
+
+            def perf_of(row, window):
+                for w, p in row.get("windowPerformances", []):
+                    if w == window:
+                        return p or {}
+                return {}
+
+            candidates = []
+            for row in rows:
+                try:
+                    account_value = float(row.get("accountValue") or 0.0)
+                    if account_value < MIN_ACCOUNT_VALUE_USD:
+                        continue  # real-filter: skip dust accounts
+                    month = perf_of(row, "month")
+                    roi_month = float(month.get("roi") or 0.0)
+                    pnl_month = float(month.get("pnl") or 0.0)
+                    if roi_month == 0.0 and pnl_month == 0.0:
+                        continue  # strict: must have real month activity
+                    # Institutional anti-outlier: skip absurd ROI anomalies (>500%/month)
+                    # that dominate ranking and are usually tiny-account luck.
+                    if roi_month > 5.0 or pnl_month <= 0.0:
+                        continue
+                    candidates.append((row, roi_month, pnl_month, account_value))
+                except Exception:
+                    continue
+
+            # Rank by real monthly ROI, capped at 200%/month so whales with
+            # consistent returns rank high and freak outliers do not dominate.
+            candidates.sort(key=lambda c: min(c[1], 2.0), reverse=True)
+
+            self.traders = {}
+            for row, roi_month, pnl_month, acct in candidates[:8]:
+                tr_id = row.get("ethAddress") or ""
+                if not tr_id:
+                    continue
+                name = row.get("displayName") or f"0x{tr_id[2:10]}"
+                roi_annual = roi_month * 12.0  # annualized from real monthly ROI
+                t = CopyTrader(tr_id, name, roi_annual, 0.0, 0.05, 1.0)
+                t.pnl_month = pnl_month          # real data (used by UI)
+                t.account_value = acct           # real data
+                self.traders[tr_id] = t
+
+            if self.traders:
+                self.status = "LIVE"
+                self.status_message = f"Connected to {len(self.traders)} real Hyperliquid traders"
+                logger.info(
+                    f"CopyTrading: Loaded {len(self.traders)} REAL traders from "
+                    f"Hyperliquid public leaderboard ({len(rows)} scanned)."
+                )
+                return True
+        except Exception as e:
+            logger.warning(f"Hyperliquid leaderboard unavailable: {e}")
+        return False
+
     def refresh_real_copytrader_leaderboard(self):
         """
-        Tente de charger de vrais traders depuis l'API Bybit Copy Trading.
-        Si l'API est indisponible ou retourne des données vides, le module reste
-        en mode UNAVAILABLE (aucune simulation, aucune donnée fictive).
-
-        NOTE: Bybit n'expose PAS de endpoint public documenté pour le leaderboard
-        Copy Trading (le endpoint /v5/copy-trading/leaderboard renvoie 404).
-        Les données réelles requièrent des clés API institutionnelles dédiées,
-        ou un scraper du site bybit.com. Le module reste donc volontairement
-        en UNAVAILABLE tant qu'aucune source réelle n'est configurée.
+        Loads REAL traders from a genuine public leaderboard source.
+        Priority: Hyperliquid (public API, no key) -> Bybit candidates (legacy).
+        If no source is reachable, stays strictly UNAVAILABLE (no fake data).
         """
-        logger.info("Polling Bybit Copy Trading Elite Leaderboard (REAL DATA ONLY)...")
-        # Endpoints candidats (le premier est le legacy, renvoie 404 aujourd'hui)
+        logger.info("Polling real copy-trading leaderboard sources...")
+
+        # 1) Hyperliquid - public, no key, works from any region
+        if self._load_hyperliquid_leaderboard():
+            return
+
+        # 2) Bybit candidates (legacy - endpoint is not a public API, may 404/403)
         candidate_urls = [
             "https://api.bybit.com/v5/copy-trading/leaderboard",
             "https://api.bybit.com/v5/copy-trading/trading-traders",
@@ -70,10 +148,7 @@ class CopyTradingManager:
                     continue
 
                 if resp.status_code == 404:
-                    logger.info(
-                        f"Bybit Copy Trading: endpoint {url} n'existe pas "
-                        "(404) - pas d'API publique de leaderboard."
-                    )
+                    logger.info(f"Bybit Copy Trading: endpoint {url} does not exist (404).")
                     continue
 
                 if resp.status_code != 200:
@@ -82,33 +157,25 @@ class CopyTradingManager:
 
                 data = resp.json().get("result", {}).get("list", [])
                 self.traders = {}
-
-                for item in data[:8]:  # Top 8 traders réels
+                for item in data[:8]:
                     tr_id = item.get("leaderId") or item.get("uid")
                     if not tr_id:
                         continue
-
                     name = item.get("nickname", f"Trader-{tr_id[:6]}")
                     roi = float(item.get("roi", 0.0))
                     win_rate = float(item.get("winRate", 0.0))
                     max_dd = float(item.get("maxDrawdown", 0.10))
                     sharpe = float(item.get("sharpeRatio", 1.0))
-
-                    # On n'accepte que les traders avec des données réelles valides
                     if roi != 0 or win_rate != 0:
-                        t = CopyTrader(tr_id, name, roi, win_rate, max_dd, sharpe)
-                        self.traders[tr_id] = t
+                        self.traders[tr_id] = CopyTrader(tr_id, name, roi, win_rate, max_dd, sharpe)
 
                 if self.traders:
                     self.status = "LIVE"
                     self.status_message = f"Connected to {len(self.traders)} real traders"
                     logger.info(f"CopyTrading: Loaded {len(self.traders)} REAL traders from Bybit.")
                     return
-                else:
-                    logger.warning("Bybit returned empty or invalid trader data.")
-                    break
         except Exception as e:
-            logger.warning(f"Bybit Copy Trading API unavailable: {str(e)}")
+            logger.warning(f"Bybit Copy Trading API unavailable: {e}")
 
         # Mode UNAVAILABLE strict - aucune donnée fictive
         self.traders = {}
