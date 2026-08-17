@@ -88,8 +88,8 @@ class RLHFRewardModel:
             logger.warning("Not enough feedback to train RLHF model")
             return False
 
-        X = torch.tensor([f[0] for f in self.feedback_buffer], dtype=torch.float32).to(self.device)
-        y = torch.tensor([f[1] for f in self.feedback_buffer], dtype=torch.float32).unsqueeze(1).to(self.device)
+        X = torch.tensor(np.array([f[0] for f in self.feedback_buffer]), dtype=torch.float32).to(self.device)
+        y = torch.tensor(np.array([f[1] for f in self.feedback_buffer]), dtype=torch.float32).unsqueeze(1).to(self.device)
 
         for epoch in range(epochs):
             self.optimizer.zero_grad()

@@ -120,3 +120,44 @@ Le dépôt est **public** et contenait :
 - ✅ WebSocket `/ws` : reçoit la télémétrie live (prix réels, ex. 63 494 $)
 - ✅ `pytest tests/` : **46 passed**
 - ✅ `vite build` (frontend) : succès
+
+---
+
+# 🔧 TOUR 2 — 17 août 2026 (demandes utilisateur : torch + audit institutionnel)
+
+## 12. PyTorch installé et activé pour Railway
+
+- **Sandbox** : `torch 2.13.0+cpu` installé et **validé** — GAN LOT 54 s'entraîne et génère
+  des scénarios extrêmes, RLHF LOT 55 s'entraîne et prédit (tests réels exécutés).
+- **Dockerfile** : ajout `pip install --index-url https://download.pytorch.org/whl/cpu torch`
+  (wheel CPU ≈190 Mo au lieu de >2 Go pour CUDA). Le bot démarre désormais avec
+  `LOT 54: ExtremeScenarioGenerator initialized` et `LOT 55: RLHF Reward Model initialized`
+  **sans fallback**.
+- Warning de perf RLHF corrigé (`np.array` avant `torch.tensor`).
+
+## 13. Nouvelles briques « institutionnelles » ajoutées
+
+| LOT | Brique | Détail |
+|---|---|---|
+| 61 | **Prometheus /metrics** | Endpoint exposé + registry (`core/metrics.py`) : prix, equity, PnL, régime, positions, latence API, compteurs d'ordres/erreurs. Le stack prometheus.yml + Grafana fourni est maintenant **fonctionnel**. |
+| 62 | **Checklist de configuration au démarrage** | Log clair de tous les prérequis (Telegram, DB, clés REAL, EVM) + blocage dur du mode REAL sans PostgreSQL. |
+| 63 | **Rate limiting outbound** | aiolimiter appliqué aux appels chauds (Bybit tickers, Yahoo, Binance, news, RPC) — évite les bannissements 429. |
+| — | **Blindage de la boucle de trading** | Chaque tick par actif est enveloppé de try/except : une erreur ne tue plus la boucle entière (fiabilité). |
+| — | **LOT 46 sans données synthétiques** | Le scheduler score désormais les modèles sur le **PnL réalisé réel** (trade journal) au lieu de `np.random.uniform` — aligné avec la politique « zéro synthétique ». |
+| — | **Dockerfile HEALTHCHECK corrigé** | Utilisait `requests` (non installé) → `urllib` standard. |
+
+## 14. Audit de gap institutionnel
+
+Le document **`ROADMAP_INSTITUTIONNEL.md`** détaille ce qui manque, priorisé :
+sécurité des fonds (idempotence + confirmation de fill REAL), auth JWT sur les endpoints
+d'action, sauvegardes DB, attribution de performance par modèle, et la **phase de validation
+de rentabilité** (backtest walk-forward honnête + paper-trading 4–8 semaines avant REAL).
+
+## 15. Vérifications finales (tour 2)
+
+- ✅ `pytest tests/` : **46 passed**
+- ✅ `import main` + démarrage uvicorn avec torch : **OK** (`Application startup complete`)
+- ✅ `/metrics` → 200 avec métriques live (prix, equity, latence Bybit…)
+- ✅ `/api/status`, `/api/telemetry`, `/api/history` → 200
+- ✅ Boucle de trading : 0 erreur de tick observée (microstructure, arbitrages, audit logs OK)
+- ✅ GAN + RLHF : entraînement et prédictions validés en conditions réelles

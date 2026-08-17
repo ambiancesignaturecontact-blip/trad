@@ -11,7 +11,7 @@ import os
 import websockets
 import base64
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException
-from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel
@@ -121,15 +121,34 @@ model_selector, adaptive_ensemble_agent = create_lot46_components(model_names_lo
 logger.info("✅ LOT 46: Online Model Selector initialized")
 
 # LOT 46 Scheduler
+# REAL performance attribution: each model is scored from the REALIZED PnL of the
+# assets it tracks (via the Trade Journal), normalized to [-1, 1]. No synthetic
+# np.random data — the ensemble selector now learns from actual trading outcomes.
+_MODEL_ASSET_MAP = {
+    "transformer": ["BTCUSDT", "ETHUSDT"],
+    "gnn": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+    "meta_labeling": ["XAUUSD", "EURUSD"],
+    "multi_agent_rl": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+    "bayesian_risk": ["AAPL", "TSLA"],
+}
+
 async def lot46_model_selection_scheduler():
     while True:
         await asyncio.sleep(3 * 3600)
         try:
+            trades = trade_journal.get_trades(limit=500)
+            initial_cap = STATE.get("initial_capital_demo", 100000.0)
             for name in model_names_lot46:
-                fake_perf = np.random.uniform(-0.6, 1.1)
-                model_selector.update_performance(name, fake_perf)
+                assets = _MODEL_ASSET_MAP.get(name, ["BTCUSDT"])
+                realized = sum(
+                    float(t.get("realized_pnl") or 0.0)
+                    for t in trades if t.get("symbol") in assets
+                )
+                # Normalize realized PnL vs 1% of capital into [-1, 1]
+                score = float(np.tanh(realized / max(initial_cap * 0.01, 1.0)))
+                model_selector.update_performance(name, score)
             status = model_selector.get_status()
-            logger.info(f"LOT 46: Active models → {status['active_models']}")
+            logger.info(f"LOT 46: Active models → {status['active_models']} (realized-PnL attribution)")
         except Exception as e:
             logger.warning(f"LOT 46 scheduler error: {e}")
 
@@ -202,6 +221,15 @@ logger.info("✅ LOT 59: Model Explainability module initialized (SHAP + LIME re
 from core.advanced_monitoring import AdvancedMonitoringSystem
 monitoring_system = AdvancedMonitoringSystem()
 logger.info("✅ LOT 60: Advanced Monitoring & Auto-Scaling System initialized")
+
+# === LOT 61: Prometheus /metrics exposition (for the bundled Grafana stack) ===
+from core import metrics as platform_metrics
+platform_metrics.mark_startup()
+logger.info("✅ LOT 61: Prometheus /metrics registry initialized")
+
+# === LOT 63: Centralized outbound API rate limiting ===
+from core.rate_limits import bybit_limiter, binance_limiter, yahoo_limiter, news_limiter, rpc_limiter
+logger.info("✅ LOT 63: Outbound API rate limiters initialized")
 
 # Request bodies validation models
 class StrategyToggle(BaseModel):
@@ -358,37 +386,38 @@ async def fetch_yahoo_finance_candles(ticker: str, interval="1h", range_str="5d"
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
     try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(url, headers=headers)
-            if resp.status_code == 200:
-                result = resp.json().get("chart", {}).get("result", [])[0]
-                timestamps = result.get("timestamp", [])
-                if timestamps is None:
-                    logger.info(f"Yahoo Finance: Market for {ticker} is currently closed or has no active trades (Weekend/Closed).")
-                    return pd.DataFrame()
-                    
-                indicators = result.get("indicators", {}).get("quote", [])[0]
+        async with yahoo_limiter:
+            async with httpx.AsyncClient() as client:
+                resp = await client.get(url, headers=headers)
+        if resp.status_code == 200:
+            result = resp.json().get("chart", {}).get("result", [])[0]
+            timestamps = result.get("timestamp", [])
+            if timestamps is None:
+                logger.info(f"Yahoo Finance: Market for {ticker} is currently closed or has no active trades (Weekend/Closed).")
+                return pd.DataFrame()
                 
-                opens = indicators.get("open", [])
-                highs = indicators.get("high", [])
-                lows = indicators.get("low", [])
-                closes = indicators.get("close", [])
-                volumes = indicators.get("volume", [])
-                
-                data = []
-                for idx, t in enumerate(timestamps):
-                    if opens[idx] is not None and closes[idx] is not None:
-                        data.append({
-                            "timestamp": pd.to_datetime(t, unit='s'),
-                            "open": float(opens[idx]),
-                            "high": float(highs[idx]),
-                            "low": float(lows[idx]),
-                            "close": float(closes[idx]),
-                            "volume": float(volumes[idx]) if volumes[idx] else 10.0
-                        })
-                df = pd.DataFrame(data).set_index("timestamp")
-                logger.info(f"Successfully loaded {len(df)} actual real-world market bars from Yahoo Finance for {ticker}!")
-                return df
+            indicators = result.get("indicators", {}).get("quote", [])[0]
+            
+            opens = indicators.get("open", [])
+            highs = indicators.get("high", [])
+            lows = indicators.get("low", [])
+            closes = indicators.get("close", [])
+            volumes = indicators.get("volume", [])
+            
+            data = []
+            for idx, t in enumerate(timestamps):
+                if opens[idx] is not None and closes[idx] is not None:
+                    data.append({
+                        "timestamp": pd.to_datetime(t, unit='s'),
+                        "open": float(opens[idx]),
+                        "high": float(highs[idx]),
+                        "low": float(lows[idx]),
+                        "close": float(closes[idx]),
+                        "volume": float(volumes[idx]) if volumes[idx] else 10.0
+                    })
+            df = pd.DataFrame(data).set_index("timestamp")
+            logger.info(f"Successfully loaded {len(df)} actual real-world market bars from Yahoo Finance for {ticker}!")
+            return df
     except Exception as e:
         logger.error(f"Failed to fetch Yahoo Finance candles for {ticker}: {str(e)}")
     return pd.DataFrame()
@@ -596,8 +625,63 @@ async def multi_exchange_websocket_listener():
     asyncio.create_task(listen_bybit())
 
 
+def validate_startup_config():
+    """
+    LOT 62: Institutional startup configuration checklist.
+    Logs a clear, actionable summary of the runtime prerequisites per mode.
+    NEVER blocks startup in DEMO mode; blocks REAL mode if the DB or keys are absent.
+    """
+    from database.db_manager import DATABASE_URL
+    checks = []
+
+    # 1. Telegram
+    tg_token = os.getenv("TELEGRAM_BOT_TOKEN")
+    tg_chat = os.getenv("TELEGRAM_CHAT_ID")
+    if tg_token and tg_chat:
+        checks.append(("Telegram notifications", "OK"))
+    else:
+        checks.append(("Telegram notifications", "MISSING token/chat_id -> alert-silent mode"))
+
+    # 2. Database
+    if DATABASE_URL and (DATABASE_URL.startswith("postgresql") or DATABASE_URL.startswith("postgres://")):
+        checks.append(("Database", "PostgreSQL (Supabase)"))
+    else:
+        checks.append(("Database", "SQLite (dev/DEMO only - REAL mode is forbidden by design)"))
+
+    # 3. REAL mode prerequisites
+    api_key = db.get_setting("binance_api_key", decrypt=True) or db.get_setting("bybit_api_key", decrypt=True)
+    if STATE["mode"] == "REAL":
+        if not api_key:
+            checks.append(("REAL mode", "CRITICAL: no exchange API keys stored -> trading will be blocked"))
+        if not DATABASE_URL:
+            checks.append(("REAL mode", "CRITICAL: no PostgreSQL URL -> startup forbidden"))
+    else:
+        checks.append(("REAL mode", "not active (DEMO mode, safe)"))
+
+    # 4. On-chain / DeFi
+    if os.getenv("EVM_PRIVATE_KEY"):
+        checks.append(("DeFi EVM wallet", "OK (non-custodial execution ready)"))
+    else:
+        checks.append(("DeFi EVM wallet", "not configured (CEX routing only)"))
+
+    logger.info("========== STARTUP CONFIGURATION CHECKLIST (LOT 62) ==========")
+    for name, status in checks:
+        logger.info(f"[CONFIG] {name:<32} -> {status}")
+    logger.info("==================================================================")
+
+    # Hard block for REAL mode without PostgreSQL (matches DBManager's own guard)
+    if STATE["mode"] == "REAL" and not DATABASE_URL:
+        raise RuntimeError(
+            "REAL mode requires SUPABASE_DB_URL (PostgreSQL). SQLite fallback is "
+            "strictly forbidden in production. Configure SUPABASE_DB_URL first."
+        )
+
+
 @app.on_event("startup")
 async def startup_event():
+    # LOT 62: institutional configuration checklist
+    validate_startup_config()
+
     # Update CCXT client inside our Binance Adapter once authenticated!
     binance_adapter.client = get_ccxt_client()
     
@@ -801,409 +885,418 @@ async def live_trading_loop():
                 logger.error(f"Failed to sync real wallet balance: {str(e)}")
                 
         for symbol in active_assets:
-            # Fetch 100% real-world price ticks for Gold, Forex, Stocks, and Cryptos!
             try:
-                async with httpx.AsyncClient() as http_client:
-                    if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
-                        # Query Bybit public API - completely cloud-friendly and geoblock-free!
-                        resp = await http_client.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}")
-                        if resp.status_code == 200:
-                            price_val = float(resp.json().get("result", {}).get("list", [{}])[0].get("lastPrice"))
-                            STATE["assets"][symbol]["price"] = price_val
-                            if symbol == "BTCUSDT":
-                                STATE["last_price"] = price_val
-                    else:
-                        # Yahoo Finance Real-time Tickers! Gold (GC=F), EURUSD (EURUSD=X), AAPL (AAPL), TSLA (TSLA)
-                        y_ticker = "GC=F" if symbol == "XAUUSD" else "EURUSD=X" if symbol == "EURUSD" else symbol
-                        df_y = await fetch_yahoo_finance_candles(y_ticker, interval="1m", range_str="1d")
-                        if not df_y.empty:
-                            STATE["assets"][symbol]["price"] = float(df_y['close'].iloc[-1])
-                            # Persist to database cache dynamically!
-                            db.save_candles(symbol, df_y)
-            except Exception as e:
-                logger.error(f"Failed to fetch live price tick for {symbol}: {str(e)}")
-                # Price is marked as None (Unavailable), completely halting trading for this asset!
-                STATE["assets"][symbol]["price"] = None
+                # Fetch 100% real-world price ticks for Gold, Forex, Stocks, and Cryptos!
+                try:
+                    async with httpx.AsyncClient() as http_client:
+                        if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+                            # Query Bybit public API - completely cloud-friendly and geoblock-free!
+                            resp = await http_client.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}")
+                            if resp.status_code == 200:
+                                price_val = float(resp.json().get("result", {}).get("list", [{}])[0].get("lastPrice"))
+                                STATE["assets"][symbol]["price"] = price_val
+                                if symbol == "BTCUSDT":
+                                    STATE["last_price"] = price_val
+                        else:
+                            # Yahoo Finance Real-time Tickers! Gold (GC=F), EURUSD (EURUSD=X), AAPL (AAPL), TSLA (TSLA)
+                            y_ticker = "GC=F" if symbol == "XAUUSD" else "EURUSD=X" if symbol == "EURUSD" else symbol
+                            df_y = await fetch_yahoo_finance_candles(y_ticker, interval="1m", range_str="1d")
+                            if not df_y.empty:
+                                STATE["assets"][symbol]["price"] = float(df_y['close'].iloc[-1])
+                                # Persist to database cache dynamically!
+                                db.save_candles(symbol, df_y)
+                except Exception as e:
+                    logger.error(f"Failed to fetch live price tick for {symbol}: {str(e)}")
+                    # Price is marked as None (Unavailable), completely halting trading for this asset!
+                    STATE["assets"][symbol]["price"] = None
                 
-            current_price = STATE["assets"][symbol]["price"]
-            if current_price is None:
-                logger.warning(f"Skipping trade loop for {symbol} due to unavailable price feed.")
-                continue
+                current_price = STATE["assets"][symbol]["price"]
+                if current_price is None:
+                    logger.warning(f"Skipping trade loop for {symbol} due to unavailable price feed.")
+                    continue
             
-            # EVALUATE GENUINE FUNDING RATE ARBITRAGE (100% Real-World API data from Binance Futures!)
-            if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
-                funding_8h = 0.0001
-                try:
-                    async with httpx.AsyncClient() as http_client:
-                        resp = await http_client.get(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}")
-                        if resp.status_code == 200:
-                            funding_8h = float(resp.json().get("lastFundingRate", 0.0001))
-                except Exception:
-                    pass
+                # EVALUATE GENUINE FUNDING RATE ARBITRAGE (100% Real-World API data from Binance Futures!)
+                if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+                    funding_8h = 0.0001
+                    try:
+                        async with httpx.AsyncClient() as http_client:
+                            resp = await http_client.get(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}")
+                            if resp.status_code == 200:
+                                funding_8h = float(resp.json().get("lastFundingRate", 0.0001))
+                    except Exception:
+                        pass
                     
-                spot_p = current_price
-                perp_p = current_price
-                try:
-                    async with httpx.AsyncClient() as http_client:
-                        resp_f = await http_client.get(f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}")
-                        if resp_f.status_code == 200:
-                            perp_p = float(resp_f.json().get("price", current_price))
-                except Exception as e:
-                    logger.error(f"Failed to fetch real-world perpetual price for {symbol}: {str(e)}")
+                    spot_p = current_price
+                    perp_p = current_price
+                    try:
+                        async with httpx.AsyncClient() as http_client:
+                            resp_f = await http_client.get(f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}")
+                            if resp_f.status_code == 200:
+                                perp_p = float(resp_f.json().get("price", current_price))
+                    except Exception as e:
+                        logger.error(f"Failed to fetch real-world perpetual price for {symbol}: {str(e)}")
                 
-                opportunities = funding_arb_engine.analyze_funding_opportunities(
-                    symbol=symbol,
-                    spot_price=spot_p,
-                    perp_price=perp_p,
-                    funding_rate_8h=funding_8h
-                )
-                
-                action = opportunities.get("action")
-                if action == "ENTER_ARBITRAGE":
-                    funding_arb_engine.active_arbitrages[symbol] = {
-                        "qty": STATE[active_balance_key] * 0.30 / spot_p,
-                        "entry_spot_price": spot_p,
-                        "entry_perp_price": perp_p,
-                        "accumulated_funding": 0.0
-                    }
-                    db.add_audit_log(
-                        "FUNDING_ARBITRAGE_ENTERED",
-                        "127.0.0.1",
-                        f"Entered Delta-Neutral Cash-and-Carry on {symbol} (Funding Rate: {funding_8h*100:.3f}% / 8h)."
-                    )
-                    await telegram_bot.send_push_notification(
-                        f"🛡️ *ARBITRAGE DE FINANCEMENT ACTIF*\n"
-                        f"-----------------------------------------\n"
-                        f"📈 Actif : `{symbol}`\n"
-                        f"💵 Taux de financement : *{funding_8h*100:.3f}% / 8h*\n"
-                        f"⚖️ Stratégie : *Delta-Neutre (Cash-and-Carry)*\n"
-                        f"💰 Allocation : *30% du capital*\n"
-                        f"🔒 *Risque de prix : 0% (Totalement immunisé !)*"
-                    )
-                elif action == "EXIT_ARBITRAGE":
-                    acc_funding = opportunities.get("accumulated_funding", 0.0)
-                    STATE[active_balance_key] += acc_funding
-                    if symbol in funding_arb_engine.active_arbitrages:
-                        del funding_arb_engine.active_arbitrages[symbol]
-                    db.add_audit_log(
-                        "FUNDING_ARBITRAGE_EXITED",
-                        "127.0.0.1",
-                        f"Wound down funding arbitrage on {symbol}. Accumulated yield: ${acc_funding:.2f} USD."
-                    )
-                    await telegram_bot.send_push_notification(
-                        f"💰 *ARBITRAGE DE FINANCEMENT BOUCLÉ*\n"
-                        f"-----------------------------------------\n"
-                        f"📈 Actif : `{symbol}`\n"
-                        f"💵 Intérêts perçus : *+${acc_funding:.2f} USD*\n"
-                        f"⚖️ Statut : *Positions spot/perp clôturées*"
-                    )
-                    
-            # EVALUATE GENUINE DEX-CEX CROSS-VENUE ARBITRAGE (100% Real-World spreads Bybit vs Binance!)
-            bybit_p = None # Starts as None (Unavailable)
-            if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
-                cex_p = current_price
-                try:
-                    async with httpx.AsyncClient() as http_client:
-                        resp = await http_client.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}")
-                        if resp.status_code == 200:
-                            bybit_p = float(resp.json().get("result", {}).get("list", [{}])[0].get("lastPrice"))
-                except Exception as e:
-                    logger.error(f"Failed to fetch real-world secondary exchange price from Bybit for {symbol}: {str(e)}")
-                    
-                if bybit_p is not None:
-                    arb_opp = dex_cex_arb_engine.detect_arbitrage_opportunities(
+                    opportunities = funding_arb_engine.analyze_funding_opportunities(
                         symbol=symbol,
-                        dex_price=cex_p,
-                        cex_price=bybit_p,
-                        estimated_gas_usd=0.05
+                        spot_price=spot_p,
+                        perp_price=perp_p,
+                        funding_rate_8h=funding_8h
                     )
-                    if arb_opp.get("action") == "EXECUTE_ARBITRAGE":
-                        route = arb_opp.get("route")
-                        spread = arb_opp.get("spread_pct")
-                        profit_pct = arb_opp.get("net_profit_pct")
-                        amount_eth = 50.0 / cex_p
-                        signed_dex = defi_wallet.sign_dex_swap_transaction(
-                            token_in="USDT" if route == "BUY_DEX_SELL_CEX" else "ETH",
-                            token_out="ETH" if route == "BUY_DEX_SELL_CEX" else "USDT",
-                            amount_in_eth=amount_eth
-                        )
+                
+                    action = opportunities.get("action")
+                    if action == "ENTER_ARBITRAGE":
+                        funding_arb_engine.active_arbitrages[symbol] = {
+                            "qty": STATE[active_balance_key] * 0.30 / spot_p,
+                            "entry_spot_price": spot_p,
+                            "entry_perp_price": perp_p,
+                            "accumulated_funding": 0.0
+                        }
                         db.add_audit_log(
-                            "DEX_CEX_ARBITRAGE_EXECUTED",
+                            "FUNDING_ARBITRAGE_ENTERED",
                             "127.0.0.1",
-                            f"Captured Cross-Venue {symbol} arbitrage. Route: {route} (Spread: {spread*100:.2f}%)."
+                            f"Entered Delta-Neutral Cash-and-Carry on {symbol} (Funding Rate: {funding_8h*100:.3f}% / 8h)."
                         )
                         await telegram_bot.send_push_notification(
-                            f"🏆 *ARBITRAGE DEX-CEX CAPTURÉ*\n"
+                            f"🛡️ *ARBITRAGE DE FINANCEMENT ACTIF*\n"
                             f"-----------------------------------------\n"
                             f"📈 Actif : `{symbol}`\n"
-                            f"⚖️ Route : *{route}*\n"
-                            f"📊 Écart de prix : *{spread*100:.2f}%*\n"
-                            f"💵 Gain net estimé : *+{profit_pct*100:.2f}% (net de gaz)*\n"
-                            f"🛡️ Protection : *MevShield On-Chain active*"
+                            f"💵 Taux de financement : *{funding_8h*100:.3f}% / 8h*\n"
+                            f"⚖️ Stratégie : *Delta-Neutre (Cash-and-Carry)*\n"
+                            f"💰 Allocation : *30% du capital*\n"
+                            f"🔒 *Risque de prix : 0% (Totalement immunisé !)*"
                         )
-                else:
-                    logger.warning(f"Skipping arbitrage check for {symbol} due to unavailable Bybit secondary price feed.")
+                    elif action == "EXIT_ARBITRAGE":
+                        acc_funding = opportunities.get("accumulated_funding", 0.0)
+                        STATE[active_balance_key] += acc_funding
+                        if symbol in funding_arb_engine.active_arbitrages:
+                            del funding_arb_engine.active_arbitrages[symbol]
+                        db.add_audit_log(
+                            "FUNDING_ARBITRAGE_EXITED",
+                            "127.0.0.1",
+                            f"Wound down funding arbitrage on {symbol}. Accumulated yield: ${acc_funding:.2f} USD."
+                        )
+                        await telegram_bot.send_push_notification(
+                            f"💰 *ARBITRAGE DE FINANCEMENT BOUCLÉ*\n"
+                            f"-----------------------------------------\n"
+                            f"📈 Actif : `{symbol}`\n"
+                            f"💵 Intérêts perçus : *+${acc_funding:.2f} USD*\n"
+                            f"⚖️ Statut : *Positions spot/perp clôturées*"
+                        )
                     
-            # 4. Formulate signal and sizing
-            # Query the asset's own genuine price series from persistent DB cache!
-            df = db.load_candles(symbol, limit=120)
-            if df.empty or len(df) < 10:
-                df = STATE["historical_bars"]
-                
-            if df is not None:
-                # Update bars df
-                vol_val = STATE.get("last_tick_volume")
-                if vol_val is None:
-                    vol_val = 15.0
+                # EVALUATE GENUINE DEX-CEX CROSS-VENUE ARBITRAGE (100% Real-World spreads Bybit vs Binance!)
+                bybit_p = None # Starts as None (Unavailable)
+                if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+                    cex_p = current_price
+                    try:
+                        t0 = time.time()
+                        async with bybit_limiter:
+                            async with httpx.AsyncClient() as http_client:
+                                resp = await http_client.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}")
+                        platform_metrics.record_api_latency("bybit_tickers", time.time() - t0)
+                        if resp.status_code == 200:
+                            bybit_p = float(resp.json().get("result", {}).get("list", [{}])[0].get("lastPrice"))
+                    except Exception as e:
+                        logger.error(f"Failed to fetch real-world secondary exchange price from Bybit for {symbol}: {str(e)}")
                     
-                new_row = pd.DataFrame([{
-                    "open": current_price * 0.9995,
-                    "high": current_price * 1.0005,
-                    "low": current_price * 0.9990,
-                    "close": current_price,
-                    "volume": vol_val
-                }], index=[pd.Timestamp.now()])
-                df = pd.concat([df.iloc[1:], new_row])
-                
-                # Persist the newly fetched/generated candle to our database cache for ALL multi-assets!
-                db.save_candles(symbol, new_row)
-                
-                # Predict Regime HMM
-                recent_returns = df['close'].pct_change().dropna().values[-10:]
-                ret_mean = np.mean(recent_returns) if len(recent_returns) > 0 else 0.0
-                vol_mean = np.std(recent_returns) if len(recent_returns) > 0 else 0.01
-                STATE["regime_id"] = int(regime_detector.predict(np.array([[ret_mean, vol_mean]]))[0])
-                STATE["regime_name"] = regime_detector.get_regime_name(STATE["regime_id"])
-                
-                # Predict temporal change using our true pure NumPy LSTM Deep Neural Network!
-                seq_features = df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0).values[-5:]
-                STATE["ml_prediction_pct"] = float(price_predictor.predict(seq_features))
-                
-                # MLOPS CONCEPT DRIFT DETECTOR:
-                # Track prediction error, and automatically trigger retraining on the fly if CUSUM drift occurs!
-                actual_return = recent_returns[-1] if len(recent_returns) > 0 else 0.0
-                if mlops_trainer.track_prediction_error_and_detect_drift(STATE["ml_prediction_pct"], actual_return):
-                    logger.warning("MLOPS DETECTED CONCEPT DRIFT. TRIGGERING AUTOMATIC RETRAINING PIPELINE!")
-                    mlops_trainer.execute_pipeline(df)
-                
-                # Check Active position for this specific asset
-                positions = db.get_positions()
-                asset_position = next((p for p in positions if p['symbol'] == symbol), None)
-                pos_qty = asset_position['qty'] if asset_position else 0.0
-                
-                norm_pos = pos_qty * current_price / STATE[active_balance_key] if STATE[active_balance_key] > 0 else 0.0
-                ppo_state = np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], 0.0])
-                STATE["ppo_action"], _ = ppo_agent.get_action(ppo_state)
-                
-                # Setup genuine order book parameters from the WebSockets stream (No fake fallback allowed!)
-                ob_bids = STATE["order_book"].get("bids") if STATE["order_book"] is not None else None
-                ob_asks = STATE["order_book"].get("asks") if STATE["order_book"] is not None else None
-                
-                market_data = {
-                    'df': df,
-                    'price_primary': current_price,
-                    'price_secondary': bybit_p if bybit_p is not None else current_price, # Real Bybit price from CEX (No random.uniform secondary price fallback!)
-                    'bids': ob_bids,
-                    'asks': ob_asks,
-                    'inventory': pos_qty,
-                    'max_inventory': STATE[active_balance_key] / current_price if STATE[active_balance_key] > 0 else 0.0
-                }
-                
-                consensus = meta_engine.allocate(market_data, STATE["regime_id"], STATE["ml_prediction_pct"], STATE["ppo_action"])
-                final_signal = consensus["final_signal"]
-                
-                # Feed trade feedback to Thompson Sampling strategy re-allocator!
-                meta_engine.update_bandit_feedback(symbol, consensus["contributions"], actual_return)
-                
-                # Incorporate sentiment index
-                final_signal = (0.80 * final_signal) + (0.20 * STATE["sentiment_index"])
-                final_signal = max(-1.0, min(1.0, final_signal))
-                
-                # Risk Sizing
-                atr = df['high'].values[-1] - df['low'].values[-1]
-                if atr == 0:
-                    atr = current_price * 0.008
-                    
-                target_qty = risk_manager.calculate_position_size(
-                    capital=STATE[active_balance_key],
-                    atr=atr,
-                    current_price=current_price
-                )
-                
-                # CVaR-CONSTRAINED RISK SIZING:
-                # Limit the trade size so that worst-case portfolio loss (CVaR) does not exceed 2% of capital!
-                cvar_qty = calculate_cvar_constrained_sizing(
-                    capital=STATE[active_balance_key],
-                    current_price=current_price,
-                    cvar_pct=portfolio_cvar_pct,
-                    max_loss_usd=STATE[active_balance_key] * 0.02
-                )
-                target_qty = min(target_qty, cvar_qty)
-                
-                # Apply preventative risk scale downs from news shocks & macro events!
-                target_qty *= news_scale_factor
-                target_qty *= macro_scale_factor
-                
-                # Microstructure Edge: Calculate and Log VPIN & Kyle's Lambda
-                vpin_val = microstructure_engine.calculate_vpin(df)
-                kyles_lambda_val = microstructure_engine.calculate_kyles_lambda(df)
-                logger.info(f"MICROSTRUCTURE ({symbol}) | VPIN: {vpin_val:.3f} | Kyle's Lambda: {kyles_lambda_val:.3e}")
-                
-                # ON-CHAIN RISK REGULATION
-                if STATE["onchain_risk_score"] > 0.75:
-                    target_qty *= 0.50
-                    logger.info(f"ON-CHAIN WARNING: Scaling down position size for {symbol} due to high network risk.")
-                    
-                # MULTI-ASSET CORRELATION RISK REGULATION
-                if corr_df is not None and not corr_df.empty:
-                    reduction_factor = covariance_engine.evaluate_portfolio_concentration_risk(
-                        symbol=symbol,
-                        active_positions=positions,
-                        corr_matrix=corr_df
-                    )
-                    target_qty *= reduction_factor
-                    
-                target_qty *= abs(final_signal)
-                target_direction = np.sign(final_signal) if abs(final_signal) > 0.15 else 0.0
-                desired_qty = target_direction * target_qty
-                trade_qty = desired_qty - pos_qty
-                
-                # 5. Execute order
-                if abs(trade_qty) > (current_price * 0.0001):
-                    side = "BUY" if trade_qty > 0 else "SELL"
-                    execution_price = current_price * (1.0 + 0.0003) if side == "BUY" else current_price * (1.0 - 0.0003)
-                    
-                    trade_qty_formatted = format_exchange_size(symbol, abs(trade_qty), execution_price)
-                    
-                    # Enforce pre-flight safety limits
-                    ok, reason = risk_manager.validate_order_safety(
-                        order_price=execution_price,
-                        mid_market_price=current_price,
-                        order_qty=trade_qty_formatted,
-                        capital_available=STATE[active_balance_key]
-                    )
-                    
-                    if ok:
-                        # Enforce strict real safety gate in production before placing any real trade!
-                        if active_mode == "REAL" and not evaluate_real_safety_gate(symbol):
-                            logger.critical(f"REAL SAFETY GATE REJECTED: Real order blocked for {symbol} due to safety gate checks.")
-                            continue
-                            
-                        try:
-                            # EVM NON-CUSTODIAL EXECUTION ROUTER:
-                            if active_mode == "REAL" and os.getenv("EVM_PRIVATE_KEY") and symbol == "ETHUSDT":
-                                logger.info(f"DECISION: Executing NON-CUSTODIAL EVM SWAP of {trade_qty_formatted} ETH!")
-                                signed_dex_res = defi_wallet.sign_dex_swap_transaction(
-                                    token_in="USDT" if side == "BUY" else "ETH",
-                                    token_out="ETH" if side == "BUY" else "USDT",
-                                    amount_in_eth=trade_qty_formatted
-                                )
-                                logger.info(f"DEX Swap signed successfully. Transaction Hash: {signed_dex_res.get('tx_hash')}")
-                                
-                            elif active_mode == "REAL" and client:
-                                # Centralized exchange routing
-                                logger.info(f"REAL ORDER SUBMISSION: {side} {trade_qty_formatted} {symbol}")
-                                res_order = client.create_order(
-                                    symbol=symbol.replace("USDT", "/USDT"),
-                                    type='market',
-                                    side=side.lower(),
-                                    amount=trade_qty_formatted,
-                                    params={'clientOrderId': f"quant_{int(time.time()*1000)}"}
-                                )
-                                execution_price = res_order.get('price', execution_price)
-                                
-                            # Ledger update
-                            order_cost = execution_price * trade_qty_formatted
-                            commission = order_cost * 0.001
-                            
-                            if side == "BUY":
-                                STATE[active_balance_key] -= (order_cost + commission)
-                                new_qty = pos_qty + trade_qty_formatted
-                                new_avg = ((pos_qty * (asset_position['avg_price'] if asset_position else 0.0)) + (trade_qty_formatted * execution_price)) / new_qty
-                            else:
-                                STATE[active_balance_key] += (order_cost - commission)
-                                new_qty = pos_qty - trade_qty_formatted
-                                new_avg = asset_position['avg_price'] if asset_position and new_qty > 0 else 0.0
-                                
-                            db.update_position(symbol, new_qty, new_avg, active_mode)
-                            db.add_order(
-                                symbol=symbol,
-                                side=side,
-                                price=execution_price,
-                                qty=trade_qty_formatted,
-                                status="FILLED",
-                                mode=active_mode,
-                                strategy="META_MODEL",
-                                order_type="MARKET"
+                    if bybit_p is not None:
+                        arb_opp = dex_cex_arb_engine.detect_arbitrage_opportunities(
+                            symbol=symbol,
+                            dex_price=cex_p,
+                            cex_price=bybit_p,
+                            estimated_gas_usd=0.05
+                        )
+                        if arb_opp.get("action") == "EXECUTE_ARBITRAGE":
+                            route = arb_opp.get("route")
+                            spread = arb_opp.get("spread_pct")
+                            profit_pct = arb_opp.get("net_profit_pct")
+                            amount_eth = 50.0 / cex_p
+                            signed_dex = defi_wallet.sign_dex_swap_transaction(
+                                token_in="USDT" if route == "BUY_DEX_SELL_CEX" else "ETH",
+                                token_out="ETH" if route == "BUY_DEX_SELL_CEX" else "USDT",
+                                amount_in_eth=amount_eth
                             )
-                            
                             db.add_audit_log(
-                                "REAL_ORDER" if active_mode == "REAL" else "DEMO_ORDER", 
-                                "127.0.0.1", 
-                                f"Executed {side} order of {trade_qty_formatted:.5f} {symbol} at {execution_price:.2f} USD."
+                                "DEX_CEX_ARBITRAGE_EXECUTED",
+                                "127.0.0.1",
+                                f"Captured Cross-Venue {symbol} arbitrage. Route: {route} (Spread: {spread*100:.2f}%)."
                             )
+                            await telegram_bot.send_push_notification(
+                                f"🏆 *ARBITRAGE DEX-CEX CAPTURÉ*\n"
+                                f"-----------------------------------------\n"
+                                f"📈 Actif : `{symbol}`\n"
+                                f"⚖️ Route : *{route}*\n"
+                                f"📊 Écart de prix : *{spread*100:.2f}%*\n"
+                                f"💵 Gain net estimé : *+{profit_pct*100:.2f}% (net de gaz)*\n"
+                                f"🛡️ Protection : *MevShield On-Chain active*"
+                            )
+                    else:
+                        logger.warning(f"Skipping arbitrage check for {symbol} due to unavailable Bybit secondary price feed.")
+                    
+                # 4. Formulate signal and sizing
+                # Query the asset's own genuine price series from persistent DB cache!
+                df = db.load_candles(symbol, limit=120)
+                if df.empty or len(df) < 10:
+                    df = STATE["historical_bars"]
+                
+                if df is not None:
+                    # Update bars df
+                    vol_val = STATE.get("last_tick_volume")
+                    if vol_val is None:
+                        vol_val = 15.0
+                    
+                    new_row = pd.DataFrame([{
+                        "open": current_price * 0.9995,
+                        "high": current_price * 1.0005,
+                        "low": current_price * 0.9990,
+                        "close": current_price,
+                        "volume": vol_val
+                    }], index=[pd.Timestamp.now()])
+                    df = pd.concat([df.iloc[1:], new_row])
+                
+                    # Persist the newly fetched/generated candle to our database cache for ALL multi-assets!
+                    db.save_candles(symbol, new_row)
+                
+                    # Predict Regime HMM
+                    recent_returns = df['close'].pct_change().dropna().values[-10:]
+                    ret_mean = np.mean(recent_returns) if len(recent_returns) > 0 else 0.0
+                    vol_mean = np.std(recent_returns) if len(recent_returns) > 0 else 0.01
+                    STATE["regime_id"] = int(regime_detector.predict(np.array([[ret_mean, vol_mean]]))[0])
+                    STATE["regime_name"] = regime_detector.get_regime_name(STATE["regime_id"])
+                
+                    # Predict temporal change using our true pure NumPy LSTM Deep Neural Network!
+                    seq_features = df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0).values[-5:]
+                    STATE["ml_prediction_pct"] = float(price_predictor.predict(seq_features))
+                
+                    # MLOPS CONCEPT DRIFT DETECTOR:
+                    # Track prediction error, and automatically trigger retraining on the fly if CUSUM drift occurs!
+                    actual_return = recent_returns[-1] if len(recent_returns) > 0 else 0.0
+                    if mlops_trainer.track_prediction_error_and_detect_drift(STATE["ml_prediction_pct"], actual_return):
+                        logger.warning("MLOPS DETECTED CONCEPT DRIFT. TRIGGERING AUTOMATIC RETRAINING PIPELINE!")
+                        mlops_trainer.execute_pipeline(df)
+                
+                    # Check Active position for this specific asset
+                    positions = db.get_positions()
+                    asset_position = next((p for p in positions if p['symbol'] == symbol), None)
+                    pos_qty = asset_position['qty'] if asset_position else 0.0
+                
+                    norm_pos = pos_qty * current_price / STATE[active_balance_key] if STATE[active_balance_key] > 0 else 0.0
+                    ppo_state = np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], 0.0])
+                    STATE["ppo_action"], _ = ppo_agent.get_action(ppo_state)
+                
+                    # Setup genuine order book parameters from the WebSockets stream (No fake fallback allowed!)
+                    ob_bids = STATE["order_book"].get("bids") if STATE["order_book"] is not None else None
+                    ob_asks = STATE["order_book"].get("asks") if STATE["order_book"] is not None else None
+                
+                    market_data = {
+                        'df': df,
+                        'price_primary': current_price,
+                        'price_secondary': bybit_p if bybit_p is not None else current_price, # Real Bybit price from CEX (No random.uniform secondary price fallback!)
+                        'bids': ob_bids,
+                        'asks': ob_asks,
+                        'inventory': pos_qty,
+                        'max_inventory': STATE[active_balance_key] / current_price if STATE[active_balance_key] > 0 else 0.0
+                    }
+                
+                    consensus = meta_engine.allocate(market_data, STATE["regime_id"], STATE["ml_prediction_pct"], STATE["ppo_action"])
+                    final_signal = consensus["final_signal"]
+                
+                    # Feed trade feedback to Thompson Sampling strategy re-allocator!
+                    meta_engine.update_bandit_feedback(symbol, consensus["contributions"], actual_return)
+                
+                    # Incorporate sentiment index
+                    final_signal = (0.80 * final_signal) + (0.20 * STATE["sentiment_index"])
+                    final_signal = max(-1.0, min(1.0, final_signal))
+                
+                    # Risk Sizing
+                    atr = df['high'].values[-1] - df['low'].values[-1]
+                    if atr == 0:
+                        atr = current_price * 0.008
+                    
+                    target_qty = risk_manager.calculate_position_size(
+                        capital=STATE[active_balance_key],
+                        atr=atr,
+                        current_price=current_price
+                    )
+                
+                    # CVaR-CONSTRAINED RISK SIZING:
+                    # Limit the trade size so that worst-case portfolio loss (CVaR) does not exceed 2% of capital!
+                    cvar_qty = calculate_cvar_constrained_sizing(
+                        capital=STATE[active_balance_key],
+                        current_price=current_price,
+                        cvar_pct=portfolio_cvar_pct,
+                        max_loss_usd=STATE[active_balance_key] * 0.02
+                    )
+                    target_qty = min(target_qty, cvar_qty)
+                
+                    # Apply preventative risk scale downs from news shocks & macro events!
+                    target_qty *= news_scale_factor
+                    target_qty *= macro_scale_factor
+                
+                    # Microstructure Edge: Calculate and Log VPIN & Kyle's Lambda
+                    vpin_val = microstructure_engine.calculate_vpin(df)
+                    kyles_lambda_val = microstructure_engine.calculate_kyles_lambda(df)
+                    logger.info(f"MICROSTRUCTURE ({symbol}) | VPIN: {vpin_val:.3f} | Kyle's Lambda: {kyles_lambda_val:.3e}")
+                
+                    # ON-CHAIN RISK REGULATION
+                    if STATE["onchain_risk_score"] > 0.75:
+                        target_qty *= 0.50
+                        logger.info(f"ON-CHAIN WARNING: Scaling down position size for {symbol} due to high network risk.")
+                    
+                    # MULTI-ASSET CORRELATION RISK REGULATION
+                    if corr_df is not None and not corr_df.empty:
+                        reduction_factor = covariance_engine.evaluate_portfolio_concentration_risk(
+                            symbol=symbol,
+                            active_positions=positions,
+                            corr_matrix=corr_df
+                        )
+                        target_qty *= reduction_factor
+                    
+                    target_qty *= abs(final_signal)
+                    target_direction = np.sign(final_signal) if abs(final_signal) > 0.15 else 0.0
+                    desired_qty = target_direction * target_qty
+                    trade_qty = desired_qty - pos_qty
+                
+                    # 5. Execute order
+                    if abs(trade_qty) > (current_price * 0.0001):
+                        side = "BUY" if trade_qty > 0 else "SELL"
+                        execution_price = current_price * (1.0 + 0.0003) if side == "BUY" else current_price * (1.0 - 0.0003)
+                    
+                        trade_qty_formatted = format_exchange_size(symbol, abs(trade_qty), execution_price)
+                    
+                        # Enforce pre-flight safety limits
+                        ok, reason = risk_manager.validate_order_safety(
+                            order_price=execution_price,
+                            mid_market_price=current_price,
+                            order_qty=trade_qty_formatted,
+                            capital_available=STATE[active_balance_key]
+                        )
+                    
+                        if ok:
+                            # Enforce strict real safety gate in production before placing any real trade!
+                            if active_mode == "REAL" and not evaluate_real_safety_gate(symbol):
+                                logger.critical(f"REAL SAFETY GATE REJECTED: Real order blocked for {symbol} due to safety gate checks.")
+                                continue
                             
-                            # Formulate a pedagogic and visual explanation of the trade!
-                            regime = STATE.get("regime_name", "Mean-Reverting Range")
-                            hmm_translation = {
-                                "Bull Trend (Low Vol)": "Soleil Haussier ☀️ (Mouvement de hausse calme)",
-                                "Bear Trend (High Vol)": "Tempête Baissière ⛈️ (Marché en baisse rapide)",
-                                "Mean-Reverting Range": "Temps Nuageux ⛅ (Marché stable qui oscille)",
-                                "Erratic High Volatility": "Volatilité Erratique 🌪️ (Marché agité et imprévisible)"
-                            }
-                            translated_regime = hmm_translation.get(regime, regime)
-                            
-                            trade_reason = ""
-                            if side == "BUY":
-                                trade_reason = (
-                                    "✨ *Pourquoi cet achat ?* Nos algorithmes de suivi de tendance ont détecté "
-                                    "une accélération haussière prometteuse. J'en profite pour accumuler de l'actif "
-                                    "afin de maximiser nos gains !"
-                                )
-                            else:
-                                trade_reason = (
-                                    "🔒 *Pourquoi cette vente ?* Nos modèles de protection de capital ont détecté "
-                                    "un essoufflement ou un risque de retournement. Je vends pour sécuriser vos bénéfices "
-                                    "au chaud et mettre notre capital à l'abri !"
-                                )
+                            try:
+                                # EVM NON-CUSTODIAL EXECUTION ROUTER:
+                                if active_mode == "REAL" and os.getenv("EVM_PRIVATE_KEY") and symbol == "ETHUSDT":
+                                    logger.info(f"DECISION: Executing NON-CUSTODIAL EVM SWAP of {trade_qty_formatted} ETH!")
+                                    signed_dex_res = defi_wallet.sign_dex_swap_transaction(
+                                        token_in="USDT" if side == "BUY" else "ETH",
+                                        token_out="ETH" if side == "BUY" else "USDT",
+                                        amount_in_eth=trade_qty_formatted
+                                    )
+                                    logger.info(f"DEX Swap signed successfully. Transaction Hash: {signed_dex_res.get('tx_hash')}")
                                 
-                            telegram_msg = (
-                                f"🔔 *EXÉCUTION D'ORDRE ({active_mode})*\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"📝 Actif : `{symbol}`\n"
-                                f"🚀 Action : *{side == 'BUY' and '🟢 ACHAT' or '🔴 VENTE'}*\n"
-                                f"📊 Quantité : `{trade_qty_formatted:.5f}`\n"
-                                f"💵 Prix d'exécution : *${execution_price:,.2f} USD*\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"🌦️ Météo Marché : *{translated_regime}*\n\n"
-                                f"{trade_reason}\n"
-                                f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-                                f"🖥️ _Terminal Web mis à jour. Cliquez ci-dessous pour piloter :_"
-                            )
+                                elif active_mode == "REAL" and client:
+                                    # Centralized exchange routing
+                                    logger.info(f"REAL ORDER SUBMISSION: {side} {trade_qty_formatted} {symbol}")
+                                    res_order = client.create_order(
+                                        symbol=symbol.replace("USDT", "/USDT"),
+                                        type='market',
+                                        side=side.lower(),
+                                        amount=trade_qty_formatted,
+                                        params={'clientOrderId': f"quant_{int(time.time()*1000)}"}
+                                    )
+                                    execution_price = res_order.get('price', execution_price)
+                                
+                                # Ledger update
+                                order_cost = execution_price * trade_qty_formatted
+                                commission = order_cost * 0.001
                             
-                            # Standard buttons layout (Like a Telegram Web App)
-                            keyboard = {
-                                "inline_keyboard": [
-                                    [
-                                        {"text": "📊 Rapport Status", "callback_data": "bot_status"},
-                                        {"text": "📋 Historique", "callback_data": "bot_history"}
-                                    ],
-                                    [
-                                        {"text": "⏸️ Pause le Bot", "callback_data": "bot_pause"},
-                                        {"text": "🚨 KILL SWITCH", "callback_data": "bot_kill"}
+                                if side == "BUY":
+                                    STATE[active_balance_key] -= (order_cost + commission)
+                                    new_qty = pos_qty + trade_qty_formatted
+                                    new_avg = ((pos_qty * (asset_position['avg_price'] if asset_position else 0.0)) + (trade_qty_formatted * execution_price)) / new_qty
+                                else:
+                                    STATE[active_balance_key] += (order_cost - commission)
+                                    new_qty = pos_qty - trade_qty_formatted
+                                    new_avg = asset_position['avg_price'] if asset_position and new_qty > 0 else 0.0
+                                
+                                db.update_position(symbol, new_qty, new_avg, active_mode)
+                                db.add_order(
+                                    symbol=symbol,
+                                    side=side,
+                                    price=execution_price,
+                                    qty=trade_qty_formatted,
+                                    status="FILLED",
+                                    mode=active_mode,
+                                    strategy="META_MODEL",
+                                    order_type="MARKET"
+                                )
+                                platform_metrics.ORDERS_TOTAL.labels(mode=active_mode, side=side).inc()
+                            
+                                db.add_audit_log(
+                                    "REAL_ORDER" if active_mode == "REAL" else "DEMO_ORDER", 
+                                    "127.0.0.1", 
+                                    f"Executed {side} order of {trade_qty_formatted:.5f} {symbol} at {execution_price:.2f} USD."
+                                )
+                            
+                                # Formulate a pedagogic and visual explanation of the trade!
+                                regime = STATE.get("regime_name", "Mean-Reverting Range")
+                                hmm_translation = {
+                                    "Bull Trend (Low Vol)": "Soleil Haussier ☀️ (Mouvement de hausse calme)",
+                                    "Bear Trend (High Vol)": "Tempête Baissière ⛈️ (Marché en baisse rapide)",
+                                    "Mean-Reverting Range": "Temps Nuageux ⛅ (Marché stable qui oscille)",
+                                    "Erratic High Volatility": "Volatilité Erratique 🌪️ (Marché agité et imprévisible)"
+                                }
+                                translated_regime = hmm_translation.get(regime, regime)
+                            
+                                trade_reason = ""
+                                if side == "BUY":
+                                    trade_reason = (
+                                        "✨ *Pourquoi cet achat ?* Nos algorithmes de suivi de tendance ont détecté "
+                                        "une accélération haussière prometteuse. J'en profite pour accumuler de l'actif "
+                                        "afin de maximiser nos gains !"
+                                    )
+                                else:
+                                    trade_reason = (
+                                        "🔒 *Pourquoi cette vente ?* Nos modèles de protection de capital ont détecté "
+                                        "un essoufflement ou un risque de retournement. Je vends pour sécuriser vos bénéfices "
+                                        "au chaud et mettre notre capital à l'abri !"
+                                    )
+                                
+                                telegram_msg = (
+                                    f"🔔 *EXÉCUTION D'ORDRE ({active_mode})*\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"📝 Actif : `{symbol}`\n"
+                                    f"🚀 Action : *{side == 'BUY' and '🟢 ACHAT' or '🔴 VENTE'}*\n"
+                                    f"📊 Quantité : `{trade_qty_formatted:.5f}`\n"
+                                    f"💵 Prix d'exécution : *${execution_price:,.2f} USD*\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"🌦️ Météo Marché : *{translated_regime}*\n\n"
+                                    f"{trade_reason}\n"
+                                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                                    f"🖥️ _Terminal Web mis à jour. Cliquez ci-dessous pour piloter :_"
+                                )
+                            
+                                # Standard buttons layout (Like a Telegram Web App)
+                                keyboard = {
+                                    "inline_keyboard": [
+                                        [
+                                            {"text": "📊 Rapport Status", "callback_data": "bot_status"},
+                                            {"text": "📋 Historique", "callback_data": "bot_history"}
+                                        ],
+                                        [
+                                            {"text": "⏸️ Pause le Bot", "callback_data": "bot_pause"},
+                                            {"text": "🚨 KILL SWITCH", "callback_data": "bot_kill"}
+                                        ]
                                     ]
-                                ]
-                            }
+                                }
                             
-                            await telegram_bot.send_push_notification(telegram_msg, reply_markup=keyboard)
-                        except Exception as exc:
-                            logger.error(f"DEX / CEX ORDER REJECTION: {str(exc)}")
-                            db.add_audit_log(
-                                "ORDER_REJECTED", 
-                                "127.0.0.1", 
-                                f"Order {side} of {trade_qty_formatted:.5f} {symbol} failed/rejected: {str(exc)}"
-                            )
+                                await telegram_bot.send_push_notification(telegram_msg, reply_markup=keyboard)
+                            except Exception as exc:
+                                logger.error(f"DEX / CEX ORDER REJECTION: {str(exc)}")
+                                platform_metrics.ORDERS_FAILED.labels(mode=active_mode).inc()
+                                db.add_audit_log(
+                                    "ORDER_REJECTED", 
+                                    "127.0.0.1", 
+                                    f"Order {side} of {trade_qty_formatted:.5f} {symbol} failed/rejected: {str(exc)}"
+                                )
                             
+            except Exception as exc:
+                logger.error(f"Trading tick failed for {symbol}: {str(exc)}")
+                platform_metrics.ERRORS_TOTAL.labels(component="trading_loop").inc()
         # 5. Calculate total portfolio equity (consolidating all active multi-assets positions)
         net_equity = STATE[active_balance_key]
         updated_positions = db.get_positions()
@@ -1215,6 +1308,12 @@ async def live_trading_loop():
         STATE[active_equity_history_key].append(net_equity)
         if len(STATE[active_equity_history_key]) > 100:
             STATE[active_equity_history_key].pop(0)
+
+        # LOT 61: refresh Prometheus gauges at the end of each tick
+        try:
+            update_metrics_from_state()
+        except Exception as exc:
+            logger.warning(f"Metrics update failed: {str(exc)}")
             
         # Circuit Breakers evaluation
         tripped = var_metrics.get("tripped", False)
@@ -1285,6 +1384,33 @@ def serialize_helper(obj):
     elif hasattr(obj, "isoformat"):  # Matches datetime.datetime, date, etc.
         return obj.isoformat()
     return obj
+
+
+def update_metrics_from_state():
+    """
+    Pushes the current STATE snapshot into the Prometheus registry (LOT 61).
+    Called at the end of every trading-loop tick and on demand.
+    """
+    active_mode = STATE["mode"]
+    active_balance_key = "balance_demo" if active_mode == "DEMO" else "balance_real"
+    platform_metrics.MARKET_LAST_PRICE.labels(symbol="BTCUSDT").set(STATE["last_price"])
+    platform_metrics.MARKET_EQUITY.labels(mode=active_mode).set(STATE["current_equity"])
+    platform_metrics.MARKET_BALANCE.labels(mode=active_mode).set(STATE[active_balance_key])
+
+    initial_cap = STATE["initial_capital_demo"] if active_mode == "DEMO" else STATE["initial_capital_real"]
+    live_pnl_usd = STATE["current_equity"] - initial_cap if initial_cap > 0 else 0.0
+    live_pnl_pct = (live_pnl_usd / initial_cap) * 100.0 if initial_cap > 0 else 0.0
+    platform_metrics.MARKET_PNL_USD.labels(mode=active_mode).set(live_pnl_usd)
+    platform_metrics.MARKET_PNL_PCT.labels(mode=active_mode).set(live_pnl_pct)
+
+    platform_metrics.REGIME_ID.set(STATE["regime_id"])
+    platform_metrics.RISK_EXPOSURE.set(
+        (STATE["current_equity"] / STATE[active_balance_key] - 1.0) * 100.0 if STATE[active_balance_key] > 0 else 0.0
+    )
+    platform_metrics.POSITIONS_OPEN.set(len(STATE.get("cached_positions") or []))
+    platform_metrics.SENTIMENT_INDEX.set(STATE["sentiment_index"])
+    platform_metrics.ONCHAIN_RISK.set(STATE["onchain_risk_score"])
+    platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
 
 
 def compile_telemetry_data(consensus_signals=None) -> dict:
@@ -1392,6 +1518,16 @@ async def get_telemetry_rest():
     Ensures 100% platform connectivity even when WebSockets are blocked by client browser or proxy!
     """
     return JSONResponse(compile_telemetry_data())
+
+
+@app.get("/metrics")
+async def get_prometheus_metrics():
+    """
+    Prometheus text exposition (scraped by the bundled prometheus.yml).
+    Institutional observability for Grafana dashboards & auto-scaling alerts.
+    """
+    platform_metrics.refresh_uptime()
+    return Response(content=platform_metrics.get_metrics_text(), media_type="text/plain; version=0.0.4; charset=utf-8")
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -1729,9 +1865,11 @@ async def run_backtest_handler():
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
     STATE["connected_websockets"].append(websocket)
+    platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
     try:
         while True:
             await websocket.receive_text()
     except WebSocketDisconnect:
         if websocket in STATE["connected_websockets"]:
             STATE["connected_websockets"].remove(websocket)
+            platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))

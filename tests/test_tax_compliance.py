@@ -2,8 +2,8 @@ import pytest
 from core.tax_compliance import TaxComplianceEngine
 from datetime import datetime, timedelta
 
-def test_fifo_realized_pnl():
-    engine = TaxComplianceEngine(journal_path=":memory:")
+def test_fifo_realized_pnl(tmp_path):
+    engine = TaxComplianceEngine(journal_path=str(tmp_path / "journal.json"))
     
     # Buy 2 BTC @ 60000
     engine.record_trade("BTCUSDT", "BUY", 2.0, 60000, datetime.now())
@@ -14,8 +14,8 @@ def test_fifo_realized_pnl():
     pnl = engine.get_realized_pnl("BTCUSDT")
     assert pnl == 5000.0
 
-def test_cost_basis_calculation():
-    engine = TaxComplianceEngine(journal_path=":memory:")
+def test_cost_basis_calculation(tmp_path):
+    engine = TaxComplianceEngine(journal_path=str(tmp_path / "journal.json"))
     
     engine.record_trade("ETHUSDT", "BUY", 5.0, 3000, datetime.now())
     engine.record_trade("ETHUSDT", "BUY", 3.0, 3200, datetime.now())
