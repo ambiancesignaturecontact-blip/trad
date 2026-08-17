@@ -198,16 +198,40 @@ class CopyTradingManager:
         if trader_id not in self.traders:
             return False, "Trader not found."
             
+        # AUDIT B13: honest "follow" mode - we TRACK the real trader's live
+        # performance against the allocated capital; actual order mirroring
+        # requires per-exchange execution keys and is a separate integration.
+        trader = self.traders[trader_id]
         self.copied_traders[trader_id] = {
             "allocated_capital": allocated_capital,
             "start_time": time.time(),
+            "mode": "FOLLOW_ONLY",
             "slippage_factor": 0.0005,
-            "avg_latency": 0.400
+            "avg_latency": 0.400,
+            "pnl_estimate_usd": 0.0,
+            "last_roi_month": trader.roi_annual / 12.0,
+            "last_pnl_month": getattr(trader, "pnl_month", 0.0),
         }
-        return True, f"Successfully copying {self.traders[trader_id].name}"
+        return True, f"Following {trader.name} (FOLLOW_ONLY: tracked, not mirrored)"
 
     def stop_copying(self, trader_id: str) -> tuple:
         if trader_id in self.copied_traders:
             del self.copied_traders[trader_id]
-            return True, "Stopped copying successfully."
-        return False, "Not copying this trader."
+            return True, "Stopped following successfully."
+        return False, "Not following this trader."
+
+    def refresh_allocation_pnl(self) -> None:
+        """AUDIT B13-2: updates the tracked P&L of each allocation from the real
+        leaderboard data (estimate = allocated capital x trader's month ROI)."""
+        now = time.time()
+        for trader_id, alloc in self.copied_traders.items():
+            t = self.traders.get(trader_id)
+            if not t:
+                continue
+            elapsed_days = max((now - alloc.get("start_time", now)) / 86400.0, 0.0)
+            month_roi = t.roi_annual / 12.0
+            # proportional estimate over elapsed time vs a 30d window
+            fraction = min(elapsed_days / 30.0, 1.0)
+            alloc["pnl_estimate_usd"] = float(alloc.get("allocated_capital", 0.0) * month_roi * fraction)
+            alloc["last_roi_month"] = month_roi
+            alloc["last_pnl_month"] = getattr(t, "pnl_month", 0.0)

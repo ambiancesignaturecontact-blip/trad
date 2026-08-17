@@ -240,3 +240,27 @@ retraining, validation, déploiement et journalisation en boucle fermée.
 - ✅ Idempotence : ordres dupliqués bloqués en live (« Idempotence gate: EURUSD... Skipping »)
 - ✅ Trade journal : `[JOURNAL] Trade #9 logged` avec stratégie dominante
 - ✅ Endpoints : tous 200, `/telegram` OK, graceful shutdown OK
+
+---
+
+# 🔧 TOUR 5 — 17 août 2026 (application intégrale de l'AUDIT_CRITIQUE_COMPLET)
+
+## 25. Ce qui a été corrigé (34/38 items)
+- **Sécurité fonds** : gestionnaire SL/TP/trailing (ATR) intégré AVANT les signaux, exécution réelle de sortie ; OMS/EMS branchés sur l'exécution live ; réconciliation balance+positions toutes les 5 min + alerte liquidation.
+- **Sécurité plateforme** : validation stricte Pydantic (8 modèles), rate-limit POST + login (429 vérifié), blocage secrets par défaut en prod, en-têtes sécurité, CORS configurable, WS caps + heartbeat, **suppression backdoor 2FA `123456/888888`**, rotation clés tracée.
+- **DB** : pooling psycopg2, SQLite WAL/busy_timeout, index explicites, rétention 14 backups, script de restauration.
+- **Données** : cache Yahoo TTL (bug `_yahoo_cache` corrigé), REFUS de trader en REAL sur données de repli, VPIN/Kyle/on-chain devenus de vrais inputs de signal (modulation de conviction).
+- **IA** : PPO réécrit avec couche cachée, LSTM hidden 8→24, noms de modèles honnêtes, métriques IA exposées, GAN→stress quotidien, RLHF→sizing.
+- **Risk** : plafond 25 %/actif, Monte-Carlo quotidien, alerte liquidation.
+- **Arbitrage** : étiquetage honnête signal-only par défaut + broadcast DEX réel si configuré.
+- **Copy trading** : FOLLOW_ONLY honnête + P&L d'allocation.
+- **Features** : rapport P&L quotidien, score de santé, concierge Telegram quotidien, autopilote gradué (gate paper→REAL), webhooks TradingView, pagination + /api/v1, mini-app boutons fiables.
+- **Déploiement/qualité** : Docker multi-stage, requirements.lock, CI (ruff + pip-audit + docker build), LICENSE/SECURITY/CHANGELOG/CONTRIBUTING, +13 tests.
+- **3 vrais bugs trouvés & corrigés** : SOR (classement VENTE inversé), backdoor 2FA, cache Yahoo.
+
+## 26. Vérifications finales (tour 5)
+- ✅ `pytest` : **71 passed**
+- ✅ Tous endpoints 200 (dont /api/v1/health, /api/v1/report/daily, /api/v1/orders)
+- ✅ Security headers, 429 login, 422 validation, 503 webhook non-configuré — vérifiés en live
+- ✅ Serveur : 8 schedulers actifs, boucle sans erreur, données réelles
+- ✅ Re-audit complet : `REAUDIT_POST_CORRECTION.md`

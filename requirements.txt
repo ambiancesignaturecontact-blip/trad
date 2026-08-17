@@ -22,3 +22,4 @@ pyotp>=2.9.0
 # PyTorch (CPU) is installed separately in the Dockerfile (CPU index, ~190MB)
 # to enable the LOT 54 GAN + LOT 55 RLHF engines without pulling the huge
 # CUDA build. See Dockerfile: `pip install --index-url .../whl/cpu torch`.
+python-multipart>=0.0.9

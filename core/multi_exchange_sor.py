@@ -130,7 +130,10 @@ class MultiExchangeSmartOrderRouter:
 
         for q in quotes:
             # Multi-factor scoring
-            cost_score = 1 / q.net_cost_buy if side == "BUY" else 1 / q.net_cost_sell
+            # AUDIT: for SELL the best venue is the one with the HIGHEST net proceeds,
+            # so score with net_cost_sell directly (previous 1/net_cost_sell inverted
+            # the ranking and picked the worst venue for sells).
+            cost_score = 1 / q.net_cost_buy if side == "BUY" else q.net_cost_sell
             latency_score = 1 / (q.latency_ms + 15)
             liquidity_score = min(q.liquidity_usd / 100000, 1.0)
 

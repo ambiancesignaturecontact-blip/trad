@@ -161,3 +161,23 @@ class NonCustodialDeFiWallet:
         except Exception as e:
             logger.error(f"Failed to sign DEX transaction: {str(e)}")
             return {"status": "Failed", "reason": str(e)}
+
+    def broadcast_signed_transaction(self, raw_transaction_hex: str) -> dict:
+        """
+        AUDIT B12-2: actually BROADCASTS a signed tx on-chain (signed != executed).
+        Returns the tx hash and waits for a confirmation receipt.
+        """
+        try:
+            hex_str = raw_transaction_hex[2:] if raw_transaction_hex.startswith("0x") else raw_transaction_hex
+            raw = bytes.fromhex(hex_str)
+            tx_hash = self.execute_with_failover(self.w3.eth.send_raw_transaction, raw)
+            logger.info(f"DEX BROADCAST: tx {tx_hash.hex()} sent on-chain")
+            try:
+                self.w3.eth.wait_for_transaction_receipt(tx_hash, timeout=120)
+                logger.info(f"DEX CONFIRMED: tx {tx_hash.hex()} mined")
+            except Exception as we:
+                logger.warning(f"DEX tx {tx_hash.hex()} sent but confirmation pending: {we}")
+            return {"status": "BROADCAST", "tx_hash": tx_hash.hex()}
+        except Exception as e:
+            logger.error(f"DEX BROADCAST FAILED: {e}")
+            return {"status": "BROADCAST_FAILED", "error": str(e)}

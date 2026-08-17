@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>QUANT-PORTAL | Elite Trading Terminal</title>
     <!-- Tailwind CSS CDN -->
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com/3.4.14"></script>
     <script>
         tailwind.config = {
             darkMode: 'class',
@@ -30,9 +30,9 @@
     </script>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;800;900&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
     <!-- Lucide Icons -->
-    <script src="https://unpkg.com/lucide@latest"></script>
+    <script src="https://unpkg.com/lucide@0.294.0"></script>
     <!-- Chart.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     
     <!-- Telegram WebApp SDK -->
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
@@ -64,6 +64,44 @@
     </style>
 </head>
 <body class="h-full antialiased text-slate-200 overflow-hidden flex flex-col">
+
+<!-- ===== HEALTH SCORE WIDGET (audit D3) ===== -->
+<div id="qp-health-card" style="position:fixed;bottom:16px;right:16px;z-index:9000;background:rgba(11,19,43,.92);border:1px solid rgba(0,240,255,.3);border-radius:14px;padding:10px 14px;min-width:170px;font-size:13px;box-shadow:0 0 18px rgba(0,240,255,.12);" role="status" aria-live="polite">
+    <div style="display:flex;align-items:center;gap:8px;">
+        <span id="qp-health-dot" style="width:10px;height:10px;border-radius:50%;background:#22c55e;display:inline-block;"></span>
+        <strong>Santé du bot</strong>
+        <span id="qp-health-score" style="margin-left:auto;font-weight:800;">--</span>
+    </div>
+    <div id="qp-health-reasons" style="color:#64748b;font-size:11px;margin-top:4px;"></div>
+</div>
+<script>
+(function () {
+    async function refreshHealth() {
+        try {
+            const r = await fetch('/api/v1/health');
+            if (!r.ok) return;
+            const d = await r.json();
+            const s = d.health_score;
+            const dot = document.getElementById('qp-health-dot');
+            const score = document.getElementById('qp-health-score');
+            const reasons = document.getElementById('qp-health-reasons');
+            dot.style.background = s >= 80 ? '#22c55e' : (s >= 50 ? '#f59e0b' : '#ef4444');
+            score.textContent = s + '/100';
+            reasons.textContent = (d.reasons || []).slice(0, 3).join(' • ');
+        } catch (e) {}
+    }
+    refreshHealth();
+    setInterval(refreshHealth, 15000);
+})();
+</script>
+
+<!-- ===== ACCESSIBILITY (audit B14-3) ===== -->
+<style>
+    :focus-visible { outline: 2px solid #00f0ff; outline-offset: 2px; border-radius: 4px; }
+    @media (prefers-reduced-motion: reduce) {
+        *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; }
+    }
+</style>
 
 <!-- ===== AUTHENTICATION LAYER (roadmap #4): JWT bearer + login modal ===== -->
 <style>
@@ -948,12 +986,30 @@ window.qpLogin = async function () {
             }, 1500);
         };
 
+        const stopRESTPollingFallback = () => {
+            if (pollIntervalId !== null) {
+                clearInterval(pollIntervalId);
+                pollIntervalId = null;
+            }
+            isPollingFallback = false;
+        };
+
         ws.onerror = function() {
             startRESTPollingFallback();
         };
 
+        // Keep a reference of the original onopen handler for auto-reconnect
+        if (typeof ws.onopen === 'function') window.qpOnWsOpen = ws.onopen;
+
         ws.onclose = function() {
             startRESTPollingFallback();
+            // Audit B2-7: auto-reconnect with exponential backoff (2s -> 30s cap)
+            if (window.qpWsReconnectAttempt === undefined) window.qpWsReconnectAttempt = 0;
+            window.qpWsReconnectAttempt += 1;
+            const delay = Math.min(30000, 2000 * Math.pow(2, window.qpWsReconnectAttempt - 1));
+            setTimeout(() => {
+                try { window.qpWsReconnect(); } catch (e) {}
+            }, delay);
         };
 
         // Timeout of 3.0s: if ws hasn't opened, trigger fallback
@@ -962,6 +1018,17 @@ window.qpLogin = async function () {
                 startRESTPollingFallback();
             }
         }, 3000);
+
+        // Auto-reconnect helper (audit B2-7): re-runs the full WS init path
+        window.qpWsReconnect = function() {
+            window.qpWsReconnectAttempt = 0;
+            const scheme = window.location.protocol === 'https:' ? 'wss' : 'ws';
+            const newWs = new WebSocket(scheme + '://' + window.location.host + '/ws');
+            newWs.onopen = function() { stopRESTPollingFallback(); if (window.qpOnWsOpen) window.qpOnWsOpen(); };
+            newWs.onmessage = ws.onmessage;
+            newWs.onclose = ws.onclose;
+            window.ws = newWs;
+        };
 
         // REST calls API
         async function toggleStrategy(name, enabled) {

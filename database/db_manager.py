@@ -1,5 +1,8 @@
 import sqlite3
 import os
+
+from dotenv import load_dotenv
+load_dotenv()  # ensure .env is loaded for env-based config (audit B1-3)
 import json
 import logging
 import hashlib
@@ -53,6 +56,7 @@ class DBManager:
             logger.info("Database Mode: Local SQLite Dev (Authorized for Test & Development only)")
             
         self.init_db()
+        self._ensure_indexes()
 
     def initialize_key(self):
         """Generates and persists an AES encryption key if not exists."""
@@ -78,16 +82,62 @@ class DBManager:
         with open(KEY_PATH, "rb") as key_file:
             return key_file.read()
 
+    _pg_pool = None
+
+    @classmethod
+    def _get_pg_pool(cls):
+        """Lazy ThreadedConnectionPool - audit B4-1: one pooled connection set instead
+        of a fresh TCP+TLS handshake per query."""
+        if cls._pg_pool is None:
+            from psycopg2.pool import ThreadedConnectionPool
+            cls._pg_pool = ThreadedConnectionPool(1, 12, cls._pg_dsn())
+        return cls._pg_pool
+
+    @classmethod
+    def _pg_dsn(cls) -> str:
+        url = DATABASE_URL.replace("postgres://", "postgresql://")
+        return url
+
     def get_connection(self):
         if self.is_postgres:
-            import psycopg2
             from psycopg2.extras import RealDictCursor
-            conn = psycopg2.connect(self.pg_url, cursor_factory=RealDictCursor)
+            pool = self._get_pg_pool()
+            conn = pool.getconn()
+            conn.cursor_factory = RealDictCursor
             return conn
         else:
-            conn = sqlite3.connect(DB_PATH)
+            conn = sqlite3.connect(DB_PATH, check_same_thread=False)
             conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA journal_mode=WAL")     # audit B4-2: concurrent writers safe
+            conn.execute("PRAGMA busy_timeout=5000")
+            conn.execute("PRAGMA synchronous=NORMAL")
             return conn
+
+    def _ensure_indexes(self):
+        """Audit B4-4: explicit indexes for hot query paths."""
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                stmts = []
+                if self.is_postgres:
+                    stmts = [
+                        "CREATE INDEX IF NOT EXISTS idx_orders_symbol_ts ON orders (symbol, timestamp DESC)",
+                        "CREATE INDEX IF NOT EXISTS idx_orders_mode_ts ON orders (mode, timestamp DESC)",
+                        "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs (timestamp DESC)",
+                        "CREATE INDEX IF NOT EXISTS idx_candles_symbol_ts ON market_candles (symbol, timestamp DESC)",
+                    ]
+                else:
+                    stmts = [
+                        "CREATE INDEX IF NOT EXISTS idx_orders_symbol_ts ON orders (symbol, timestamp DESC)",
+                        "CREATE INDEX IF NOT EXISTS idx_orders_mode_ts ON orders (mode, timestamp DESC)",
+                        "CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_logs (timestamp DESC)",
+                        "CREATE INDEX IF NOT EXISTS idx_candles_symbol_ts ON market_candles (symbol, timestamp DESC)",
+                    ]
+                for s in stmts:
+                    cur.execute(s)
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"Index creation skipped: {e}")
 
     def init_db(self):
         """
@@ -644,6 +694,7 @@ class DBManager:
                 dst.close()
                 src.close()
                 logger.info(f"DB backup: SQLite snapshot -> {backup_path}")
+                self._retain_backups(backup_dir, keep=14)
                 return backup_path
             except Exception as e:
                 logger.error(f"DB backup: SQLite snapshot failed: {e}")
@@ -651,4 +702,19 @@ class DBManager:
 
         # PostgreSQL: rely on Supabase built-in backups (documented)
         logger.info("DB backup: PostgreSQL mode - Supabase managed backups are authoritative.")
+        self._retain_backups(backup_dir, keep=14)
         return settings_path if os.path.exists(settings_path) else ""
+
+    def _retain_backups(self, backup_dir: str, keep: int = 14):
+        """Audit B4-5: retention policy - keep the N most recent snapshots."""
+        try:
+            import glob
+            snaps = sorted(glob.glob(os.path.join(backup_dir, "trading_platform_*.db")))
+            for stale in snaps[:-keep]:
+                try:
+                    os.remove(stale)
+                    logger.info(f"DB backup: pruned old snapshot {stale}")
+                except Exception as e:
+                    logger.warning(f"DB backup: prune failed for {stale}: {e}")
+        except Exception as e:
+            logger.warning(f"DB backup: retention cleanup failed: {e}")

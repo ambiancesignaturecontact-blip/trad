@@ -40,6 +40,12 @@ ONCHAIN_RISK = Gauge("quant_onchain_risk_score", "Latest on-chain risk score")
 # --- Data quality ---
 DATA_QUALITY = Gauge("quant_data_quality", "Data quality status (0=UNAVAILABLE..4=LIVE)", ["source"])
 
+# --- AI / autonomy (audit B9-3) ---
+AI_OOS_SHARPE = Gauge("quant_ai_oos_sharpe", "Latest walk-forward out-of-sample Sharpe")
+AI_PPO_BUFFER = Gauge("quant_ai_ppo_buffer", "RL experiences collected for PPO training")
+AI_LAST_CYCLE = Gauge("quant_ai_last_cycle_ts", "Timestamp of the last autonomous AI cycle")
+AI_MODEL_ERROR = Gauge("quant_ai_model_error", "Rolling prediction error (|pred - actual|)", ["model"])
+
 # --- Latency histogram for outbound API calls ---
 API_LATENCY = Histogram(
     "quant_api_latency_seconds",

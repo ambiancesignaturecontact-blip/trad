@@ -439,7 +439,28 @@ class MetaAllocationEngine:
         final_signal = (0.80 * classical_signal) + (0.10 * ml_signal) + (0.10 * ppo_action)
         final_signal = np.clip(final_signal, -1.0, 1.0)
 
-        consensus_score = float(mean_confidence)
+        # 5b. MICROSTRUCTURE / ON-CHAIN MODULATION (audit B8-1/B8-2):
+        # VPIN and Kyle's Lambda are now REAL signal inputs, not just logs.
+        # - High VPIN = toxic order flow -> reduce conviction (50% max dampen)
+        # - High on-chain risk -> reduce conviction
+        # - High Kyle's Lambda = illiquid -> dampen (harder to execute without slippage)
+        modulate_factor = 1.0
+        try:
+            vpin = float(market_data.get("vpin") or 0.0)
+            kyle = float(market_data.get("kyle_lambda") or 0.0)
+            onchain = float(market_data.get("onchain_risk") or 0.0)
+
+            if vpin > 0.90:
+                modulate_factor *= max(0.50, 1.0 - (vpin - 0.90))
+            if onchain > 0.75:
+                modulate_factor *= 0.50
+            if kyle > 0.01:  # very illiquid market
+                modulate_factor *= 0.75
+            final_signal = float(np.clip(final_signal * modulate_factor, -1.0, 1.0))
+        except Exception:
+            pass
+
+        consensus_score = float(mean_confidence * modulate_factor)
         
         # Create contributions dictionary (avec poids walk-forward)
         strategy_contributions = {}
@@ -454,6 +475,7 @@ class MetaAllocationEngine:
         return {
             "final_signal": float(final_signal),
             "consensus": consensus_score,
+            "modulate_factor": float(modulate_factor),
             "classical_signal": float(classical_signal),
             "ml_signal": float(ml_signal),
             "ppo_signal": float(ppo_action),

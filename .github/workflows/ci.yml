@@ -24,11 +24,19 @@ jobs:
       run: |
         python -m pip install --upgrade pip
         pip install -r requirements.txt
-        pip install pytest
+        pip install pytest ruff pip-audit
 
     - name: Syntax Compilation Check
       run: |
         python -m compileall -q . -x 'node_modules|\.git'
+
+    - name: Lint (ruff) — audit B16-4
+      run: |
+        ruff check . || true   # report, don't gate (legacy codebase in transition)
+
+    - name: Dependency vulnerability audit — audit B17
+      run: |
+        pip-audit --progress-spinner off || true
 
     - name: Run Automated Unit Tests (+ API smoke tests)
       run: |
@@ -37,3 +45,21 @@ jobs:
     - name: Production Safety Check Script
       run: |
         python automated_production_safety_check.py || echo "Safety check reported findings (see logs)."
+
+  docker-build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Build Docker Image — audit B15-5
+      run: |
+        docker build -t quant-portal:ci .
+
+    - name: Smoke test the image
+      run: |
+        docker run -d --name qp -p 8080:8080 -e PORT=8080 quant-portal:ci
+        sleep 20
+        docker exec qp python -c "import urllib.request; print('image /api/status:', urllib.request.urlopen('http://localhost:8080/api/status', timeout=5).status)"
+        docker rm -f qp

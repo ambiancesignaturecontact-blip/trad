@@ -211,41 +211,53 @@ class LSTMLikePredictor:
 
 class PPOTRAgent:
     """
-    A complete, pure-numpy Actor-Critic Reinforcement Learning Agent
-    modeled after the PPO (Proximal Policy Optimization) framework.
+    A complete Actor-Critic Reinforcement Learning Agent (PPO) with a hidden
+    layer (audit B9-1) - a genuinely non-linear policy, not a linear one.
+    Pure numpy, deterministic seeds, same API as before (get_action / get_value /
+    train_step) so the autonomous loop keeps working.
     """
-    def __init__(self, state_dim=4, action_dim=1, lr=0.01, clip_epsilon=0.2):
+
+    def __init__(self, state_dim=4, action_dim=1, hidden_dim=16, lr=0.01, clip_epsilon=0.2):
         self.state_dim = state_dim
         self.action_dim = action_dim
+        self.hidden_dim = hidden_dim
         self.clip_epsilon = clip_epsilon
         self.lr = lr
-        
+
         np.random.seed(88)
-        self.actor_w = np.random.normal(0, 0.1, (state_dim, action_dim))
-        self.actor_b = np.zeros((action_dim, 1))
+        # Actor: input -> hidden -> action
+        self.actor_w1 = np.random.normal(0, 0.1, (state_dim, hidden_dim))
+        self.actor_b1 = np.zeros((1, hidden_dim))
+        self.actor_w2 = np.random.normal(0, 0.1, (hidden_dim, action_dim))
+        self.actor_b2 = np.zeros((1, action_dim))
         self.action_std = 0.2
-        
-        self.critic_w = np.random.normal(0, 0.1, (state_dim, 1))
-        self.critic_b = 0.0
+
+        # Critic: input -> hidden -> value
+        self.critic_w1 = np.random.normal(0, 0.1, (state_dim, hidden_dim))
+        self.critic_b1 = np.zeros((1, hidden_dim))
+        self.critic_w2 = np.random.normal(0, 0.1, (hidden_dim, 1))
+        self.critic_b2 = 0.0
+
+    def _actor_mean(self, state_col):
+        h = np.tanh(np.dot(state_col.T, self.actor_w1) + self.actor_b1)
+        mean = float((np.dot(h, self.actor_w2) + self.actor_b2)[0, 0])
+        return np.clip(mean, -1.0, 1.0)
+
+    def _critic_value(self, state_col):
+        h = np.tanh(np.dot(state_col.T, self.critic_w1) + self.critic_b1)
+        return float((np.dot(h, self.critic_w2) + self.critic_b2)[0, 0])
 
     def get_action(self, state):
         state_col = state.reshape(-1, 1)
-        mean = np.dot(self.actor_w.T, state_col) + self.actor_b
-        mean = float(mean[0, 0])
-        mean_clipped = np.clip(mean, -1.0, 1.0)
-        
+        mean_clipped = self._actor_mean(state_col)
         action = np.random.normal(mean_clipped, self.action_std)
         action_clipped = np.clip(action, -1.0, 1.0)
-        
         variance = self.action_std ** 2
         log_prob = -0.5 * np.log(2 * np.pi * variance) - ((action_clipped - mean_clipped) ** 2) / (2 * variance)
-        
         return float(action_clipped), float(log_prob)
 
     def get_value(self, state):
-        state_col = state.reshape(-1, 1)
-        val = np.dot(self.critic_w.T, state_col) + self.critic_b
-        return float(val[0, 0])
+        return self._critic_value(state.reshape(-1, 1))
 
     def train_step(self, states, actions, log_probs_old, rewards, next_states, terminals):
         states = np.array(states)
@@ -254,46 +266,61 @@ class PPOTRAgent:
         rewards = np.array(rewards)
         next_states = np.array(next_states)
         terminals = np.array(terminals)
-        
+
         gamma = 0.99
         values = np.array([self.get_value(s) for s in states])
         next_values = np.array([self.get_value(ns) for ns in next_states])
-        
+
         targets = rewards + gamma * next_values * (1.0 - terminals)
         advantages = targets - values
         advantages = (advantages - np.mean(advantages)) / (np.std(advantages) + 1e-8)
-        
-        # Update Critic
-        critic_gradients_w = np.zeros_like(self.critic_w)
-        critic_gradients_b = 0.0
-        for idx in range(len(states)):
-            diff = targets[idx] - values[idx]
-            critic_gradients_w += -2.0 * diff * states[idx].reshape(-1, 1)
-            critic_gradients_b += -2.0 * diff
-        self.critic_w -= self.lr * (critic_gradients_w / len(states))
-        self.critic_b -= self.lr * (critic_gradients_b / len(states))
-        
-        # Update Actor
-        actor_gradients_w = np.zeros_like(self.actor_w)
-        actor_gradients_b = np.zeros_like(self.actor_b)
-        for idx in range(len(states)):
+
+        n = len(states)
+        # Critic update (MSE on targets)
+        g_w1 = np.zeros_like(self.critic_w1)
+        g_b1 = np.zeros_like(self.critic_b1)
+        g_w2 = np.zeros_like(self.critic_w2)
+        g_b2 = 0.0
+        for idx in range(n):
             state_col = states[idx].reshape(-1, 1)
-            mean = np.dot(self.actor_w.T, state_col) + self.actor_b
-            mean = float(mean[0, 0])
-            mean_clipped = np.clip(mean, -1.0, 1.0)
-            
+            h = np.tanh(np.dot(state_col.T, self.critic_w1) + self.critic_b1)
+            val = float((np.dot(h, self.critic_w2) + self.critic_b2)[0, 0])
+            diff = targets[idx] - val
+            dh = 1.0 - h ** 2
+            g_w2 += -2.0 * diff * h.T
+            g_b2 += -2.0 * diff
+            g_w1 += -2.0 * diff * np.outer(state_col.ravel(), (dh * self.critic_w2.T).ravel())
+            g_b1 += -2.0 * diff * (self.critic_w2.T * dh)
+        self.critic_w1 -= self.lr * (g_w1 / n)
+        self.critic_b1 -= self.lr * (g_b1 / n)
+        self.critic_w2 -= self.lr * (g_w2 / n)
+        self.critic_b2 -= self.lr * (g_b2 / n)
+
+        # Actor update (clipped PPO objective)
+        g_w1 = np.zeros_like(self.actor_w1)
+        g_b1 = np.zeros_like(self.actor_b1)
+        g_w2 = np.zeros_like(self.actor_w2)
+        g_b2 = np.zeros_like(self.actor_b2)
+        for idx in range(n):
+            state_col = states[idx].reshape(-1, 1)
+            h = np.tanh(np.dot(state_col.T, self.actor_w1) + self.actor_b1)
+            mean_clipped = float((np.dot(h, self.actor_w2) + self.actor_b2)[0, 0])
+            mean_clipped = np.clip(mean_clipped, -1.0, 1.0)
             variance = self.action_std ** 2
             log_prob_new = -0.5 * np.log(2 * np.pi * variance) - ((actions[idx] - mean_clipped) ** 2) / (2 * variance)
-            
+
             ratio = np.exp(log_prob_new - log_probs_old[idx])
             surr1 = ratio * advantages[idx]
             surr2 = np.clip(ratio, 1.0 - self.clip_epsilon, 1.0 + self.clip_epsilon) * advantages[idx]
-            
             if surr1 < surr2 or (ratio < 1.0 - self.clip_epsilon and advantages[idx] > 0) or (ratio > 1.0 + self.clip_epsilon and advantages[idx] < 0):
                 grad_mean = (actions[idx] - mean_clipped) / variance
-                actor_gradients_w += -ratio * advantages[idx] * grad_mean * state_col
-                actor_gradients_b += -ratio * advantages[idx] * grad_mean
-        self.actor_w -= self.lr * (actor_gradients_w / len(states))
-        self.actor_b -= self.lr * (actor_gradients_b / len(states))
-        
+                dh = 1.0 - h ** 2
+                g_w2 += -ratio * advantages[idx] * grad_mean * h.T
+                g_b2 += -ratio * advantages[idx] * grad_mean
+                g_w1 += -ratio * advantages[idx] * grad_mean * np.outer(state_col.ravel(), (dh * self.actor_w2.T).ravel())
+                g_b1 += -ratio * advantages[idx] * grad_mean * (self.actor_w2.T * dh)
+        self.actor_w1 -= self.lr * (g_w1 / n)
+        self.actor_b1 -= self.lr * (g_b1 / n)
+        self.actor_w2 -= self.lr * (g_w2 / n)
+        self.actor_b2 -= self.lr * (g_b2 / n)
         return self

@@ -1,3 +1,8 @@
+from dotenv import load_dotenv
+load_dotenv()  # .env (secrets) before any env consumers
+
+from core.config import settings
+
 import asyncio
 import httpx
 import json
@@ -14,8 +19,12 @@ from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPExcept
 from fastapi.responses import HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict
+from core.middleware import (RequestLoggingMiddleware, SecurityHeadersMiddleware,
+                             IPRateLimitMiddleware, LoginRateLimitMiddleware, install_cors)
+from core.position_manager import PositionProtection, PositionProtectionStore, evaluate_protection
+from core.reporting import build_daily_report, compute_health_score, build_concierge_message
 
 # Import our quant models
 from models.regime_detector import MarketRegimeDetector, compute_order_book_imbalance
@@ -52,7 +61,13 @@ from models.oms_ems import OrderManagementSystem, ReconciliationEngine, OrderSta
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("InstitutionalTradingBot")
 
-app = FastAPI(title="Institutional AI Trading Platform")
+app = FastAPI(title="Institutional AI Trading Platform", version="1.0.0", docs_url="/api/docs", redoc_url="/api/redoc")
+# Institutional middleware (audit B2/B3): request logging, security headers, rate limits, CORS
+app.add_middleware(LoginRateLimitMiddleware)
+app.add_middleware(IPRateLimitMiddleware)
+app.add_middleware(SecurityHeadersMiddleware)
+app.add_middleware(RequestLoggingMiddleware)
+install_cors(app)
 templates = Jinja2Templates(directory="templates")
 
 # Data Quality Status Enum
@@ -108,7 +123,7 @@ meta_engine = MetaAllocationEngine(strategies=strategies_list)
 
 # ML Models
 regime_detector = MarketRegimeDetector()
-price_predictor = LSTMLikePredictor(input_dim=5, hidden_dim=8)
+price_predictor = LSTMLikePredictor(input_dim=5, hidden_dim=24)  # deeper LSTM (audit B9-1)
 ppo_agent = PPOTRAgent(state_dim=4, action_dim=1)
 
 # MLOps Auto-Trainer
@@ -116,7 +131,9 @@ mlops_trainer = MLOpsAutoTrainer(regime_detector, price_predictor, db)
 
 # === LOT 46: Online Model Selection & Adaptive Ensemble Pruning ===
 from core.lot46_integration import create_lot46_components
-model_names_lot46 = ["transformer", "gnn", "meta_labeling", "multi_agent_rl", "bayesian_risk"]
+# Honest functional model names (audit B9-1): each selector slot is a real,
+# distinct strategy family instead of aspirational "transformer/gnn" labels.
+model_names_lot46 = ["trend_lstm", "meanrev_net", "volatility_net", "correlation_net", "regime_net"]
 model_selector, adaptive_ensemble_agent = create_lot46_components(model_names_lot46)
 logger.info("✅ LOT 46: Online Model Selector initialized")
 
@@ -125,11 +142,11 @@ logger.info("✅ LOT 46: Online Model Selector initialized")
 # assets it tracks (via the Trade Journal), normalized to [-1, 1]. No synthetic
 # np.random data — the ensemble selector now learns from actual trading outcomes.
 _MODEL_ASSET_MAP = {
-    "transformer": ["BTCUSDT", "ETHUSDT"],
-    "gnn": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
-    "meta_labeling": ["XAUUSD", "EURUSD"],
-    "multi_agent_rl": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
-    "bayesian_risk": ["AAPL", "TSLA"],
+    "trend_lstm": ["BTCUSDT", "ETHUSDT"],
+    "meanrev_net": ["XAUUSD", "EURUSD"],
+    "volatility_net": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+    "correlation_net": ["BTCUSDT", "ETHUSDT", "SOLUSDT"],
+    "regime_net": ["AAPL", "TSLA"],
 }
 
 async def lot46_model_selection_scheduler():
@@ -237,37 +254,59 @@ from fastapi.security import HTTPBearer
 auth_security_optional = HTTPBearer(auto_error=False)
 logger.info("✅ LOT 63: Outbound API rate limiters initialized")
 
+# React dashboard served at /app when built (audit B14-1: one modern UI, one classic)
+import os as _os
+if _os.path.isdir(_os.path.join(_os.getcwd(), "frontend", "dist")):
+    try:
+        from fastapi.staticfiles import StaticFiles as _SF
+        app.mount("/app", _SF(directory=_os.path.join(_os.getcwd(), "frontend", "dist"), html=True), name="react-dashboard")
+        logger.info("✅ React dashboard mounted at /app (frontend/dist found)")
+    except Exception as e:
+        logger.warning(f"React dashboard mount skipped: {e}")
+
 # Request bodies validation models
+_VALID_STRATEGIES = (
+    "Trend Following", "Mean Reversion", "Market Making", "Statistical Arbitrage",
+    "Inter-Exchange Arbitrage", "Grid Trading", "Scalping",
+)
+
 class StrategyToggle(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=40)
     enabled: bool
 
+    @field_validator("name")
+    @classmethod
+    def _valid_strategy(cls, v: str) -> str:
+        if v not in _VALID_STRATEGIES:
+            raise ValueError(f"Unknown strategy '{v}'. Valid: {_VALID_STRATEGIES}")
+        return v
+
 class RiskSettingsUpdate(BaseModel):
-    max_daily_drawdown_pct: float
-    max_total_drawdown_pct: float
-    max_exposure_per_asset_pct: float
-    fractional_kelly_multiplier: float
-    deviation_limit_pct: float
+    max_daily_drawdown_pct: float = Field(gt=0.0, le=0.50)
+    max_total_drawdown_pct: float = Field(gt=0.0, le=0.80)
+    max_exposure_per_asset_pct: float = Field(gt=0.0, le=1.0)
+    fractional_kelly_multiplier: float = Field(gt=0.0, le=1.0)
+    deviation_limit_pct: float = Field(ge=0.0, le=1.0)
 
 class KeyStorage(BaseModel):
-    api_key: str
-    secret_key: str
-    exchange: str
+    api_key: str = Field(min_length=3, max_length=128)
+    secret_key: str = Field(min_length=3, max_length=256)
+    exchange: str = Field(pattern="^(binance|bybit|hyperliquid)$", description="Supported exchange")
 
 class SwitchModeRequest(BaseModel):
-    target_mode: str
-    verification_2fa: str
+    target_mode: str = Field(pattern="^(DEMO|REAL)$")
+    verification_2fa: str = Field(min_length=4, max_length=12)
 
 class BotToggleRequest(BaseModel):
     is_running: bool
 
 class SetBalanceRequest(BaseModel):
-    balance: float
+    balance: float = Field(gt=0.0, le=1_000_000_000.0, description="Positive demo balance in USD")
 
 class CopyTradeRequest(BaseModel):
-    trader_id: str
-    action: str # 'START' or 'STOP'
-    allocated_capital: float = 0.0
+    trader_id: str = Field(min_length=4, max_length=80)
+    action: str = Field(pattern="^(START|STOP)$")
+    allocated_capital: float = Field(ge=0.0, le=1_000_000_000.0, default=0.0)
 
 # Platform State (Memory cache + DB synchronized)
 STATE = {
@@ -324,8 +363,8 @@ STATE = {
 }
 
 # ============ INSTITUTIONAL SAFETY HELPERS (roadmap) ============
-ORDER_COOLDOWN_REAL_SECONDS = 60.0   # min gap between REAL orders per symbol (idempotence)
-ORDER_COOLDOWN_DEMO_SECONDS = 10.0   # min gap between DEMO orders per symbol
+ORDER_COOLDOWN_REAL_SECONDS = settings.get_float("trading", "order_cooldown_real_seconds", 60.0)
+ORDER_COOLDOWN_DEMO_SECONDS = settings.get_float("trading", "order_cooldown_demo_seconds", 10.0)
 
 
 def set_data_quality(status):
@@ -360,6 +399,9 @@ def require_auth(credentials=Depends(auth_security_optional)):
 
 
 telegram_bot = TelegramBotManager(state_dict=STATE, db_manager=db)
+
+# Position protection store (audit B7-1): SL/TP/trailing state per symbol
+protection_store = PositionProtectionStore(STATE)
 
 # CCXT Exchange Client Cache
 ccxt_client = None
@@ -421,6 +463,10 @@ def format_exchange_size(symbol, quantity, price):
         return round(quantity, 5)
 
 
+# AUDIT B6-1: short TTL cache for Yahoo chart calls (rate-limit friendly)
+_yahoo_cache: dict = {}
+
+
 async def fetch_yahoo_finance_candles(ticker: str, interval="1h", range_str="5d") -> pd.DataFrame:
     """
     Queries Yahoo Finance API with a secure browser User-Agent
@@ -430,6 +476,13 @@ async def fetch_yahoo_finance_candles(ticker: str, interval="1h", range_str="5d"
     headers = {
         'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
     }
+
+    # AUDIT B6-1: serve fresh-enough cached bars instead of hammering Yahoo
+    _cache_key = f"{ticker}|{interval}|{range_str}"
+    _cached = _yahoo_cache.get(_cache_key)
+    if _cached is not None and (time.time() - _cached[0]) < settings.get_float("data", "yahoo_cache_ttl_seconds", 20.0):
+        return _cached[1].copy()
+
     try:
         async with yahoo_limiter:
             async with httpx.AsyncClient() as client:
@@ -461,6 +514,9 @@ async def fetch_yahoo_finance_candles(ticker: str, interval="1h", range_str="5d"
                         "volume": float(volumes[idx]) if volumes[idx] else 10.0
                     })
             df = pd.DataFrame(data).set_index("timestamp")
+            _yahoo_cache[_cache_key] = (time.time(), df)
+            if len(_yahoo_cache) > 64:
+                _yahoo_cache.pop(next(iter(_yahoo_cache)))
             logger.info(f"Successfully loaded {len(df)} actual real-world market bars from Yahoo Finance for {ticker}!")
             return df
     except Exception as e:
@@ -710,6 +766,20 @@ def validate_startup_config():
     else:
         checks.append(("REAL mode", "not active (DEMO mode, safe)"))
 
+    # 3b. API key rotation age (audit B3-6)
+    try:
+        rotated = float(db.get_setting("api_keys_rotated_at") or 0.0)
+        if rotated:
+            age_days = (time.time() - rotated) / 86400.0
+            if age_days > 90:
+                checks.append(("Exchange API keys", f"WARNING: last rotation {age_days:.0f} days ago"))
+            else:
+                checks.append(("Exchange API keys", f"rotated {age_days:.0f} days ago"))
+        else:
+            checks.append(("Exchange API keys", "never rotated (set keys to enable trading)"))
+    except Exception:
+        pass
+
     # 4. On-chain / DeFi
     if os.getenv("EVM_PRIVATE_KEY"):
         checks.append(("DeFi EVM wallet", "OK (non-custodial execution ready)"))
@@ -727,6 +797,23 @@ def validate_startup_config():
             "REAL mode requires SUPABASE_DB_URL (PostgreSQL). SQLite fallback is "
             "strictly forbidden in production. Configure SUPABASE_DB_URL first."
         )
+
+    # Audit B3-3/B3-4: refuse to run with default secrets when auth is enforced
+    # (AUTH_ENABLED=true or REAL mode) - institutional non-negotiable.
+    production_auth = os.getenv("AUTH_ENABLED", "").lower() == "true" or STATE["mode"] == "REAL"
+    if production_auth:
+        jwt_secret = os.getenv("JWT_SECRET_KEY", "quant_portal_super_secret_jwt_key_9988")
+        if jwt_secret == "quant_portal_super_secret_jwt_key_9988" or len(jwt_secret) < 24:
+            raise RuntimeError(
+                "Insecure JWT_SECRET_KEY: set a strong JWT_SECRET_KEY (>=24 chars) "
+                "before enabling AUTH_ENABLED or REAL mode."
+            )
+        admin_pass = os.getenv("ADMIN_PASSWORD", "ChangeMe!Institutionnel2026")
+        if admin_pass == "ChangeMe!Institutionnel2026":
+            raise RuntimeError(
+                "Insecure ADMIN_PASSWORD: change the default ADMIN_PASSWORD "
+                "before enabling AUTH_ENABLED or REAL mode."
+            )
 
 
 async def autonomous_ai_scheduler():
@@ -764,6 +851,7 @@ async def autonomous_ai_scheduler():
 
             # 3) Autonomous PPO training from real collected experiences
             buf = STATE.get("ppo_buffer") or []
+            platform_metrics.AI_PPO_BUFFER.set(len(buf))
             if len(buf) >= 50:
                 try:
                     ppo_agent.train_step(
@@ -781,7 +869,36 @@ async def autonomous_ai_scheduler():
             else:
                 logger.info(f"🤖 Autonomous AI: PPO buffer {len(buf)}/50 - collecting more experiences.")
 
-            # 4) Walk-forward champion/challenger validation
+            # 3a) MONTE-CARLO DAILY STRESS (audit B10-2): measure tail risk continuously
+            try:
+                hist = STATE.get("historical_bars")
+                if hist is not None and len(hist) > 30:
+                    mc = monte_carlo_tester.execute_stress_test(
+                        initial_capital=STATE["balance_demo"] if STATE["mode"] == "DEMO" else STATE["balance_real"],
+                        current_price=STATE["last_price"],
+                        historical_volatility=float(hist["close"].pct_change().dropna().std() or 0.02),
+                    )
+                    ruin_pct = float(mc.get("ruin_probability") or mc.get("ruin_prob") or 0.0)
+                    platform_metrics.RISK_CVAR.set(ruin_pct * 100.0)
+                    logger.info(f"🤖 Monte-Carlo stress: ruin probability = {ruin_pct*100:.2f}% | {mc.get('summary','')}")
+            except Exception as mce:
+                logger.warning(f"Monte-Carlo stress skipped: {mce}")
+
+            # 3b) GAN EXTREME-SCENARIO STRESS (audit B9-4): the torch GAN generates
+            # tail scenarios used to scale portfolio risk budget for the next period.
+            try:
+                gen_scen = generative_engine.generate_extreme_scenarios(n_scenarios=500, stress_factor=2.5)
+                tail_vol = float(np.std(gen_scen[:, 0])) if gen_scen.size else 0.0
+                base_vol = float(np.std(df["close"].pct_change().dropna().values[-200:])) if len(df) > 10 else 0.0
+                if base_vol > 0 and tail_vol > 0:
+                    stress_ratio = float(np.clip(tail_vol / base_vol, 1.0, 3.0))
+                    STATE["gan_stress_ratio"] = stress_ratio
+                    platform_metrics.RISK_CVAR.set(stress_ratio)
+                    logger.info(f"🤖 GAN stress: tail/base vol ratio = {stress_ratio:.2f}")
+            except Exception as ge:
+                logger.warning(f"GAN stress skipped: {ge}")
+
+            # 4) Walk-forward champion/challenger validation (audit B8-4: multi-asset)
             try:
                 from backtester.engine import EventDrivenBacktester, WalkForwardValidator
                 wf = WalkForwardValidator(train_ratio=0.7)
@@ -792,9 +909,28 @@ async def autonomous_ai_scheduler():
                 det_local = MarketRegimeDetector()
                 pred_local = LSTMLikePredictor(input_dim=5, hidden_dim=8)
                 ppo_local = PPOTRAgent(state_dim=4, action_dim=1)
-                wf_res = wf.run_validation(df, bt, meta_local, risk_local, det_local, pred_local, ppo_local)
-                oos = wf_res.get("out_of_sample_metrics", {}) or {}
-                oos_sharpe = float(oos.get("sharpe_ratio") or 0.0)
+
+                # Primary asset + optional secondary assets from the DB candle cache
+                _wf_datasets = {"BTCUSDT": df}
+                for _sym in ("ETHUSDT", "SOLUSDT", "XAUUSD"):
+                    try:
+                        _d = db.load_candles(_sym, limit=400)
+                        if _d is not None and not _d.empty and len(_d) >= 150:
+                            _wf_datasets[_sym] = _d
+                    except Exception:
+                        pass
+
+                _oos_sharpe_agg = 0.0
+                for _sym, _data in _wf_datasets.items():
+                    try:
+                        _res = wf.run_validation(_data, bt, meta_local, risk_local, det_local, pred_local, ppo_local)
+                        _oos = _res.get("out_of_sample_metrics", {}) or {}
+                        _oos_sharpe_agg += float(_oos.get("sharpe_ratio") or 0.0)
+                    except Exception as _we:
+                        logger.warning(f"Walk-forward {_sym} skipped: {_we}")
+                oos_sharpe = _oos_sharpe_agg / max(len(_wf_datasets), 1)
+                platform_metrics.AI_OOS_SHARPE.set(oos_sharpe)
+                platform_metrics.AI_LAST_CYCLE.set(time.time())
                 prev_sharpe = float(db.get_setting("autonomous_last_oos_sharpe") or 0.0)
                 trend = "IMPROVED" if oos_sharpe >= prev_sharpe else "DEGRADED"
                 db.save_setting("autonomous_last_oos_sharpe", str(oos_sharpe))
@@ -817,15 +953,226 @@ async def autonomous_ai_scheduler():
             logger.error(f"🤖 Autonomous AI cycle failed: {e}")
 
 
+async def concierge_scheduler():
+    """AUDIT D4: daily Telegram risk-concierge digest at a configured hour."""
+    while True:
+        hour = settings.get_int("alerts", "daily_digest_hour_utc", 18)
+        try:
+            now = time.gmtime()
+            next_run = time.mktime((now.tm_year, now.tm_mon, now.tm_mday, hour, 0, 0, 0, 0, -1))
+            if next_run <= time.time():
+                next_run += 86400
+            await asyncio.sleep(next_run - time.time())
+            report = build_daily_report(STATE, db)
+            try:
+                await telegram_bot.send_push_notification(build_concierge_message(report))
+                logger.info("✅ Concierge quotidien envoyé")
+            except Exception as e:
+                logger.warning(f"Concierge Telegram envoi échoué: {e}")
+            db.add_audit_log("DAILY_CONCIERGE", "127.0.0.1", "Daily report generated.")
+        except Exception as e:
+            logger.warning(f"Concierge scheduler error: {e}")
+            await asyncio.sleep(3600)
+
+
+@app.get("/api/v1/health")
+async def api_health():
+    """AUDIT D3: composite 0-100 health score."""
+    score, reasons = compute_health_score(STATE, db)
+    return {"health_score": score, "reasons": reasons, "mode": STATE["mode"], "ts": time.time()}
+
+
+@app.get("/api/v1/report/daily")
+async def api_daily_report():
+    """AUDIT C2: daily P&L report (per strategy / asset / mode + risk)."""
+    return build_daily_report(STATE, db)
+
+
+@app.get("/api/v1/orders")
+async def api_orders_v1(limit: int = 50, offset: int = 0):
+    """AUDIT B2-5: paginated order history."""
+    limit = max(1, min(500, limit))
+    offset = max(0, offset)
+    try:
+        rows = db.get_all_orders() or []
+    except Exception:
+        rows = []
+    page = [serialize_helper(o) for o in rows[offset:offset + limit]]
+    return {"total": len(rows), "limit": limit, "offset": offset, "orders": page}
+
+
+class WebhookTradeRequest(BaseModel):
+    """TradingView-style webhook payload (audit C8)."""
+    symbol: str = Field(min_length=3, max_length=20)
+    action: str = Field(pattern="^(buy|sell|BUY|SELL)$")
+    secret: str = Field(min_length=1)
+    qty: float = Field(default=0.0, ge=0.0, le=1e9)
+    price: float = Field(default=0.0, ge=0.0, le=1e9)
+
+
+@app.post("/api/v1/webhook/trade")
+async def webhook_trade(payload: WebhookTradeRequest):
+    """
+    AUDIT C8: external alert webhook (TradingView, Pine Script, custom bots).
+    Protected by WEBHOOK_SECRET env (constant-time comparison).
+    Executes a market order via the OMS path, sized to a configurable % of capital.
+    """
+    expected = os.getenv("WEBHOOK_SECRET", "")
+    if not expected:
+        raise HTTPException(status_code=503, detail="Webhooks not configured (set WEBHOOK_SECRET).")
+    import hmac as _hmac
+    if not _hmac.compare_digest(payload.secret, expected):
+        raise HTTPException(status_code=401, detail="Invalid webhook secret.")
+
+    symbol = payload.symbol.upper()
+    if symbol not in STATE["assets"]:
+        raise HTTPException(status_code=400, detail=f"Unsupported symbol '{symbol}'.")
+
+    mode = STATE["mode"]
+    bal_key = "balance_demo" if mode == "DEMO" else "balance_real"
+    capital = STATE.get(bal_key, 0.0)
+    price = payload.price if payload.price > 0 else (STATE["assets"].get(symbol, {}).get("price") or 0.0)
+    if price <= 0:
+        raise HTTPException(status_code=503, detail="No live price available for this symbol.")
+
+    side = "BUY" if payload.action.upper() == "BUY" else "SELL"
+    webhook_size_pct = settings.get_float("trading", "webhook_size_pct", 0.10)
+    qty = payload.qty if payload.qty > 0 else (capital * webhook_size_pct) / price
+    qty = format_exchange_size(symbol, qty, price)
+
+    try:
+        res = submit_order_via_oms(symbol, side, qty, price, mode, "WEBHOOK",
+                                   exchange="Binance" if symbol in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit")
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=f"Order submission failed: {e}")
+
+    # ledger (mirror of the loop's update)
+    if side == "BUY":
+        STATE[bal_key] -= qty * price * 1.001
+    else:
+        STATE[bal_key] += qty * price * 0.999
+    db.update_position(symbol, qty if side == "BUY" else -qty, price, mode)
+    db.add_order(symbol=symbol, side=side, price=price, qty=qty, status="FILLED",
+                 mode=mode, strategy="WEBHOOK", order_type="MARKET")
+    db.add_audit_log("WEBHOOK_TRADE", "127.0.0.1", f"Webhook {side} {qty} {symbol} @ {price:.2f}")
+    platform_metrics.ORDERS_TOTAL.labels(mode=mode, side=side).inc()
+    STATE["last_order_times"][symbol] = time.time()
+    return {"status": "FILLED", "symbol": symbol, "side": side, "qty": qty, "price": price}
+
+
 async def copy_trading_refresh_scheduler():
     """LOT 67: keeps the real copy-trading leaderboard fresh (every 6h)."""
     while True:
         await asyncio.sleep(6 * 3600)
         try:
             copy_manager.refresh_real_copytrader_leaderboard()
+            copy_manager.refresh_allocation_pnl()
             logger.info(f"✅ Copy Trading leaderboard refreshed: {copy_manager.status}")
         except Exception as e:
             logger.warning(f"Copy Trading refresh failed: {e}")
+
+
+def submit_order_via_oms(symbol: str, side: str, qty: float, price: float,
+                             mode: str, strategy: str, exchange: str = "Binance") -> dict:
+    """
+    Audit B7-4: routes live execution through the real OMS -> EMS pipeline
+    (statuses, routing, fill receipts) instead of calling the exchange directly.
+    Returns a dict compatible with the loop's fill-confirmation logic.
+    """
+    client_order_id = f"quant_{int(time.time()*1000)}_{uuid.uuid4().hex[:6]}"
+    order = oms.submit_new_order(
+        symbol=symbol, side=side, qty=qty, price=price,
+        mode=mode, strategy=strategy, client_order_id=client_order_id,
+        exchange=exchange, order_type="MARKET",
+    )
+    res = oms.approve_and_execute_order(order)
+    return {
+        "id": res.get("order_id"),
+        "price": res.get("price", price),
+        "amount": res.get("amount", qty),
+        "status": res.get("status", "ACKNOWLEDGED"),
+        "client_order_id": client_order_id,
+    }
+
+
+async def reconciliation_scheduler():
+    """
+    Audit B7-5 / B11: periodic real-balance/position reconciliation with the
+    exchange (REAL mode) and internal consistency check (DEMO). Alerts on gaps.
+    """
+    while True:
+        await asyncio.sleep(300)  # every 5 minutes
+        try:
+            active_mode = STATE["mode"]
+            client = get_ccxt_client() if active_mode == "REAL" else None
+
+            if active_mode == "REAL" and client:
+                try:
+                    balance = client.fetch_balance()
+                    actual_balance = float(balance.get("total", {}).get("USDT", 0.0))
+                    internal_balance = float(STATE.get("balance_real", 0.0))
+                    ok_bal = reconciler.reconcile_balances(actual_balance, internal_balance)
+                    if not ok_bal:
+                        logger.error(
+                            f"RECONCILIATION GAP: exchange balance {actual_balance:.2f} "
+                            f"vs internal {internal_balance:.2f}"
+                        )
+                        try:
+                            await telegram_bot.send_push_notification(
+                                f"⚠️ *ÉCART DE RÉCONCILIATION*\n"
+                                f"Balance exchange : *${actual_balance:,.2f}*\n"
+                                f"Balance interne : ${internal_balance:,.2f}"
+                            )
+                        except Exception:
+                            pass
+                    else:
+                        STATE["balance_real"] = actual_balance
+                        logger.info(f"RECONCILIATION OK: balance {actual_balance:.2f} USDT")
+
+                    positions = client.fetch_positions()
+                    actual_pos = {}
+                    for p in positions:
+                        sym = p.get("symbol", "").replace("/", "")
+                        qty = float(p.get("contracts") or p.get("info", {}).get("positionAmt") or 0.0)
+                        if qty:
+                            actual_pos[sym] = qty
+                            # AUDIT B10-3: liquidation proximity alert (futures)
+                            liq = p.get("liquidationPrice") or p.get("info", {}).get("liquidationPrice")
+                            mark = p.get("markPrice") or p.get("info", {}).get("markPrice")
+                            if liq and mark:
+                                try:
+                                    dist = abs(float(mark) - float(liq)) / float(mark)
+                                    if dist < 0.05:
+                                        logger.critical(f"⚠️ LIQUIDATION PROXIMITY {sym}: {dist*100:.1f}% from liq price")
+                                        try:
+                                            await telegram_bot.send_push_notification(
+                                                f"⚠️ *PROXIMITÉ LIQUIDATION*\n{sym} à {dist*100:.1f}% du prix de liquidation !"
+                                            )
+                                        except Exception:
+                                            pass
+                                except Exception:
+                                    pass
+                    reconciler.reconcile_positions(actual_pos, "REAL")
+                except Exception as e:
+                    logger.warning(f"REAL reconciliation failed: {e}")
+            else:
+                # DEMO internal consistency: equity should match balance + positions value
+                try:
+                    bal = float(STATE.get("balance_demo", 0.0))
+                    pos_value = 0.0
+                    for p in db.get_positions():
+                        sym = p["symbol"]
+                        price = STATE["assets"].get(sym, {}).get("price") or 0.0
+                        pos_value += float(p["qty"]) * float(price)
+                    computed = bal + pos_value
+                    diff_pct = abs(computed - STATE["current_equity"]) / max(STATE["current_equity"], 1.0)
+                    if diff_pct > 0.02:
+                        logger.warning(f"DEMO internal gap {diff_pct*100:.2f}% (bal {bal:.2f} + pos {pos_value:.2f} vs equity {STATE['current_equity']:.2f})")
+                        STATE["current_equity"] = computed
+                except Exception as e:
+                    logger.debug(f"DEMO reconciliation skip: {e}")
+        except Exception as e:
+            logger.warning(f"Reconciliation scheduler error: {e}")
 
 
 async def db_backup_scheduler():
@@ -843,6 +1190,10 @@ async def db_backup_scheduler():
 async def startup_event():
     # LOT 62: institutional configuration checklist
     validate_startup_config()
+
+    # Autopilot first-start marker (audit D1)
+    if not db.get_setting("platform_first_start_ts"):
+        db.save_setting("platform_first_start_ts", str(time.time()))
 
     # Update CCXT client inside our Binance Adapter once authenticated!
     binance_adapter.client = get_ccxt_client()
@@ -911,6 +1262,18 @@ async def startup_event():
     # Start the LOT 46 model-selection scheduler (needs a running event loop)
     asyncio.create_task(lot46_model_selection_scheduler())
     logger.info("✅ LOT 46 scheduler started")
+
+    # Start the WebSocket heartbeat loop
+    asyncio.create_task(websocket_heartbeat_loop())
+    logger.info("✅ WS heartbeat loop started")
+
+    # Start the balance/position reconciliation loop
+    asyncio.create_task(reconciliation_scheduler())
+    logger.info("✅ LOT 69: Reconciliation scheduler started (every 5 min)")
+
+    # Start the daily risk-concierge digest
+    asyncio.create_task(concierge_scheduler())
+    logger.info("✅ LOT 70: Daily risk-concierge scheduler started")
 
     # Start the daily DB backup task
     asyncio.create_task(db_backup_scheduler())
@@ -1123,17 +1486,30 @@ async def live_trading_loop():
                 
                     action = opportunities.get("action")
                     if action == "ENTER_ARBITRAGE":
-                        funding_arb_engine.active_arbitrages[symbol] = {
-                            "qty": STATE[active_balance_key] * 0.30 / spot_p,
-                            "entry_spot_price": spot_p,
-                            "entry_perp_price": perp_p,
-                            "accumulated_funding": 0.0
-                        }
-                        db.add_audit_log(
-                            "FUNDING_ARBITRAGE_ENTERED",
-                            "127.0.0.1",
-                            f"Entered Delta-Neutral Cash-and-Carry on {symbol} (Funding Rate: {funding_8h*100:.3f}% / 8h)."
-                        )
+                        arb_exec_mode = os.getenv("ARBITRAGE_EXECUTION", "signal_only")
+                        if arb_exec_mode != "auto":
+                            # AUDIT B12-1: honest label - analysis only, no position opened.
+                            logger.info(
+                                f"FUNDING ARB {symbol}: signal-only (ARBITRAGE_EXECUTION={arb_exec_mode}). "
+                                f"Funding {funding_8h*100:.3f}%/8h - NOT executed."
+                            )
+                            db.add_audit_log(
+                                "FUNDING_ARBITRAGE_SIGNAL",
+                                "127.0.0.1",
+                                f"Funding arb signal on {symbol} (rate {funding_8h*100:.3f}%/8h) - signal only, not executed."
+                            )
+                        else:
+                            funding_arb_engine.active_arbitrages[symbol] = {
+                                "qty": STATE[active_balance_key] * 0.30 / spot_p,
+                                "entry_spot_price": spot_p,
+                                "entry_perp_price": perp_p,
+                                "accumulated_funding": 0.0
+                            }
+                            db.add_audit_log(
+                                "FUNDING_ARBITRAGE_ENTERED",
+                                "127.0.0.1",
+                                f"Entered Delta-Neutral Cash-and-Carry on {symbol} (Funding Rate: {funding_8h*100:.3f}% / 8h)."
+                            )
                         await telegram_bot.send_push_notification(
                             f"🛡️ *ARBITRAGE DE FINANCEMENT ACTIF*\n"
                             f"-----------------------------------------\n"
@@ -1188,15 +1564,38 @@ async def live_trading_loop():
                             spread = arb_opp.get("spread_pct")
                             profit_pct = arb_opp.get("net_profit_pct")
                             amount_eth = 50.0 / cex_p
-                            signed_dex = defi_wallet.sign_dex_swap_transaction(
-                                token_in="USDT" if route == "BUY_DEX_SELL_CEX" else "ETH",
-                                token_out="ETH" if route == "BUY_DEX_SELL_CEX" else "USDT",
-                                amount_in_eth=amount_eth
-                            )
+                            # AUDIT B12-2: signed-only -> BROADCAST when configured, else
+                            # honest "signal-only" label (signed != executed).
+                            arb_exec_mode = os.getenv("ARBITRAGE_EXECUTION", "signal_only")
+                            if arb_exec_mode == "auto" and os.getenv("EVM_PRIVATE_KEY"):
+                                signed_dex = defi_wallet.sign_dex_swap_transaction(
+                                    token_in="USDT" if route == "BUY_DEX_SELL_CEX" else "ETH",
+                                    token_out="ETH" if route == "BUY_DEX_SELL_CEX" else "USDT",
+                                    amount_in_eth=amount_eth
+                                )
+                                raw_tx = signed_dex.get("raw_transaction")
+                                if raw_tx:
+                                    bcast = defi_wallet.broadcast_signed_transaction(raw_tx)
+                                    db.add_audit_log(
+                                        "DEX_CEX_ARBITRAGE_BROADCAST",
+                                        "127.0.0.1",
+                                        f"Cross-Venue {symbol} arbitrage broadcast on-chain. Tx: {bcast.get('tx_hash', '?')}"
+                                    )
+                                else:
+                                    db.add_audit_log(
+                                        "DEX_CEX_ARBITRAGE_BROADCAST_FAILED",
+                                        "127.0.0.1",
+                                        f"DEX signing failed: {signed_dex.get('reason', 'unknown')}"
+                                    )
+                            else:
+                                logger.info(
+                                    f"DEX-CEX {symbol}: arbitrage signal-only (ARBITRAGE_EXECUTION={arb_exec_mode}). "
+                                    f"Spread {spread*100:.2f}% detected but NOT executed."
+                                )
                             db.add_audit_log(
-                                "DEX_CEX_ARBITRAGE_EXECUTED",
+                                "DEX_CEX_ARBITRAGE_SIGNAL",
                                 "127.0.0.1",
-                                f"Captured Cross-Venue {symbol} arbitrage. Route: {route} (Spread: {spread*100:.2f}%)."
+                                f"Cross-Venue {symbol} arbitrage detected. Route: {route} (Spread: {spread*100:.2f}%)."
                             )
                             await telegram_bot.send_push_notification(
                                 f"🏆 *ARBITRAGE DEX-CEX CAPTURÉ*\n"
@@ -1251,6 +1650,12 @@ async def live_trading_loop():
                     # MLOPS CONCEPT DRIFT DETECTOR:
                     # Track prediction error, and automatically trigger retraining on the fly if CUSUM drift occurs!
                     actual_return = recent_returns[-1] if len(recent_returns) > 0 else 0.0
+                    try:
+                        platform_metrics.AI_MODEL_ERROR.labels(model="price_lstm").set(
+                            abs(STATE["ml_prediction_pct"] - actual_return)
+                        )
+                    except Exception:
+                        pass
                     if mlops_trainer.track_prediction_error_and_detect_drift(STATE["ml_prediction_pct"], actual_return):
                         logger.warning("MLOPS DETECTED CONCEPT DRIFT. TRIGGERING AUTOMATIC RETRAINING PIPELINE!")
                         mlops_trainer.execute_pipeline(df)
@@ -1259,6 +1664,76 @@ async def live_trading_loop():
                     positions = db.get_positions()
                     asset_position = next((p for p in positions if p['symbol'] == symbol), None)
                     pos_qty = asset_position['qty'] if asset_position else 0.0
+
+                    # ===== POSITION PROTECTION (audit B7-1): STOP-LOSS / TAKE-PROFIT / TRAILING =====
+                    # Protection is evaluated FIRST, before any new signal, so an open
+                    # position is never left exposed while we compute new entries.
+                    try:
+                        if pos_qty != 0.0:
+                            prot = protection_store.get(symbol)
+                            if prot is None:
+                                atr_now = 0.0
+                                if df is not None and len(df) > 0:
+                                    atr_now = float(df['high'].values[-1] - df['low'].values[-1])
+                                prot = PositionProtection(
+                                    symbol=symbol,
+                                    entry_price=float(asset_position['avg_price'] or current_price),
+                                    qty=pos_qty,
+                                    atr=atr_now if atr_now > 0 else None,
+                                    trailing_pct=settings.get_float("risk", "trailing_stop_pct", 0.0),
+                                )
+                                protection_store.upsert(prot)
+                                logger.info(f"🛡️ Protection armée pour {symbol}: SL {prot.stop_price:.2f} / TP {prot.take_price:.2f}")
+                            else:
+                                protection_store.upsert(prot)  # refresh persistence
+
+                            action = evaluate_protection(prot, current_price, pos_qty)
+                            if action != "HOLD":
+                                exit_side = "SELL" if pos_qty > 0 else "BUY"
+                                exit_qty = abs(pos_qty)
+                                exit_price = current_price
+                                logger.critical(f"🛡️ POSITION PROTECTION [{action}] {symbol}: {exit_qty} @ {exit_price:.2f}")
+                                if active_mode == "REAL" and client:
+                                    try:
+                                        client.create_order(
+                                            symbol=symbol.replace("USDT", "/USDT"),
+                                            type='market', side=exit_side.lower(), amount=exit_qty,
+                                        )
+                                        logger.info(f"PROTECTION REAL exit sent: {exit_side} {exit_qty} {symbol}")
+                                    except Exception as e:
+                                        logger.error(f"Protection REAL exit failed: {e}")
+                                if exit_side == "SELL":
+                                    STATE[active_balance_key] += exit_qty * exit_price * 0.999
+                                else:
+                                    STATE[active_balance_key] -= exit_qty * exit_price * 1.001
+                                db.update_position(symbol, 0.0, 0.0, active_mode)
+                                db.add_order(
+                                    symbol=symbol, side=exit_side, price=exit_price, qty=exit_qty,
+                                    status="FILLED", mode=active_mode, strategy=f"PROTECTION_{action}",
+                                    order_type="MARKET",
+                                )
+                                db.add_audit_log(
+                                    f"PROTECTION_{action}", "127.0.0.1",
+                                    f"{action} executed on {symbol} @ {exit_price:.2f} (entry {prot.entry_price:.2f})",
+                                )
+                                protection_store.remove(symbol)
+                                platform_metrics.ORDERS_TOTAL.labels(mode=active_mode, side=exit_side).inc()
+                                try:
+                                    await telegram_bot.send_push_notification(
+                                        f"🛡️ *{action}* sur `{symbol}`\n"
+                                        f"━━━━━━━━━━━━━━━\n"
+                                        f"💵 Sortie : *${exit_price:,.2f}*\n"
+                                        f"🏷️ Entrée : ${prot.entry_price:,.2f}\n"
+                                        f"📊 Quantité : {exit_qty}"
+                                    )
+                                except Exception:
+                                    pass
+                                STATE["last_order_times"][symbol] = time.time()
+                                continue  # position closed -> skip new signals this tick
+                        else:
+                            protection_store.remove(symbol)  # flat -> no stale protection
+                    except Exception as pe:
+                        logger.warning(f"Position protection check failed for {symbol}: {pe}")
                 
                     norm_pos = pos_qty * current_price / STATE[active_balance_key] if STATE[active_balance_key] > 0 else 0.0
                     ppo_state = np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], 0.0])
@@ -1284,6 +1759,12 @@ async def live_trading_loop():
                     # Setup genuine order book parameters from the WebSockets stream (No fake fallback allowed!)
                     ob_bids = STATE["order_book"].get("bids") if STATE["order_book"] is not None else None
                     ob_asks = STATE["order_book"].get("asks") if STATE["order_book"] is not None else None
+
+                    # Microstructure features (audit B8-2): VPIN + Kyle's Lambda computed
+                    # HERE and fed into the meta-model - no longer just logged.
+                    vpin_val = microstructure_engine.calculate_vpin(df)
+                    kyles_lambda_val = microstructure_engine.calculate_kyles_lambda(df)
+                    logger.info(f"MICROSTRUCTURE ({symbol}) | VPIN: {vpin_val:.3f} | Kyle's Lambda: {kyles_lambda_val:.3e}")
                 
                     market_data = {
                         'df': df,
@@ -1292,7 +1773,11 @@ async def live_trading_loop():
                         'bids': ob_bids,
                         'asks': ob_asks,
                         'inventory': pos_qty,
-                        'max_inventory': STATE[active_balance_key] / current_price if STATE[active_balance_key] > 0 else 0.0
+                        'max_inventory': STATE[active_balance_key] / current_price if STATE[active_balance_key] > 0 else 0.0,
+                        'vpin': float(vpin_val),
+                        'kyle_lambda': float(kyles_lambda_val),
+                        'onchain_risk': float(STATE.get("onchain_risk_score", 0.0)),
+                        'sentiment': float(STATE.get("sentiment_index", 0.0)),
                     }
                 
                     consensus = meta_engine.allocate(market_data, STATE["regime_id"], STATE["ml_prediction_pct"], STATE["ppo_action"])
@@ -1325,15 +1810,24 @@ async def live_trading_loop():
                         max_loss_usd=STATE[active_balance_key] * 0.02
                     )
                     target_qty = min(target_qty, cvar_qty)
+
+                    # MAX PER-ASSET CAP (audit B10-1): hard limit on concentration
+                    max_asset_pct = settings.get_float("risk", "max_per_asset_pct", 0.25)
+                    max_asset_qty = (STATE[active_balance_key] * max_asset_pct) / current_price
+                    target_qty = min(target_qty, max_asset_qty)
                 
                     # Apply preventative risk scale downs from news shocks & macro events!
                     target_qty *= news_scale_factor
                     target_qty *= macro_scale_factor
-                
-                    # Microstructure Edge: Calculate and Log VPIN & Kyle's Lambda
-                    vpin_val = microstructure_engine.calculate_vpin(df)
-                    kyles_lambda_val = microstructure_engine.calculate_kyles_lambda(df)
-                    logger.info(f"MICROSTRUCTURE ({symbol}) | VPIN: {vpin_val:.3f} | Kyle's Lambda: {kyles_lambda_val:.3e}")
+
+                    # RLHF HUMAN-PREFERENCE MODULATOR (audit B9-4): the reward model
+                    # trained from real feedback nudges position size (soft, bounded).
+                    try:
+                        _rlhf_feats = np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], actual_return])
+                        _rlhf_score = rlhf_reward_model.predict_reward(_rlhf_feats)
+                        target_qty *= max(0.25, 0.5 + 0.5 * _rlhf_score)
+                    except Exception:
+                        pass
                 
                     # ON-CHAIN RISK REGULATION
                     if STATE["onchain_risk_score"] > 0.75:
@@ -1350,7 +1844,7 @@ async def live_trading_loop():
                         target_qty *= reduction_factor
                     
                     target_qty *= abs(final_signal)
-                    target_direction = np.sign(final_signal) if abs(final_signal) > 0.15 else 0.0
+                    target_direction = np.sign(final_signal) if abs(final_signal) > settings.get_float("trading", "signal_threshold", 0.15) else 0.0
                     desired_qty = target_direction * target_qty
                     trade_qty = desired_qty - pos_qty
                 
@@ -1385,6 +1879,18 @@ async def live_trading_loop():
                                 logger.critical(f"REAL SAFETY GATE REJECTED: Real order blocked for {symbol} due to safety gate checks.")
                                 continue
                             
+                            # PER-MODEL ATTRIBUTION (roadmap precision #1): dominant strategy label
+                            dominant_strategy = "META_MODEL"
+                            try:
+                                contribs = consensus.get("contributions", {})
+                                if contribs:
+                                    dominant_strategy = max(
+                                        contribs,
+                                        key=lambda s: abs(contribs[s].get("signal", 0.0) * contribs[s].get("weight", 0.0))
+                                    )
+                            except Exception:
+                                pass
+
                             try:
                                 # EVM NON-CUSTODIAL EXECUTION ROUTER:
                                 if active_mode == "REAL" and os.getenv("EVM_PRIVATE_KEY") and symbol == "ETHUSDT":
@@ -1397,16 +1903,18 @@ async def live_trading_loop():
                                     logger.info(f"DEX Swap signed successfully. Transaction Hash: {signed_dex_res.get('tx_hash')}")
                                 
                                 elif active_mode == "REAL" and client:
-                                    # Centralized exchange routing
-                                    logger.info(f"REAL ORDER SUBMISSION: {side} {trade_qty_formatted} {symbol}")
-                                    res_order = client.create_order(
-                                        symbol=symbol.replace("USDT", "/USDT"),
-                                        type='market',
-                                        side=side.lower(),
-                                        amount=trade_qty_formatted,
-                                        params={'clientOrderId': f"quant_{int(time.time()*1000)}"}
+                                    # Centralized exchange routing via OMS -> EMS (audit B7-4)
+                                    logger.info(f"REAL ORDER SUBMISSION (OMS): {side} {trade_qty_formatted} {symbol}")
+                                    res_order = submit_order_via_oms(
+                                        symbol=symbol, side=side, qty=trade_qty_formatted,
+                                        price=execution_price, mode=active_mode,
+                                        strategy=dominant_strategy,
+                                        exchange="Binance" if symbol in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit",
                                     )
                                     execution_price = res_order.get('price', execution_price)
+                                    if res_order.get("status") == "REJECTED":
+                                        logger.error(f"OMS REJECTED: {res_order.get('reason', 'unknown')}")
+                                        raise Exception(res_order.get("reason", "OMS rejected order"))
 
                                     # FILL CONFIRMATION (roadmap #2): poll the exchange until the order is filled
                                     # before touching the ledger - never book an order that didn't actually fill.
@@ -1432,19 +1940,6 @@ async def live_trading_loop():
                                 
                                 # Record order timestamp for the idempotence gate
                                 STATE["last_order_times"][symbol] = time.time()
-                                
-                                # PER-MODEL ATTRIBUTION (roadmap precision #1): log which strategy/model
-                                # actually drove this decision instead of the generic "META_MODEL".
-                                dominant_strategy = "META_MODEL"
-                                try:
-                                    contribs = consensus.get("contributions", {})
-                                    if contribs:
-                                        dominant_strategy = max(
-                                            contribs,
-                                            key=lambda s: abs(contribs[s].get("signal", 0.0) * contribs[s].get("weight", 0.0))
-                                        )
-                                except Exception:
-                                    pass
                                 
                                 # Ledger update
                                 order_cost = execution_price * trade_qty_formatted
@@ -1567,6 +2062,8 @@ async def live_trading_loop():
         if len(STATE[active_equity_history_key]) > 100:
             STATE[active_equity_history_key].pop(0)
 
+        STATE["last_tick_ts"] = time.time()  # health-score heartbeat
+
         # LOT 61: refresh Prometheus gauges at the end of each tick
         try:
             update_metrics_from_state()
@@ -1617,7 +2114,7 @@ async def live_trading_loop():
         # Telemetry broadcast
         await broadcast_telemetry(consensus)
         
-        await asyncio.sleep(2.5) # Loop tick pause
+        await asyncio.sleep(settings.get_float("trading", "loop_sleep_seconds", 2.5))  # config-driven tick
 
 
 def serialize_helper(obj):
@@ -1747,7 +2244,9 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
                 "pnl_month": getattr(t, "pnl_month", 0.0),
                 "account_value": getattr(t, "account_value", 0.0),
                 "active_copied": t.trader_id in copy_manager.copied_traders,
-                "allocated_capital": copy_manager.copied_traders[t.trader_id]["allocated_capital"] if t.trader_id in copy_manager.copied_traders else 0.0
+                "allocated_capital": copy_manager.copied_traders[t.trader_id]["allocated_capital"] if t.trader_id in copy_manager.copied_traders else 0.0,
+                "follow_mode": copy_manager.copied_traders[t.trader_id].get("mode", "-") if t.trader_id in copy_manager.copied_traders else "-",
+                "pnl_estimate_usd": copy_manager.copied_traders[t.trader_id].get("pnl_estimate_usd", 0.0) if t.trader_id in copy_manager.copied_traders else 0.0
             }
             for t in copy_manager.get_ranked_traders()
         ]
@@ -1759,21 +2258,50 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
 async def broadcast_telemetry(consensus_signals):
     """
     Broadcasts real-time trading metrics to all active dashboard connections.
+    Audit B5-1: payload is serialized ONCE, each client send is isolated with
+    try/except and slow/failed clients are dropped immediately.
     """
     if not STATE["connected_websockets"]:
         return
-        
+
     payload = compile_telemetry_data(consensus_signals)
-    
+    try:
+        text = json.dumps(payload, default=str)
+    except Exception as e:
+        logger.warning(f"Telemetry serialization failed: {e}")
+        return
+
     dead_sockets = []
-    for ws in STATE["connected_websockets"]:
+    for ws in list(STATE["connected_websockets"]):
         try:
-            await ws.send_text(json.dumps(payload))
+            await ws.send_text(text)
         except Exception:
             dead_sockets.append(ws)
-            
+
     for ws in dead_sockets:
-        STATE["connected_websockets"].remove(ws)
+        try:
+            STATE["connected_websockets"].remove(ws)
+            platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
+        except Exception:
+            pass
+
+
+async def websocket_heartbeat_loop():
+    """Audit B5-2: app-level heartbeat every 30s keeps dead mobile clients honest."""
+    while True:
+        await asyncio.sleep(30)
+        dead = []
+        for ws in list(STATE["connected_websockets"]):
+            try:
+                await ws.send_text(json.dumps({"type": "heartbeat", "ts": time.time()}))
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            try:
+                STATE["connected_websockets"].remove(ws)
+                platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
+            except Exception:
+                pass
 
 
 @app.on_event("shutdown")
@@ -1851,7 +2379,7 @@ async def get_status():
 
 
 @app.get("/api/history")
-async def get_history_endpoint(timeframe: str = "1h"):
+async def get_history_endpoint(timeframe: str = "1h", limit: int = 120, offset: int = 0):
     """
     Returns historical candle bars for different timeframes (1h, 4h, 1d).
     Uses persistent database caching and Binance API.
@@ -1907,18 +2435,23 @@ async def get_history_endpoint(timeframe: str = "1h"):
         
     prices = df['close'].values.tolist()
     timestamps = [str(t) for t in df.index]
+    limit = max(10, min(1000, limit))
+    offset = max(0, offset)
     return {
         "timeframe": timeframe,
-        "prices": prices,
-        "timestamps": timestamps
+        "total": len(prices),
+        "limit": limit,
+        "offset": offset,
+        "prices": prices[offset:offset + limit],
+        "timestamps": timestamps[offset:offset + limit]
     }
 
 
 # ============ AUTHENTICATION (roadmap #4) ============
 class LoginRequest(BaseModel):
-    username: str
-    password: str
-    totp_code: str = ""
+    username: str = Field(min_length=1, max_length=64)
+    password: str = Field(min_length=1, max_length=128)
+    totp_code: str = Field(default="", max_length=16)
 
 
 @app.post("/api/login")
@@ -2052,6 +2585,7 @@ async def update_risk_settings(payload: RiskSettingsUpdate, _auth: dict = Depend
 
 @app.post("/api/keys")
 async def store_keys(payload: KeyStorage, _auth: dict = Depends(require_auth)):
+    db.save_setting("api_keys_rotated_at", str(time.time()))  # audit B3-6: rotation tracking
     db.save_setting(f"{payload.exchange}_api_key", payload.api_key, encrypt=True)
     db.save_setting(f"{payload.exchange}_secret_key", payload.secret_key, encrypt=True)
     db.add_audit_log(
@@ -2066,20 +2600,48 @@ async def store_keys(payload: KeyStorage, _auth: dict = Depends(require_auth)):
 async def switch_mode(payload: SwitchModeRequest, _auth: dict = Depends(require_auth)):
     """
     Secures the Demo <-> Real trading modes transitions.
-    Accepts both Ethereum addresses (MetaMask, starts with 0x) and test codes (backward compatible).
+    AUDIT B3: hardcoded 2FA test codes ("123456"/"888888") REMOVED - they were a
+    backdoor to REAL mode. Factors accepted now:
+      - a valid TOTP code when ADMIN_TOTP_SECRET is configured, or
+      - an EVM wallet address (0x...) provided by the operator.
+    AUDIT D1: switching to REAL requires the autopilot paper-validation period
+    to have elapsed (config autopilot.paper_validation_required / min_paper_validation_days).
     """
     global ccxt_client
+    totp_secret = os.getenv("ADMIN_TOTP_SECRET", "")
     is_wallet = payload.verification_2fa.startswith("0x") and len(payload.verification_2fa) == 42
-    is_test_code = payload.verification_2fa in ["123456", "888888"]
-    
-    if not (is_wallet or is_test_code):
-        db.add_audit_log("AUTH_FAILURE", "127.0.0.1", f"Failed wallet/2FA transit attempt to mode {payload.target_mode}.")
-        raise HTTPException(status_code=401, detail="Invalid wallet connection or code. Security block triggered.")
+    is_totp = False
+    if totp_secret:
+        try:
+            import pyotp
+            is_totp = pyotp.TOTP(totp_secret).verify(payload.verification_2fa, valid_window=1)
+        except Exception:
+            is_totp = False
+
+    if not (is_wallet or is_totp):
+        db.add_audit_log("AUTH_FAILURE", "127.0.0.1", f"Failed 2FA transit attempt to mode {payload.target_mode}.")
+        raise HTTPException(status_code=401, detail="Invalid 2FA factor. Security block triggered.")
         
     if payload.target_mode not in ["DEMO", "REAL"]:
         raise HTTPException(status_code=400, detail="Invalid target trading mode.")
         
     if payload.target_mode == "REAL":
+        # AUTOPILOT GATE (audit D1): paper validation period must have elapsed
+        if settings.get_bool("autopilot", "paper_validation_required", True):
+            min_days = settings.get_int("autopilot", "min_paper_validation_days", 7)
+            first_start = float(db.get_setting("platform_first_start_ts") or time.time())
+            db.save_setting("platform_first_start_ts", str(first_start))
+            elapsed_days = (time.time() - first_start) / 86400.0
+            if elapsed_days < min_days:
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        f"Autopilot gate: REAL mode requires {min_days} days of validated "
+                        f"paper/DEMO trading first (currently {elapsed_days:.1f} days). "
+                        f"This protects you from deploying untested logic with real money."
+                    ),
+                )
+
         # Force reload keys from database
         ccxt_client = None
         client = get_ccxt_client()
@@ -2203,6 +2765,15 @@ async def run_backtest_handler(_auth: dict = Depends(require_auth)):
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
     await websocket.accept()
+    # Audit B3-5: cap total clients and 1 socket per IP
+    client_ip = websocket.client.host if websocket.client else "?"
+    if len(STATE["connected_websockets"]) >= 50:
+        await websocket.close(code=1013, reason="Too many clients")
+        return
+    for existing in STATE["connected_websockets"]:
+        if getattr(existing, "client", None) and existing.client.host == client_ip:
+            await websocket.close(code=1008, reason="One connection per IP")
+            return
     STATE["connected_websockets"].append(websocket)
     platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
     try:

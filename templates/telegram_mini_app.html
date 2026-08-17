@@ -4,9 +4,9 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Q-Bot • Terminal Pro</title>
-    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.tailwindcss.com/3.4.14"></script>
     <script src="https://telegram.org/js/telegram-web-app.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap');
@@ -513,27 +513,43 @@
         }
         
         // Actions
-        function pauseBot() {
-            state.is_running = false;
-            updateUI();
-            
-            // TODO: Appel API réel
-            fetch('/api/toggle-bot', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({is_running: false})
-            });
+        // AUDIT B14-5: actions now AWAIT the server response, surface errors and
+        // resynchronize from real telemetry instead of optimistic local state.
+        async function pauseBot() {
+            try {
+                const resp = await fetch('/api/toggle-bot', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({is_running: false})
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    alert('❌ ' + (err.detail || 'Action refusée par le serveur'));
+                    await loadTelemetry();
+                    return;
+                }
+                await loadTelemetry();
+            } catch (e) {
+                alert('❌ Erreur réseau: ' + e.message);
+                await loadTelemetry();
+            }
         }
         
-        function killSwitch() {
+        async function killSwitch() {
             if (!confirm('⚠️ KILL SWITCH ? Toutes les positions seront liquidées.')) return;
-            
-            state.is_running = false;
-            state.positions = [];
-            
-            updateUI();
-            
-            fetch('/api/kill-switch', { method: 'POST' });
+            try {
+                const resp = await fetch('/api/kill-switch', { method: 'POST' });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    alert('❌ ' + (err.detail || 'Action refusée par le serveur'));
+                    await loadTelemetry();
+                    return;
+                }
+                await loadTelemetry();
+            } catch (e) {
+                alert('❌ Erreur réseau: ' + e.message);
+                await loadTelemetry();
+            }
         }
         
         // ===== REAL TELEMETRY (zero synthetic data - roadmap) =====

@@ -1,0 +1,10 @@
+# Audit B16-4: lint configuration
+line-length = 120
+target-version = "py311"
+
+[lint]
+select = ["E", "F", "W", "I", "UP"]
+ignore = ["E501", "E203", "W503"]
+
+[lint.per-file-ignores]
+"main.py" = ["E402"]  # imports after dotenv load

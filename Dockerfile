@@ -1,38 +1,53 @@
 # ==========================================
-# INSTITUTIONAL TRADING BOT - RAILWAY DOCKERFILE
+# INSTITUTIONAL TRADING BOT - MULTI-STAGE DOCKERFILE (audit B15-1)
+# Builder: installs locked deps + builds the React dashboard.
+# Runtime: slim image with only runtime artifacts (no build toolchain).
 # ==========================================
-FROM python:3.11-slim
 
-# Set working directory
-WORKDIR /app
+# ---------- Stage 1: builder ----------
+FROM python:3.11-slim AS builder
 
-# Install system dependencies
-RUN apt-get update && apt-get install -y \
-    build-essential \
-    libpq-dev \
+WORKDIR /build
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential libpq-dev nodejs npm \
     && rm -rf /var/lib/apt/lists/*
 
-# Copy requirements first (better layer caching)
-COPY requirements.txt .
+# Python deps (locked - audit B15-2)
+COPY requirements.lock .
+RUN pip install --no-cache-dir -r requirements.lock
 
-# Install Python dependencies
-RUN pip install --no-cache-dir -r requirements.txt
+# Frontend build (audit B14-1: React UI served at /app)
+COPY frontend/package.json frontend/package-lock.json ./frontend/
+RUN cd frontend && npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+COPY frontend/ ./frontend/
+RUN cd frontend && npm run build
 
-# Install PyTorch (CPU build, ~190MB) for the LOT 54 GAN & LOT 55 RLHF engines.
-# The CPU wheel keeps the image light vs the default CUDA build (>2GB).
+# ---------- Stage 2: runtime ----------
+FROM python:3.11-slim AS runtime
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y --no-install-recommends libpq-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Copy locked deps + torch (CPU wheel)
+COPY --from=builder /usr/local/lib/python3.11/site-packages /usr/local/lib/python3.11/site-packages
+COPY --from=builder /usr/local/bin /usr/local/bin
 RUN pip install --no-cache-dir --index-url https://download.pytorch.org/whl/cpu torch
 
-# Copy the entire project
+# Copy the application
 COPY . .
 
-# Expose port (Railway will override)
-EXPOSE 8080
+# Copy the built React dashboard
+COPY --from=builder /build/frontend/dist /app/frontend/dist
 
-# Environment variables for Railway
+# Expose port (Railway overrides)
+EXPOSE 8080
 ENV PYTHONUNBUFFERED=1
 ENV PORT=8080
 
-# Health check (stdlib urllib only — `requests` is not installed in this image)
+# Health check (stdlib urllib only)
 HEALTHCHECK --interval=30s --timeout=10s --start-period=40s --retries=3 \
     CMD python -c "import urllib.request; urllib.request.urlopen('http://localhost:8080/api/status', timeout=5)" || exit 1
 
