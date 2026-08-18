@@ -341,11 +341,25 @@ class TelegramBotManager:
                 else:
                     pos_msg = "📂 <b>Vos investissements actifs :</b> Aucun achat en cours. Votre argent dort en sécurité !"
             
+            # LOT 2 (PDF Faille 3) : état de la machine à états risque
+            try:
+                _rs = self.state.get("risk_state", {}) or {}
+                _rs_state = _rs.get("state", "NORMAL")
+                _rs_emoji = {"NORMAL": "🟢", "CAUTION": "🟠", "HALT": "🔴"}.get(_rs_state, "⚪")
+                _rs_reason = _rs.get("reason", "")
+                _rs_factor = float(_rs.get("scale_factor", 1.0)) * 100.0
+                risk_line = (f"{_rs_emoji} <b>État Risque : {_rs_state}</b> "
+                             f"(facteur {_rs_factor:.0f}%"
+                             + (f" — {_rs_reason}" if _rs_reason else "") + ")\n")
+            except Exception:
+                risk_line = ""
+            
             status_msg = (
                 f"🏦 <b>QUANT-PORTAL • CONSOLE DE TRADING ({mode})</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"🤖 État du Bot : <b>{is_active}</b>\n"
                 f"🌦️ Météo Marché : <b>{translated_regime}</b>\n"
+                f"{risk_line}"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                 f"💳 Capital Initial : <code>${initial_cap:,.2f} USD</code>\n"
                 f"💰 Solde disponible : <b>${balance:,.2f} USD</b>\n"
@@ -404,6 +418,14 @@ class TelegramBotManager:
             
         elif cmd_lower == "/resume":
             self.state["is_running"] = True
+            # LOT 2 : /resume remet aussi la machine à états risque à NORMAL
+            # (l'opérateur humain reste le décideur final — mentalité n°10).
+            try:
+                from main import risk_state as _rs
+                _rs.reset(reason="telegram:/resume")
+                self.state["risk_state"] = _rs.to_dict()
+            except Exception:
+                pass
             await self.send_push_notification("🟢 *TRADING AUTOMATIQUE RELANCÉ !* Je reprends la surveillance active des marchés réels pour investir selon les meilleures opportunités.", reply_markup=keyboard)
             
         elif cmd_lower == "/kill":

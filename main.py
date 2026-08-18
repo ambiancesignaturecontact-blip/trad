@@ -45,6 +45,11 @@ from core.research_discipline import (pre_register_hypothesis, double_validation
 from core.robustness import (save_state_snapshot, restore_state_snapshot, Supervisor, chaos_cut_feed,
                              audit_deterministic, seed_audit_rng)
 from core.confidence_index import compute_confidence_index
+from core.risk_pipeline import (REWARD_RISK_RATIO, MIN_REWARD_RISK, kelly_dynamic,
+                                rr_requirement, rr_net_positive, entry_rr_filter,
+                                RiskStateMachine, StrategyWinRateTracker,
+                                apply_risk_pipeline, ROUND_TRIP_COST_PCT,
+                                STOP_LOSS_PCT, ATR_MULT_SL)
 from core.world_model import compute_structural_regimes, cross_asset_bias
 from core.reporting import build_daily_report, compute_health_score, build_concierge_message
 
@@ -444,11 +449,15 @@ STATE = {
     "live_p_value": 0.5,              # §2c
     "structural_regimes": {},         # §3
     "cross_asset_bias": 0.0,          # §3/§4
-    "strategy_win_rates": {},         # §2d meta-label
+    "strategy_win_rates": {},         # LOT 2: win rates RÉELS par stratégie (trades clôturés)
+    "strategy_trade_counts": {},     # LOT 2: nb de trades clôturés par stratégie
+    "position_strategies": {},       # LOT 2: stratégie responsable de chaque position ouverte
     "pending_approvals": [],          # §6 consultative mode
     "consultative_mode": os.getenv("CONSULTATIVE_MODE", "").lower() == "true",
     "chaos_until": 0.0,               # §5c
     "last_narrative": "",             # §3/§6
+    "risk_state": {"state": "NORMAL", "reason": "", "scale_factor": 1.0},
+    "risk_pipeline_steps": [],        # LOT 2: étapes du pipeline de risque (audit)
     "using_fallback_data": False     # True quand des barres non-réelles seraient en usage (on évite de trader)
 }
 
@@ -495,6 +504,41 @@ def _neutral(value, default: float = 0.0) -> float:
     if isinstance(value, (int, float)) and not isinstance(value, bool):
         return float(value)
     return default
+
+
+def record_open_position(symbol: str, strategy: str, entry_price: float) -> None:
+    """LOT 2 : mémorise la stratégie responsable d'une position ouverte
+    (alimente le win rate RÉEL par stratégie au moment de la clôture)."""
+    if strategy:
+        STATE.setdefault("position_strategies", {})[symbol] = {
+            "strategy": strategy,
+            "entry_price": float(entry_price),
+            "ts": time.time(),
+        }
+
+
+def record_closed_trade(symbol: str, exit_price: float, side: str) -> None:
+    """
+    LOT 2 (PDF Pilier F, exigence 1) : enregistre un trade CLÔTURÉ dans le
+    tracker de win rates réels par stratégie (lissage EMA, bornes 0.45..0.65
+    appliquées à l'utilisation). Le win rate alimente le Kelly dynamique et
+    le filtre méta-label — plus jamais de 0.55 codé en dur.
+    """
+    pos_info = STATE.get("position_strategies", {}).pop(symbol, None)
+    if not pos_info:
+        return
+    entry = float(pos_info.get("entry_price") or 0.0)
+    strategy = pos_info.get("strategy", "")
+    if entry <= 0 or exit_price <= 0 or not strategy:
+        return
+    # side = sens de la CLÔTURE : SELL clôt un long (+), BUY clôt un short (-)
+    direction = 1.0 if side == "SELL" else -1.0
+    pnl_pct = (exit_price - entry) / entry * direction
+    win_tracker.record(strategy, pnl_pct)
+    logger.info(
+        f"📊 WIN-RATE RÉEL: {strategy} +1 trade clôturé ({symbol}) pnl={pnl_pct*100:+.2f}% "
+        f"-> wr={win_tracker.get(strategy):.2f} (n={win_tracker.samples(strategy)})"
+    )
 
 
 def mark_real_price(symbol: str, price: float, volume_24h=None):
@@ -704,6 +748,9 @@ mixture_of_experts = MixtureOfExperts(state_dim=4)
 hypothesis_generator = HypothesisGenerator(db=db)
 risk_committee = RiskCommittee(veto_threshold=0.85)
 price_engine = MultiSourcePriceEngine()  # consensus prix multi-exchange (PDF: redondance 2+ sources)
+risk_state = RiskStateMachine()          # LOT 2: machine à états NORMAL/CAUTION/HALT (PDF Faille 3)
+win_tracker = StrategyWinRateTracker(STATE)  # LOT 2: win rates RÉELS par stratégie (PDF Pilier F)
+risk_pipeline_last = {}                  # dernier tracé du pipeline (télémétrie/audit)
 execution_bandit = ExecutionStyleBandit()
 strategy_exec_attr = StrategyExecutionAttribution()
 
@@ -2397,6 +2444,39 @@ async def live_trading_loop():
             continue
             
         loop_count += 1
+
+        # LOT 2 (PDF Pilier G) : tick de la machine à états NORMAL/CAUTION/HALT
+        # (cool-down + redémarrage progressif) + alerte Telegram sur transition.
+        try:
+            _state_changed = risk_state.tick()
+            if _state_changed:
+                STATE["risk_state"] = risk_state.to_dict()
+                try:
+                    db.add_audit_log("RISK_STATE_CHANGE", "127.0.0.1",
+                                     f"État risque -> {risk_state.state} ({risk_state.reason})")
+                except Exception:
+                    pass
+                try:
+                    _emoji = {"NORMAL": "🟢", "CAUTION": "🟠", "HALT": "🔴"}.get(risk_state.state, "⚪")
+                    asyncio.create_task(telegram_bot.send_push_notification(
+                        f"{_emoji} *CHANGEMENT D'ÉTAT RISQUE*\n"
+                        f"État : *{risk_state.state}* ({risk_state.reason})\n"
+                        f"Facteur de taille : {risk_state.scale_factor()*100:.0f}%"
+                    ))
+                except Exception:
+                    pass
+        except Exception as _st:
+            logger.debug(f"Risk state tick error: {_st}")
+        # LOT 1bis/2 : divergence de sources persistante -> CAUTION
+        try:
+            _div_count = sum(1 for v in STATE.get("price_divergent", {}).values() if v)
+            if _div_count > 0:
+                risk_state.enter(RiskStateMachine.CAUTION,
+                                 f"SOURCE_DIVERGENCE ({_div_count} actif(s))")
+        except Exception:
+            pass
+        STATE["risk_state"] = risk_state.to_dict()
+
         consensus = {
             "final_signal": 0.0,
             "consensus": 0.5,
@@ -2439,6 +2519,19 @@ async def live_trading_loop():
                 if res_sent["shock_status"].get("shock_detected"):
                     logger.critical("EXTREME NEWS SHOCK DETECTED! Restricting trade sizes.")
                     news_scale_factor = 0.20
+                    # LOT 2 (PDF Faille 3) : choc systémique -> machine à états.
+                    # NEWS_SHOCK_ACTION=halt -> HALT (durée NEWS_SHOCK_HALT_MINUTES),
+                    # sinon CAUTION (réduction) — mentalité n°8 : ne réagir
+                    # fortement qu'aux événements systémiques.
+                    if os.getenv("NEWS_SHOCK_ACTION", "reduce").lower() == "halt":
+                        risk_state.enter(RiskStateMachine.HALT, "NEWS_SHOCK")
+                        try:
+                            asyncio.create_task(telegram_bot.send_push_notification(
+                                f"🔴 *HALT MÉDIA* — choc systémique détecté. Nouveaux ordres bloqués."))
+                        except Exception:
+                            pass
+                    else:
+                        risk_state.enter(RiskStateMachine.CAUTION, "NEWS_SHOCK")
             except Exception as e:
                 logger.warning(f"Failed to fetch sentiment index: {str(e)}")
                 STATE["sentiment_available"] = False
@@ -2459,6 +2552,9 @@ async def live_trading_loop():
                     STATE["last_sent_macro_event"] = event_name
                     
                 macro_scale_factor = macro_res["scale_reduction_factor"]
+                # LOT 2 : événement macro réel proche -> CAUTION (réduction
+                # préventive, mentalité n°4 : on trade la réaction, pas l'événement)
+                risk_state.enter(RiskStateMachine.CAUTION, f"MACRO:{macro_res['event']}")
             else:
                 STATE["last_sent_macro_event"] = None
         except Exception as e:
@@ -2961,6 +3057,11 @@ async def live_trading_loop():
                                 else:
                                     STATE[active_balance_key] -= exit_qty * exit_price * 1.001
                                 db.update_position(symbol, 0.0, 0.0, active_mode)
+                                # LOT 2 : win rate RÉEL par stratégie (trades clôturés)
+                                try:
+                                    record_closed_trade(symbol, exit_price, exit_side)
+                                except Exception as _wr:
+                                    logger.debug(f"Win-rate record failed: {_wr}")
                                 db.add_order(
                                     symbol=symbol, side=exit_side, price=exit_price, qty=exit_qty,
                                     status="FILLED", mode=active_mode, strategy=f"PROTECTION_{action}",
@@ -3098,30 +3199,39 @@ async def live_trading_loop():
                     final_signal = float(np.clip(final_signal + cross_asset_bias(symbol, STATE), -1.0, 1.0))
                     final_signal = max(-1.0, min(1.0, final_signal))
                 
-                    # Risk Sizing
+                    # ===== RISK SIZING — PIPELINE UNIFIÉ (LOT 2, PDF Pilier F & G) =====
                     atr = df['high'].values[-1] - df['low'].values[-1]
                     if atr == 0:
                         atr = current_price * 0.008
-                    
+
+                    # 0. Kelly DYNAMIQUE : win rate RÉEL par stratégie (borné 0.45..0.65,
+                    # lissé EMA) + RR unifié REWARD_RISK_RATIO (source unique, alignée sur
+                    # les stops réels). Fini le 0.55/1.5 codés en dur (PDF Pilier F).
+                    _dom_kelly = _dom_early if _dom_early != "META_MODEL" else "META_MODEL"
                     target_qty = risk_manager.calculate_position_size(
                         capital=STATE[active_balance_key],
                         atr=atr,
-                        current_price=current_price
+                        current_price=current_price,
+                        win_rate=win_tracker.get(_dom_kelly),
+                        reward_risk_ratio=REWARD_RISK_RATIO
                     )
-                
-                    # CVaR-CONSTRAINED RISK SIZING:
-                    # Limit the trade size so that worst-case portfolio loss (CVaR) does not exceed 2% of capital!
+                    STATE["last_kelly"] = {
+                        "strategy": _dom_kelly,
+                        "win_rate_used": win_tracker.get(_dom_kelly),
+                        "rr_used": REWARD_RISK_RATIO,
+                        "base_qty": target_qty,
+                    }
+
+                    # 1. CVaR-CONSTRAINED SIZING (plafond dur, étape 1 du pipeline)
                     cvar_qty = calculate_cvar_constrained_sizing(
                         capital=STATE[active_balance_key],
                         current_price=current_price,
                         cvar_pct=portfolio_cvar_pct,
                         max_loss_usd=STATE[active_balance_key] * 0.02
                     )
-                    target_qty = min(target_qty, cvar_qty)
 
-                    # MAX PER-ASSET CAP (audit B10-1): hard limit on concentration
+                    # 2. MAX PER-ASSET CAP 25 % (plafond dur, étape 2 du pipeline)
                     max_asset_pct = settings.get_float("risk", "max_per_asset_pct", 0.25)
-                    # VISION_FUTUR §6: USER-IMPOSED hard limit the bot cannot override
                     try:
                         _user_max = float(os.getenv("USER_MAX_EXPOSURE_PCT", "0"))
                         if 0 < _user_max < 1:
@@ -3129,59 +3239,100 @@ async def live_trading_loop():
                     except Exception:
                         pass
                     max_asset_qty = (STATE[active_balance_key] * max_asset_pct) / current_price
-                    target_qty = min(target_qty, max_asset_qty)
 
-                    # VISION_FUTUR §8: confidence index scales sizes when the bot distrusts itself
-                    target_qty *= STATE.get("confidence_factor", 1.0)
-
-                    # VISION_FUTUR §1: organization crisis factor
-                    target_qty *= organization.confidence_factor(_dom_early)
-
-                    # VISION_FUTUR §2d: meta-label filter - only trade when the strategy's
-                    # recent win rate clears the bar
+                    # VISION_FUTUR §2d: meta-label filter — filtre les faux signaux avant
+                    # exécution (López de Prado). Warm-up : <5 trades clôturés pour la
+                    # stratégie -> autorisé en DEMO (sinon le bot ne peut jamais apprendre).
                     try:
-                        if not meta_label_filter(dominant_strategy, STATE.get("strategy_win_rates", {})):
+                        _ml_count = win_tracker.samples(_dom_early)
+                        if not meta_label_filter(_dom_early,
+                                                 STATE.get("strategy_win_rates", {}),
+                                                 counts=STATE.get("strategy_trade_counts", {}),
+                                                 min_samples=5):
                             decide_no_trade(symbol, final_signal, 0.999,
-                                            [f"meta-label: win rate {STATE.get('strategy_win_rates', {}).get(dominant_strategy, 0.0):.2f}"],
+                                            [f"meta-label: wr {STATE.get('strategy_win_rates', {}).get(_dom_early, 0.0):.2f} (n={_ml_count})"],
                                             STATE["no_trade_stats"], db)
                             continue
                     except Exception:
                         pass
-                
-                    # Apply preventative risk scale downs from news shocks & macro events!
-                    target_qty *= news_scale_factor
-                    target_qty *= macro_scale_factor
 
-                    # RLHF HUMAN-PREFERENCE MODULATOR (audit B9-4): the reward model
-                    # trained from real feedback nudges position size (soft, bounded).
+                    # ---- Collecte de TOUS les facteurs de risque (dans l'ordre officiel) ----
+                    # 4. État de risque (NORMAL/CAUTION/HALT)
+                    _risk_scale = risk_state.scale_factor()
+                    # 5. Choc d'actualité
+                    _news_s = news_scale_factor
+                    # 6. Événement macro réel
+                    _macro_s = macro_scale_factor
+                    # 7. Override humain tactile (Telegram)
+                    _tactile_s = STATE.get("macro_scale_factor_tactile", 1.0)
+                    # 8. On-chain (réel uniquement)
+                    _onchain_s = 1.0
+                    if STATE.get("onchain_available") and STATE.get("onchain_risk_score") is not None:
+                        if STATE["onchain_risk_score"] > 0.75:
+                            _onchain_s = 0.50
+                            logger.info(f"ON-CHAIN WARNING: Scaling down position size for {symbol} due to high network risk.")
+                    # 9. Corrélation multi-actifs (concentration)
+                    _corr_s = 1.0
+                    if corr_df is not None and not corr_df.empty:
+                        _corr_s = covariance_engine.evaluate_portfolio_concentration_risk(
+                            symbol=symbol, active_positions=positions, corr_matrix=corr_df)
+                    # 10. Indice de confiance (méta-cognition)
+                    _conf_s = STATE.get("confidence_factor", 1.0)
+                    # 11. Organisation (desks)
+                    _org_s = organization.confidence_factor(_dom_early)
+                    # 12. RLHF (modulateur borné)
+                    _rlhf_s = 1.0
                     try:
                         _rlhf_feats = np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], actual_return])
                         _rlhf_score = rlhf_reward_model.predict_reward(_rlhf_feats)
-                        target_qty *= max(0.25, 0.5 + 0.5 * _rlhf_score)
+                        _rlhf_s = max(0.25, 0.5 + 0.5 * _rlhf_score)
                     except Exception:
                         pass
-
-                    # VOLATILITY TARGETING OVERLAY (VISION §4.1/§5): scale exposure so
-                    # portfolio realized vol stays near target (institutional standard).
+                    # 13. Volatilité cible
                     _vol_scale = 1.0
                     try:
                         _vol_scale = volatility_scale_factor(STATE[active_equity_history_key])
-                        target_qty *= _vol_scale
                         STATE["vol_target_scale"] = _vol_scale
                     except Exception:
                         pass
-
-                    # VISION §5b: tradability/capacity filter - if realized slippage is
-                    # high for this venue/symbol, reduce size (the simulation is respected).
+                    # 14. Tradabilité / slippage attendu
+                    _trad_s = 1.0
                     try:
                         _slip_avg = slippage_model.expected_slippage_bps(
-                            "Binance" if symbol in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit", symbol, fallback=5.0)
-                        target_qty *= tradability_factor(_slip_avg)
+                            "Binance" if symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT") else "Bybit",
+                            symbol, fallback=5.0)
+                        _trad_s = tradability_factor(_slip_avg)
                     except Exception:
                         pass
 
-                    # VISION §7.5: A/B paper - same signals, two configurations
-                    # (baseline vs vol-targeted) recorded as hypothetical equity.
+                    # ===== APPLICATION DU PIPELINE UNIFIÉ (ordre documenté + tracé) =====
+                    try:
+                        _pipe = apply_risk_pipeline(
+                            base_qty=target_qty,
+                            cvar_qty=cvar_qty,
+                            max_asset_qty=max_asset_qty,
+                            conviction=abs(final_signal),
+                            risk_state_scale=_risk_scale,
+                            news_scale=_news_s,
+                            macro_scale=_macro_s,
+                            tactile_scale=_tactile_s,
+                            onchain_scale=_onchain_s,
+                            corr_scale=_corr_s,
+                            confidence_scale=_conf_s,
+                            org_scale=_org_s,
+                            rlhf_scale=_rlhf_s,
+                            vol_scale=_vol_scale,
+                            tradability_scale=_trad_s,
+                        )
+                        target_qty = _pipe["qty"]
+                        STATE["risk_pipeline_steps"] = _pipe["steps"]
+                        risk_pipeline_last.update({"symbol": symbol, "final_scale": _pipe["final_scale"],
+                                                   "n_steps": len(_pipe["steps"])})
+                    except Exception as _pe:
+                        logger.error(f"Risk pipeline failed ({_pe}) — using conservative path")
+                        target_qty = min(target_qty, cvar_qty, max_asset_qty) * abs(final_signal)
+
+                    # VISION §7.5: A/B paper (hypothétique, sans effet)
                     try:
                         STATE["ab_base"].append(1.0 + final_signal * actual_return)
                         STATE["ab_vol"].append(1.0 + final_signal * actual_return * _vol_scale)
@@ -3190,24 +3341,7 @@ async def live_trading_loop():
                                 STATE[_k] = STATE[_k][-2000:]
                     except Exception:
                         pass
-                
-                    # ON-CHAIN RISK REGULATION (faille 1 corrigée : uniquement si le
-                    # score on-chain est RÉEL et disponible — sinon aucun ajustement)
-                    if STATE.get("onchain_available") and STATE.get("onchain_risk_score") is not None:
-                        if STATE["onchain_risk_score"] > 0.75:
-                            target_qty *= 0.50
-                            logger.info(f"ON-CHAIN WARNING: Scaling down position size for {symbol} due to high network risk.")
-                    
-                    # MULTI-ASSET CORRELATION RISK REGULATION
-                    if corr_df is not None and not corr_df.empty:
-                        reduction_factor = covariance_engine.evaluate_portfolio_concentration_risk(
-                            symbol=symbol,
-                            active_positions=positions,
-                            corr_matrix=corr_df
-                        )
-                        target_qty *= reduction_factor
-                    
-                    target_qty *= abs(final_signal)
+
                     # VISION §4a: adaptive conviction threshold from recent accuracy
                     STATE["recent_signals"].append(float(final_signal))
                     STATE["recent_returns"].append(float(actual_return))
@@ -3226,6 +3360,33 @@ async def live_trading_loop():
                         decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
                                         [f"regime={STATE.get('regime_name','')}", f"moe={STATE.get('moe_gate',{})}"],
                                         STATE["no_trade_stats"], db)
+
+                    # ===== FILTRE D'ENTRÉE « RR MINIMAL » (PDF Pilier F, exigences 3-5) =====
+                    # On n'entre que si : RR >= requis (adaptatif régime/vol) ET
+                    # asymétrie nette positive (edge > coûts). Mentalité n°7.
+                    if target_direction != 0.0:
+                        _sl_dist = (ATR_MULT_SL * atr) / current_price if atr > 0 else STOP_LOSS_PCT
+                        _rr_ok, _rr_reason = entry_rr_filter(
+                            reward_risk=REWARD_RISK_RATIO,
+                            regime_id=STATE.get("regime_id"),
+                            vol_mean=vol_mean if "vol_mean" in dir() else None,
+                            sl_distance_pct=_sl_dist,
+                            cost_pct=ROUND_TRIP_COST_PCT,
+                        )
+                        if not _rr_ok:
+                            decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
+                                            [f"RR filter: {_rr_reason}"], STATE["no_trade_stats"], db)
+                            target_direction = 0.0
+                        else:
+                            STATE["last_rr_check"] = {"rr": REWARD_RISK_RATIO, "ok": True, "reason": _rr_reason}
+
+                    # ===== GATE MACHINE À ÉTATS (PDF Faille 3) : HALT = AUCUN nouvel ordre =====
+                    # La protection des positions existantes reste active (atomicité, Pilier G).
+                    if target_direction != 0.0 and risk_state.state == RiskStateMachine.HALT:
+                        decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
+                                        [f"HALT: {risk_state.reason}"], STATE["no_trade_stats"], db)
+                        target_direction = 0.0
+
                     desired_qty = target_direction * target_qty
                     trade_qty = desired_qty - pos_qty
                 
@@ -3453,6 +3614,22 @@ async def live_trading_loop():
                                     order_type="MARKET"
                                 )
                                 platform_metrics.ORDERS_TOTAL.labels(mode=active_mode, side=side).inc()
+                                # LOT 2 : tracking du win rate RÉEL par stratégie
+                                try:
+                                    _was_flat = abs(pos_qty) < 1e-12
+                                    _now_flat = abs(new_qty) < 1e-12
+                                    if _was_flat and not _now_flat:
+                                        # Ouverture : mémorise la stratégie responsable
+                                        record_open_position(symbol, dominant_strategy, execution_price)
+                                    elif _now_flat and not _was_flat:
+                                        # Clôture complète : enregistre le trade
+                                        record_closed_trade(symbol, execution_price, side)
+                                    elif not _was_flat and not _now_flat and (new_qty * pos_qty < 0):
+                                        # Retournement : clôture de l'ancien côté puis ouverture
+                                        record_closed_trade(symbol, execution_price, side)
+                                        record_open_position(symbol, dominant_strategy, execution_price)
+                                except Exception as _wr:
+                                    logger.debug(f"Win-rate tracking error: {_wr}")
                                 try:
                                     trade_journal.add_trade(
                                         symbol=symbol,
@@ -3634,6 +3811,9 @@ async def live_trading_loop():
                 except Exception as exc:
                     logger.error(f"Failed during circuit breaker exposure flatting: {str(exc)}")
             db.add_audit_log("CIRCUIT_BREAKER_TRIPPED", "127.0.0.1", f"EMERGENCY KILL SWITCH ENGAGED: {msg}")
+            # LOT 2 (PDF Pilier G) : le circuit breaker déclenche la machine à
+            # états -> HALT (cool-down + redémarrage progressif ensuite).
+            risk_state.enter(RiskStateMachine.HALT, f"CIRCUIT_BREAKER:{msg[:80]}")
             
         # 6. MLOps Automated Training schedule checks
         if mlops_trainer.check_retrain_schedule() and STATE["historical_bars"] is not None:
@@ -3804,6 +3984,12 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "no_trade_count": STATE.get("no_trade_stats", {}).get("count", 0),
         "moe_gate": STATE.get("moe_gate", {}),
         "risk_budget": STATE.get("risk_budget", {}),
+        "risk_state": STATE.get("risk_state", {}),
+        "last_kelly": STATE.get("last_kelly", {}),
+        "last_rr_check": STATE.get("last_rr_check", {}),
+        "strategy_win_rates": STATE.get("strategy_win_rates", {}),
+        "strategy_trade_counts": STATE.get("strategy_trade_counts", {}),
+        "risk_pipeline_steps": STATE.get("risk_pipeline_steps", [])[-12:],
         "sim_divergence": STATE.get("sim_divergence", 0.0),
         "confidence_index": STATE.get("confidence_index", 100),
         "confidence_factor": STATE.get("confidence_factor", 1.0),
@@ -4300,6 +4486,22 @@ async def manage_copytrade(payload: CopyTradeRequest, _auth: dict = Depends(requ
             db.add_audit_log("COPY_STOP", "127.0.0.1", f"Stopped copytrading {payload.trader_id}.")
             return {"status": "Success", "message": msg}
         raise HTTPException(status_code=400, detail=msg)
+
+
+@app.post("/api/risk-state/reset")
+async def reset_risk_state(_auth: dict = Depends(require_auth)):
+    """
+    LOT 2 : remet la machine à états NORMAL/CAUTION/HALT à NORMAL.
+    L'opérateur humain reste le décideur final (mentalité n°10).
+    """
+    try:
+        changed = risk_state.reset(reason="api")
+        STATE["risk_state"] = risk_state.to_dict()
+        if changed:
+            db.add_audit_log("RISK_STATE_RESET", "127.0.0.1", "État risque remis à NORMAL via API")
+        return {"ok": True, "risk_state": risk_state.to_dict()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
 
 
 @app.post("/api/kill-switch")

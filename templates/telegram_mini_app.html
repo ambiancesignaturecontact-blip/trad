@@ -748,6 +748,10 @@
                     <div class="font-bold text-sm">${(() => { const pc = (telemetry.price_consensus || {}).BTCUSDT; if (!pc || !pc.n_sources) return 'Aucune (UNAVAILABLE)'; return pc.n_sources + ' sources · écart ' + pc.divergence_pct + '%' + (pc.status === 'DIVERGENT' ? ' ⚠️ GEL' : ''); })()}</div>
                 </div>
                 <div>
+                    <div class="text-zinc-400">État Risque</div>
+                    <div class="font-bold text-sm">${(() => { const rs = telemetry.risk_state || {}; const e = {NORMAL:'🟢', CAUTION:'🟠', HALT:'🔴'}[rs.state] || '⚪'; return e + ' ' + (rs.state || 'NORMAL') + ' · ' + Math.round((rs.scale_factor ?? 1) * 100) + '%' + (rs.reason ? ' (' + rs.reason + ')' : ''); })()}</div>
+                </div>
+                <div>
                     <div class="text-zinc-400">Regime</div>
                     <div class="font-bold text-sm">${telemetry.regime_name || 'Unknown'}</div>
                 </div>

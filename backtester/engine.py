@@ -87,12 +87,17 @@ class EventDrivenBacktester:
             if atr == 0:
                 atr = current_price * 0.01
                 
+            # LOT 2 (PDF Pilier F exigence 6) : le backtest doit mesurer la MÊME
+            # stratégie que le live — mêmes paramètres dynamiques (win rate
+            # plancher 0.45, RR unifié REWARD_RISK_RATIO). Plus de valeurs en
+            # dur divergentes.
+            from core.risk_pipeline import REWARD_RISK_RATIO, WIN_RATE_FLOOR
             target_qty = risk_manager.calculate_position_size(
                 capital=self.capital,
                 atr=atr,
                 current_price=current_price,
-                win_rate=0.55,
-                reward_risk_ratio=1.5
+                win_rate=WIN_RATE_FLOOR,
+                reward_risk_ratio=REWARD_RISK_RATIO
             )
             
             # Scale target quantity by signal intensity

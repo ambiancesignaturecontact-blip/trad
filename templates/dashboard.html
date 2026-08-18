@@ -294,6 +294,18 @@ window.qpLogin = async function () {
                     </div>
                 </div>
 
+                <!-- Risk State (LOT 2) -->
+                <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">ÉTAT RISQUE (NORMAL/CAUTION/HALT)</p>
+                    <div class="flex items-baseline mt-1 space-x-2">
+                        <h3 id="val-risk-state" class="text-xl font-black text-emerald-400">NORMAL</h3>
+                        <span id="val-risk-desc" class="text-[9px] text-slate-500 font-bold truncate">Facteur 100%</span>
+                    </div>
+                    <div class="w-full bg-slate-950 rounded-full h-1 mt-1 overflow-hidden">
+                        <div id="bar-risk" class="bg-emerald-400 h-1 rounded-full" style="width: 100%"></div>
+                    </div>
+                </div>
+
                 <!-- NLP Sentiment Score -->
                 <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
                     <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">SENTIMENT DU MARCHÉ (NLP)</p>
@@ -790,6 +802,19 @@ window.qpLogin = async function () {
             const barSignal = document.getElementById('bar-signal');
             if (barSignal) barSignal.style.width = `${sentimentPct}%`;
             
+            // Risk State (LOT 2)
+            const rs = data.risk_state || {};
+            const rsEmoji = {NORMAL:'🟢', CAUTION:'🟠', HALT:'🔴'}[rs.state] || '⚪';
+            const rsColor = rs.state === 'HALT' ? 'text-rose-400' : rs.state === 'CAUTION' ? 'text-amber-400' : 'text-emerald-400';
+            safeSetText('val-risk-state', `${rsEmoji} ${rs.state || 'NORMAL'}`);
+            safeSetText('val-risk-desc', `Facteur ${Math.round((rs.scale_factor ?? 1) * 100)}%${rs.reason ? ' · ' + rs.reason : ''}`);
+            const rsEl = document.getElementById('val-risk-state');
+            if (rsEl) rsEl.className = `text-xl font-black ${rsColor}`;
+            const barRisk = document.getElementById('bar-risk');
+            if (barRisk) {
+                barRisk.style.width = `${Math.max(0, Math.min(100, (rs.scale_factor ?? 1) * 100))}%`;
+                barRisk.className = `h-1 rounded-full ${rs.state === 'HALT' ? 'bg-rose-500' : rs.state === 'CAUTION' ? 'bg-amber-400' : 'bg-emerald-400'}`;
+            }
             safeSetText('val-onchain', (data.onchain_available && data.onchain_risk_score !== null && data.onchain_risk_score !== undefined) ? data.onchain_risk_score.toFixed(2) : 'N/A');
             safeSetText('val-onchain-desc', !data.onchain_available ? "Indisponible" : (data.onchain_risk_score || 0.0) >= 0.70 ? "Inflows: Risque" : "Inflows: Calme");
             

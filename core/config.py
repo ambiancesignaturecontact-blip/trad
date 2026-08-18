@@ -35,6 +35,16 @@ _DEFAULTS: Dict[str, Any] = {
         "daily_drawdown_micro": 0.18,
         "daily_drawdown_normal": 0.025,
         "max_per_asset_pct": 0.25,
+        # LOT 2 (PDF Pilier F/G) : source unique de vérité du RR + machine à états
+        "reward_risk_ratio": 1.8,
+        "min_reward_risk": 1.5,
+        "min_reward_risk_high_vol": 2.0,
+        "high_vol_return_std": 0.02,
+        "round_trip_cost_pct": 0.002,
+        "kelly_fraction": 0.15,
+        "stop_loss_pct": 0.03,
+        "atr_mult_sl": 2.0,
+        "halt_cooldown_minutes": 15.0,
     },
     "data": {
         "use_real_data_only": True,

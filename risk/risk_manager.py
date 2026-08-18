@@ -1,9 +1,19 @@
 import numpy as np
 
+from core.risk_pipeline import (REWARD_RISK_RATIO, ROUND_TRIP_COST_PCT,
+                                WIN_RATE_FLOOR, kelly_dynamic)
+
+
 class RiskManager:
     """
     Institutional risk engine governing position sizes, daily drawdowns,
     correlation rules, and automated fat-finger sanity checks.
+
+    LOT 2 (PDF, Faille 3 / Pilier F) : la taille Kelly est désormais calculée
+    sur le WIN RATE RÉEL par stratégie (plancher 0.45 / plafond 0.65 / lissage
+    EMA dans core.risk_pipeline) et sur le RR UNIFIÉ REWARD_RISK_RATIO
+    (source unique de vérité, alignée sur les stops réels). Plus jamais de
+    0.55 / 1.5 codés en dur. Mentalité n°1 : survivre d'abord.
     """
     def __init__(self, params=None):
         self.params = params or {
@@ -13,6 +23,7 @@ class RiskManager:
             'fractional_kelly_multiplier': 0.15, # conservative Kelly fraction
             'max_correlation_threshold': 0.75, # reject positions in assets too correlated
             'deviation_limit_pct': 0.05,       # 5% max deviation from current mid-price
+            'round_trip_cost_pct': ROUND_TRIP_COST_PCT,
         }
         
         self.daily_start_equity = 100000.0
@@ -74,28 +85,28 @@ class RiskManager:
     def reset_daily_baseline(self, current_equity):
         self.daily_start_equity = current_equity
 
-    def calculate_position_size(self, capital, atr, current_price, win_rate=0.55, reward_risk_ratio=1.5):
+    def calculate_position_size(self, capital, atr, current_price,
+                                win_rate=None, reward_risk_ratio=None):
         """
         Computes dynamic size based on:
-        1. Fractional Kelly sizing
+        1. Fractional Kelly sizing — DYNAMIQUE (LOT 2, PDF Pilier F) :
+           win_rate = win rate RÉEL par stratégie (borné 0.45..0.65, lissé),
+           reward_risk_ratio = REWARD_RISK_RATIO (source unique, alignée sur
+           les stops réels). Défauts prudents si non fournis.
         2. Volatility sizing (ATR)
         Uses the minimum of both to enforce strict safety.
         """
         if current_price <= 0 or atr <= 0:
             return 0.0
             
-        # 1. Fractional Kelly Sizing - NET OF FEES (VISION §6)
-        # Kelly % = (p * R - (1-p)) / R, with R reduced by the round-trip cost
-        # so the size accounts for transaction drag (Kelly brut surestime).
-        p = win_rate
-        R = reward_risk_ratio
-        round_trip_cost = self.params.get('round_trip_cost_pct', 0.002)
-        R_net = max(R - round_trip_cost, 0.01)
-        kelly_fraction = (p * R_net - (1 - p)) / R_net
-        
-        # Apply fractional multiplier for institutional safety
-        safe_kelly_pct = max(0.0, kelly_fraction * self.params['fractional_kelly_multiplier'])
-        kelly_size_usd = capital * safe_kelly_pct
+        # 1. Fractional Kelly Sizing - NET OF FEES (VISION §6 + LOT 2)
+        # Kelly % = (p * R - (1-p)) / R, avec R réduit du coût aller-retour.
+        # win_rate None -> plancher prudent 0.45 (mentalité n°1 : survivre).
+        p = float(win_rate) if win_rate is not None else WIN_RATE_FLOOR
+        R = float(reward_risk_ratio) if reward_risk_ratio is not None else REWARD_RISK_RATIO
+        kelly_fraction = kelly_dynamic(p, R,
+                                       fraction=self.params.get('fractional_kelly_multiplier', 0.15))
+        kelly_size_usd = capital * kelly_fraction
         
         # 2. Volatility sizing (ATR-based position sizing)
         # Allocate so that a 1 ATR move equals exactly 1.0% of capital

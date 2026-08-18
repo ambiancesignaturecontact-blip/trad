@@ -2,12 +2,20 @@
 Position protection manager (audit B7-1 / C1) - STOP-LOSS / TAKE-PROFIT / TRAILING.
 
 Pure, testable decision logic + persistent level storage. Integrated in the
-trading loop BEFORE any new signal so a position is always protected first.
+trading loop BEFORE any new signal so a position is always protected first
+(atomicité, Pilier G du PROMPT MAÎTRE).
+
+LOT 2 (PDF Faille 3 / Pilier F) : les niveaux SL/TP sont dérivés de la SOURCE
+UNIQUE DE VÉRITÉ REWARD_RISK_RATIO (core.risk_pipeline) pour que le RR réel
+des stops soit identique au RR utilisé par le sizing Kelly. Plus jamais de
+stops à RR 1.75-2.0 pendant que le Kelly utilise 1.5.
 """
 import json
 import logging
 import time
 from typing import Dict, Optional
+
+from core.risk_pipeline import REWARD_RISK_RATIO, STOP_LOSS_PCT, ATR_MULT_SL
 
 logger = logging.getLogger("PositionManager")
 
@@ -16,16 +24,26 @@ class PositionProtection:
     """
     Per-symbol protection state: entry price, SL/TP levels and trailing high-water.
     Levels are derived from ATR or fixed percentages of the entry price.
+    TP = SL × REWARD_RISK_RATIO (source unique, Pilier F exigence 2).
     """
 
     def __init__(self, symbol: str, entry_price: float, qty: float,
-                 stop_loss_pct: float = 0.03, take_profit_pct: float = 0.06,
+                 stop_loss_pct: float = None, take_profit_pct: float = None,
                  trailing_pct: float = 0.0, atr: Optional[float] = None,
-                 atr_mult_sl: float = 2.0, atr_mult_tp: float = 3.5):
+                 atr_mult_sl: float = None, atr_mult_tp: float = None):
         self.symbol = symbol
         self.entry_price = float(entry_price)
         self.qty = float(qty)
         self.trailing_pct = float(trailing_pct)
+
+        # Défauts alignés sur la config institutionnelle (LOT 2)
+        stop_loss_pct = STOP_LOSS_PCT if stop_loss_pct is None else stop_loss_pct
+        atr_mult_sl = ATR_MULT_SL if atr_mult_sl is None else atr_mult_sl
+        # TP dérivé du RR unifié (source unique de vérité)
+        if take_profit_pct is None:
+            take_profit_pct = stop_loss_pct * REWARD_RISK_RATIO
+        if atr_mult_tp is None:
+            atr_mult_tp = atr_mult_sl * REWARD_RISK_RATIO
 
         # ATR-based levels when ATR is available (institutional default)
         if atr and atr > 0:

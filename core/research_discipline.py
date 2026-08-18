@@ -75,10 +75,20 @@ def live_p_value(signals: List[float], returns: List[float]) -> float:
 
 
 def meta_label_filter(strategy: str, win_rates: Dict[str, float],
-                      threshold: float = 0.52) -> bool:
+                      threshold: float = 0.52,
+                      counts: Optional[Dict[str, int]] = None,
+                      min_samples: int = 0) -> bool:
     """
     §2d: meta-labeling - only trade when the strategy's recent win rate exceeds
     the threshold. This is the López de Prado spirit deployed with real outcomes.
+
+    LOT 2 (PDF Pilier D/F) : warm-up anti-verrouillage — tant qu'une stratégie
+    a moins de `min_samples` trades CLÔTURÉS réels, on laisse passer (sinon le
+    bot ne pourrait jamais constituer d'historique). Comportement par défaut
+    inchangé (min_samples=0) pour préserver la compatibilité.
     """
     wr = float(win_rates.get(strategy, 0.0))
+    if counts is not None and min_samples > 0:
+        if int(counts.get(strategy, 0)) < min_samples:
+            return True  # warm-up : pas encore assez d'échantillon réel
     return wr >= threshold
