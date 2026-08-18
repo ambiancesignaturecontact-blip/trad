@@ -1,0 +1,82 @@
+{
+  "meta": {
+    "description": "Calendrier macro RÉEL daté en UTC. À MAINTENIR à jour (sources officielles : Fed, BLS, BCE, BoE).",
+    "last_updated": "2026-08-18",
+    "timezone": "UTC",
+    "honesty_note": "Aucun événement généré automatiquement. Fichier vide/absent -> UNAVAILABLE (aucune réduction de risque simulée)."
+  },
+  "events": [
+    {
+      "event": "FOMC_RATE_DECISION",
+      "timestamp": 1789581600,
+      "impact": "HIGH",
+      "source": "Federal Reserve (réunion 15-16 sept 2026)"
+    },
+    {
+      "event": "US_CPI_INFLATION",
+      "timestamp": 1789129800,
+      "impact": "HIGH",
+      "source": "BLS - CPI août 2026 (estimation planning)"
+    },
+    {
+      "event": "US_NONFARM_PAYROLLS",
+      "timestamp": 1788525000,
+      "impact": "HIGH",
+      "source": "BLS - rapport emploi septembre 2026"
+    },
+    {
+      "event": "ECB_RATE_DECISION",
+      "timestamp": 1789042500,
+      "impact": "HIGH",
+      "source": "BCE - décision de taux septembre 2026"
+    },
+    {
+      "event": "US_PCE_PRICE_INDEX",
+      "timestamp": 1787920200,
+      "impact": "MEDIUM",
+      "source": "BEA - PCE juillet 2026"
+    },
+    {
+      "event": "US_RETAIL_SALES",
+      "timestamp": 1789561800,
+      "impact": "MEDIUM",
+      "source": "Census - ventes au détail août 2026"
+    },
+    {
+      "event": "BOE_RATE_DECISION",
+      "timestamp": 1789642800,
+      "impact": "MEDIUM",
+      "source": "Banque d'Angleterre - MPC septembre 2026"
+    },
+    {
+      "event": "FOMC_RATE_DECISION",
+      "timestamp": 1793210400,
+      "impact": "HIGH",
+      "source": "Federal Reserve (réunion 27-28 oct 2026)"
+    },
+    {
+      "event": "US_NONFARM_PAYROLLS",
+      "timestamp": 1790944200,
+      "impact": "HIGH",
+      "source": "BLS - rapport emploi octobre 2026"
+    },
+    {
+      "event": "US_CPI_INFLATION",
+      "timestamp": 1791894600,
+      "impact": "HIGH",
+      "source": "BLS - CPI septembre 2026 (estimation planning)"
+    },
+    {
+      "event": "US_CONSUMER_SENTIMENT",
+      "timestamp": 1789740000,
+      "impact": "LOW",
+      "source": "Univ. Michigan - enquête préliminaire septembre 2026"
+    },
+    {
+      "event": "ECB_RATE_DECISION",
+      "timestamp": 1793276100,
+      "impact": "HIGH",
+      "source": "BCE - décision de taux octobre 2026"
+    }
+  ]
+}

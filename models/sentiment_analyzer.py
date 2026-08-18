@@ -94,26 +94,52 @@ class NewsSentimentAnalyzer:
         tasks = [
             self.fetch_cryptocompare_news(),
             self.fetch_reddit_news(),
-            self.fetch_alpha_vantage_news()
+            self.fetch_alpha_vantage_news(),
+            self.fetch_google_news_rss()
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        
+
         # Flatten results list
         all_headlines = []
         for r in results:
             if isinstance(r, list):
                 all_headlines.extend(r)
-                
-        # Fallback to rich historical headlines if all API endpoints are offline
+
+        # RÈGLE D'HONNÊTETÉ (faille 1 corrigée — mentalité n°5 : la confiance dans
+        # le signal compte autant que le signal) : si TOUTES les sources réelles
+        # sont hors ligne, on renvoie [] et le sentiment devient "UNAVAILABLE".
+        # JAMAIS de titres d'actualité inventés qui influenceraient les trades.
         if not all_headlines:
-            all_headlines = [
-                "BTC consolidates support as retail accumulation surges.",
-                "SEC faces heavy backlash over crypto regulation proposal.",
-                "Whale wallets dump $50M into exchanges amid market uncertainty.",
-                "Major institutional partnership announced for Ethereum scaling.",
-                "Bitcoin hash rate hits new ATH, securing the network."
-            ]
-        return list(set(all_headlines)) # Deduplicate
+            logger.warning(
+                "SentimentAnalyzer: toutes les sources réelles sont hors ligne "
+                "-> sentiment UNAVAILABLE (n'influencera AUCUN trade)."
+            )
+        return list(set(all_headlines))  # Deduplicate
+
+    async def fetch_google_news_rss(self) -> list:
+        """
+        Flux RSS Google News (sans clé, 100% réel) — couverture mondiale
+        crypto/marchés en complément des autres sources.
+        """
+        try:
+            import xml.etree.ElementTree as ET
+            url = ("https://news.google.com/rss/search?"
+                   "q=crypto+OR+bitcoin+OR+ethereum+OR+stock+market&hl=en-US&gl=US&ceid=US:en")
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(url, headers={"User-Agent": "Mozilla/5.0 QuantPortal/3.0"})
+            if resp.status_code == 200:
+                root = ET.fromstring(resp.text)
+                titles = []
+                for item in root.iter("item"):
+                    title = item.findtext("title")
+                    if title:
+                        # Google News préfixe les titres avec la source ("Site - Titre")
+                        cleaned = title.split(" - ", 1)[-1].strip()
+                        titles.append(cleaned)
+                return titles[:10]
+        except Exception as e:
+            logger.debug(f"Google News RSS fetch failed: {e}")
+        return []
 
     def analyze_semantic_context(self, text: str) -> float:
         """
@@ -177,16 +203,35 @@ class NewsSentimentAnalyzer:
     async def get_market_sentiment_index(self) -> dict:
         """
         Aggregates news, computes context-aware NLP scores, and detects extreme shocks.
+
+        HONNÊTETÉ (faille 1 corrigée) : si aucune actualité RÉELLE n'est disponible,
+        renvoie sentiment_index=None et available=False. Le main loop n'influencera
+        alors AUCUN trade avec du sentiment (mentalité n°5 + n°20 : savoir dire
+        « je ne sais pas »).
         """
         headlines = await self.fetch_all_sources()
+        if not headlines:
+            return {
+                "sentiment_index": None,
+                "available": False,
+                "confidence": 0.0,
+                "num_headlines": 0,
+                "shock_status": {"shock_detected": False},
+            }
+
         scores = [self.analyze_semantic_context(h) for h in headlines]
         avg_sentiment = float(sum(scores) / len(scores)) if scores else 0.0
-        
+
         # Check for immediate systemic shocks
         shock_status = self.detect_extreme_event_shock(headlines)
-        
+
+        # Score de confiance : plus il y a de titres réels, plus on est confiant
+        confidence = min(1.0, len(headlines) / 10.0)
+
         return {
             "sentiment_index": avg_sentiment,
+            "available": True,
+            "confidence": confidence,
+            "num_headlines": len(headlines),
             "shock_status": shock_status,
-            "num_headlines": len(headlines)
         }

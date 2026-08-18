@@ -175,8 +175,10 @@ def build_daily_report(state: Dict, db) -> Dict:
         "health_reasons": reasons,
         "risk": {
             "regime": state.get("regime_name", "Unknown"),
-            "onchain_risk": state.get("onchain_risk_score", 0.0),
-            "sentiment": state.get("sentiment_index", 0.0),
+            "onchain_risk": state.get("onchain_risk_score"),
+            "onchain_available": state.get("onchain_available", False),
+            "sentiment": state.get("sentiment_index"),
+            "sentiment_available": state.get("sentiment_available", False),
             "data_quality": state.get("data_quality_status", "UNAVAILABLE"),
         },
     }

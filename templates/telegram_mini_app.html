@@ -733,11 +733,11 @@
             container.innerHTML = `
                 <div>
                     <div class="text-zinc-400">On-Chain Risk</div>
-                    <div class="font-bold text-lg">${(telemetry.onchain_risk_score ?? 0.5).toFixed(2)}</div>
+                    <div class="font-bold text-lg">${telemetry.onchain_available && telemetry.onchain_risk_score != null ? telemetry.onchain_risk_score.toFixed(2) : 'N/A'}</div>
                 </div>
                 <div>
                     <div class="text-zinc-400">Sentiment</div>
-                    <div class="font-bold text-lg">${(telemetry.sentiment_index ?? 0).toFixed(2)}</div>
+                    <div class="font-bold text-lg">${telemetry.sentiment_available && telemetry.sentiment_index != null ? telemetry.sentiment_index.toFixed(2) : 'N/A'}</div>
                 </div>
                 <div>
                     <div class="text-zinc-400">Qualité données</div>

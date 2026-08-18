@@ -73,8 +73,12 @@ class Supervisor:
         last_tick = float(self.state.get("last_tick_ts", 0.0))
         if now - last_tick > 30:
             issues.append("trading loop heartbeat stale")
-        # 2. price freshness
-        last_price = float(self.state.get("last_price", 0.0))
+        # 2. price freshness (faille 1 : last_price peut être None tant qu'aucune
+        # donnée réelle n'est arrivée — c'est un signal de santé, pas un crash)
+        try:
+            last_price = float(self.state.get("last_price") or 0.0)
+        except (TypeError, ValueError):
+            last_price = 0.0
         if last_price <= 0:
             issues.append("no live price")
         # 3. data quality

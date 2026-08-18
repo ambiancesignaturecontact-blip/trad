@@ -1,16 +1,75 @@
 import logging
 import math
+import os
+import time
 
 logger = logging.getLogger("VolatilityArbitrage")
+
+# Correspondance symboles internes -> paires Deribit (options BTC/ETH réelles)
+DERIBIT_CURRENCY = {"BTCUSDT": "BTC", "ETHUSDT": "ETH"}
+
 
 class OptionsVolatilityArbitrageEngine:
     """
     Derivative Options Volatility Arbitrage Engine (Deribit / Bybit Options format).
-    Formulates optimal options structures (Covered Calls, Cash-Secured Puts, 
+    Formulates optimal options structures (Covered Calls, Cash-Secured Puts,
     Straddles, and Iron Condors) based on HMM volatility regimes and volatility skews.
+
+    HONNÊTETÉ (faille 1 corrigée — mentalité n°5) : l'implied volatility doit être
+    RÉELLE (DVOL Deribit). Si aucune source réelle n'est joignable, le moteur
+    renvoie UNAVAILABLE — plus JAMAIS de valeur d'IV inventée (ancien iv_map).
     """
     def __init__(self):
-        pass
+        self._iv_cache = {}
+        self._iv_cache_ts = {}
+
+    async def fetch_real_iv(self, symbol: str, max_age_seconds: float = 900.0):
+        """
+        Récupère l'implied volatility annualisée RÉELLE (indice DVOL Deribit)
+        pour BTC/ETH. Retourne None si indisponible (cache 15 min).
+        """
+        currency = DERIBIT_CURRENCY.get(symbol)
+        if not currency:
+            return None  # SOL / or / fx / actions : pas de marché d'options gratuit fiable
+
+        now = time.time()
+        if self._iv_cache.get(symbol) is not None and \
+           now - self._iv_cache_ts.get(symbol, 0.0) < max_age_seconds:
+            return self._iv_cache[symbol]
+
+        try:
+            import httpx
+            start_ts = int((now - 86400) * 1000)
+            end_ts = int(now * 1000)
+            url = ("https://www.deribit.com/api/v2/public/get_volatility_index_data"
+                   f"?currency={currency}&start_timestamp={start_ts}"
+                   f"&end_timestamp={end_ts}&resolution=1D")
+            async with httpx.AsyncClient(timeout=6.0) as client:
+                resp = await client.get(url)
+            if resp.status_code != 200:
+                logger.warning(f"VolArb: Deribit DVOL {symbol} HTTP {resp.status_code}")
+                return None
+            data = resp.json().get("result", {}).get("data", [])
+            if not data:
+                return None
+            # Format Deribit : [timestamp, open, high, low, close] (listes, pas dicts)
+            last = data[-1]
+            if isinstance(last, dict):
+                close = last.get("close") or last.get("open") or 0.0
+            else:
+                close = last[4] if len(last) > 4 else last[1]
+            # DVOL est exprimé en % -> on divise par 100 pour une IV annualisée
+            dvol = float(close) / 100.0
+            if not (0.01 <= dvol <= 3.0):  # garde de plausibilité (1%..300%)
+                logger.warning(f"VolArb: DVOL {symbol} hors plage plausible ({dvol}) -> ignoré")
+                return None
+            self._iv_cache[symbol] = dvol
+            self._iv_cache_ts[symbol] = now
+            logger.info(f"VolArb: IV réelle Deribit {symbol} = {dvol*100:.1f}%")
+            return dvol
+        except Exception as e:
+            logger.warning(f"VolArb: IV réelle indisponible pour {symbol}: {e}")
+            return None
 
     def evaluate_optimal_options_strategy(self, current_price: float, iv_annual: float, regime_id: int) -> dict:
         """
@@ -22,7 +81,16 @@ class OptionsVolatilityArbitrageEngine:
         """
         if current_price is None or current_price <= 0:
             return {"strategy": "PASSIVE", "details": "Asset price offline."}
-            
+        if iv_annual is None or iv_annual <= 0:
+            # HONNÊTETÉ : pas d'IV réelle -> pas de stratégie d'options calculée
+            return {
+                "strategy": "UNAVAILABLE",
+                "details": "Implied volatility source indisponible — aucune stratégie d'options calculée.",
+                "implied_volatility_pct": None,
+                "legs": [],
+                "estimated_yield_pct": 0.0,
+            }
+
         # Standard deviation proxy for option strikes (e.g. 1 month duration, 30 days)
         time_days = 30
         t_years = time_days / 365.0

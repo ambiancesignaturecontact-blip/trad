@@ -764,16 +764,16 @@ window.qpLogin = async function () {
             safeSetText('val-price', `$${(data.last_price || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
             safeSetText('val-regime', data.regime_name || "N/A");
 
-            // Advanced metrics telemetry
-            safeSetText('val-sentiment', (data.sentiment_index || 0.0).toFixed(2));
-            safeSetText('val-sentiment-desc', (data.sentiment_index || 0.0) >= 0.15 ? "Haussier (NLP)" : (data.sentiment_index || 0.0) <= -0.15 ? "Baissier (NLP)" : "Neutre (NLP)");
+            // Advanced metrics telemetry — affichage honnête UNAVAILABLE
+            safeSetText('val-sentiment', (data.sentiment_available && data.sentiment_index !== null && data.sentiment_index !== undefined) ? data.sentiment_index.toFixed(2) : 'N/A');
+            safeSetText('val-sentiment-desc', !data.sentiment_available ? "Indisponible (sources réelles)" : (data.sentiment_index || 0.0) >= 0.15 ? "Haussier (NLP)" : (data.sentiment_index || 0.0) <= -0.15 ? "Baissier (NLP)" : "Neutre (NLP)");
             
-            const sentimentPct = (((data.sentiment_index || 0.0) + 1.0) / 2.0) * 100;
+            const sentimentPct = (((data.sentiment_available ? (data.sentiment_index || 0.0) : 0.0) + 1.0) / 2.0) * 100;
             const barSignal = document.getElementById('bar-signal');
             if (barSignal) barSignal.style.width = `${sentimentPct}%`;
             
-            safeSetText('val-onchain', (data.onchain_risk_score || 0.0).toFixed(2));
-            safeSetText('val-onchain-desc', (data.onchain_risk_score || 0.0) >= 0.70 ? "Inflows: Risque" : "Inflows: Calme");
+            safeSetText('val-onchain', (data.onchain_available && data.onchain_risk_score !== null && data.onchain_risk_score !== undefined) ? data.onchain_risk_score.toFixed(2) : 'N/A');
+            safeSetText('val-onchain-desc', !data.onchain_available ? "Indisponible" : (data.onchain_risk_score || 0.0) >= 0.70 ? "Inflows: Risque" : "Inflows: Calme");
             
             safeSetText('val-wallet-eth', `${(data.eth_defi_balance || 0.0).toFixed(4)} ETH`);
             safeSetText('val-wallet-addr', data.defi_wallet_address || "Non connecté");
@@ -921,12 +921,16 @@ window.qpLogin = async function () {
                 }
             }
 
-            // OBI representation
-            const bids_qty = data.order_book.bids && data.order_book.bids.length > 0 ? data.order_book.bids[0][1] : 1.5;
-            const asks_qty = data.order_book.asks && data.order_book.asks.length > 0 ? data.order_book.asks[0][1] : 1.5;
-            const normalized_obi = bids_qty / (bids_qty + asks_qty + 1e-8);
+            // OBI representation — carnet réel uniquement (faille 1 : plus de fallback 1.5 inventé)
+            const ob = data.order_book || null;
+            const bids_qty = ob && ob.bids && ob.bids.length > 0 ? ob.bids[0][1] : null;
+            const asks_qty = ob && ob.asks && ob.asks.length > 0 ? ob.asks[0][1] : null;
+            let normalized_obi = 0.5;
+            if (bids_qty !== null && asks_qty !== null) {
+                normalized_obi = bids_qty / (bids_qty + asks_qty + 1e-8);
+            }
             
-            safeSetText('lbl-obi', ((normalized_obi - 0.5) * 2).toFixed(2));
+            safeSetText('lbl-obi', ob ? ((normalized_obi - 0.5) * 2).toFixed(2) : 'UNAVAILABLE');
             const barObiLeft = document.getElementById('bar-obi-left');
             if (barObiLeft) barObiLeft.style.width = `${(1.0 - normalized_obi)*100}%`;
             const barObiRight = document.getElementById('bar-obi-right');

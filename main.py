@@ -357,6 +357,9 @@ class CopyTradeRequest(BaseModel):
     allocated_capital: float = Field(ge=0.0, le=1_000_000_000.0, default=0.0)
 
 # Platform State (Memory cache + DB synchronized)
+# HONNÊTETÉ (faille 1 corrigée — mentalité n°5) : plus AUCUNE valeur de marché
+# inventée. Prix/carnet/volume sont None ou UNAVAILABLE tant qu'une source
+# réelle n'a pas parlé. Règle : « AUCUNE DONNÉE -> AUCUN ORDRE ».
 STATE = {
     "mode": "DEMO",                  # DEMO vs REAL
     "is_running": True,              # Overall bot main loop switch
@@ -366,38 +369,51 @@ STATE = {
     "initial_capital_demo": 100000.0,  # Startup initial capital for P&L tracking
     "initial_capital_real": 0.0,      # Startup real capital for P&L tracking
     "current_equity": 100000.0,
-    "last_price": 60000.0,              # Initialized with a robust default price
-    "last_tick_volume": 15.0,           # Initialized with safe default volume
-    "price_history": [60000.0],          # Initialized with a default point to render Chart.js immediately
-    "order_book": {"bids": [[59990.0, 1.5]], "asks": [[60010.0, 2.0]]}, # Initialized with robust order book
-    "regime_id": 2,                  # Initialized to Range
+    "last_price": None,               # Dernier prix RÉEL connu (None = aucune donnée réelle)
+    "last_known_prices": {},          # Dernier prix réel connu PAR ACTIF (pour calculs de position)
+    "last_tick_volume": None,         # Volume réel (Bybit ticker) — plus de 15.0 inventé
+    "price_history": [],              # Historique de prix RÉELS uniquement
+    "order_book": None,               # Carnet BTCUSDT réel (None tant qu'aucun flux reçu)
+    "order_books": {},                # Carnets réels PAR ACTIF (multi-assets)
+    "regime_id": 2,                   # Initialized to Range (modèle, pas une donnée de marché)
     "regime_name": "Mean-Reverting Range",
     "ml_prediction_pct": 0.0,
     "ppo_action": 0.0,
     "connected_websockets": [],
     "equity_history_demo": [100000.0],
     "equity_history_real": [0.0],
-    "historical_bars": None,         # Infilled during training
+    "historical_bars": None,         # Infilled during training (données réelles)
     
-    # MULTI-ASSET telemetry mapping (Initial state: price and pnl are None)
+    # MULTI-ASSET telemetry mapping — prix RÉELS uniquement (None = source absente)
     "assets": {
-        "BTCUSDT": {"price": 60000.0, "qty": 0.0, "pnl": 0.0, "class": "Crypto"},
-        "ETHUSDT": {"price": 3000.0, "qty": 0.0, "pnl": 0.0, "class": "Crypto"},
-        "SOLUSDT": {"price": 150.0, "qty": 0.0, "pnl": 0.0, "class": "Crypto"},
-        "XAUUSD": {"price": 2500.0, "qty": 0.0, "pnl": 0.0, "class": "Commodity (Gold)"},
-        "EURUSD": {"price": 1.10, "qty": 0.0, "pnl": 0.0, "class": "Forex (EUR/USD)"},
-        "AAPL": {"price": 220.0, "qty": 0.0, "pnl": 0.0, "class": "Stock (Apple)"},
-        "TSLA": {"price": 200.0, "qty": 0.0, "pnl": 0.0, "class": "Stock (Tesla)"}
+        "BTCUSDT": {"price": None, "qty": 0.0, "pnl": 0.0, "class": "Crypto",
+                    "has_real_price": False, "data_status": "UNAVAILABLE", "volume_24h": None},
+        "ETHUSDT": {"price": None, "qty": 0.0, "pnl": 0.0, "class": "Crypto",
+                    "has_real_price": False, "data_status": "UNAVAILABLE", "volume_24h": None},
+        "SOLUSDT": {"price": None, "qty": 0.0, "pnl": 0.0, "class": "Crypto",
+                    "has_real_price": False, "data_status": "UNAVAILABLE", "volume_24h": None},
+        "XAUUSD": {"price": None, "qty": 0.0, "pnl": 0.0, "class": "Commodity (Gold)",
+                   "has_real_price": False, "data_status": "UNAVAILABLE", "volume_24h": None},
+        "EURUSD": {"price": None, "qty": 0.0, "pnl": 0.0, "class": "Forex (EUR/USD)",
+                   "has_real_price": False, "data_status": "UNAVAILABLE", "volume_24h": None},
+        "AAPL": {"price": None, "qty": 0.0, "pnl": 0.0, "class": "Stock (Apple)",
+                 "has_real_price": False, "data_status": "UNAVAILABLE", "volume_24h": None},
+        "TSLA": {"price": None, "qty": 0.0, "pnl": 0.0, "class": "Stock (Tesla)",
+                 "has_real_price": False, "data_status": "UNAVAILABLE", "volume_24h": None}
     },
     
-    # Advanced Signals Cache
-    "sentiment_index": 0.0,
-    "onchain_risk_score": 0.5,
+    # Advanced Signals Cache — disponibilité honnête (None = indisponible)
+    "sentiment_index": None,
+    "sentiment_available": False,
+    "sentiment_confidence": 0.0,
+    "onchain_risk_score": None,
+    "onchain_available": False,
     "eth_defi_balance": 0.0,
     "defi_wallet_address": "Not Connected",
     "covariance_matrix": {},
-    "options_strategy": {"strategy": "PASSIVE", "legs": [], "estimated_yield_pct": 0.0},
+    "options_strategy": {"strategy": "UNAVAILABLE", "details": "Aucune IV réelle reçue.", "legs": [], "estimated_yield_pct": 0.0},
     "data_quality_status": DataQualityStatus.UNAVAILABLE,
+    "asset_data_status": {},          # Qualité de données PAR ACTIF (LIVE/DELAYED/STALE/UNAVAILABLE)
     "macro_scale_factor_tactile": 1.0,  # Controlled by interactive Telegram mobile buttons!
     "last_sent_macro_event": None,      # Tracks sent notifications to avoid spamming
     "last_broadcast_time": 0.0,          # For real-time telemetry throttling
@@ -428,7 +444,7 @@ STATE = {
     "consultative_mode": os.getenv("CONSULTATIVE_MODE", "").lower() == "true",
     "chaos_until": 0.0,               # §5c
     "last_narrative": "",             # §3/§6
-    "using_fallback_data": False     # True when synthetic fallback candles are in use
+    "using_fallback_data": False     # True quand des barres non-réelles seraient en usage (on évite de trader)
 }
 
 # ============ INSTITUTIONAL SAFETY HELPERS (roadmap) ============
@@ -451,6 +467,61 @@ def set_data_quality(status):
         platform_metrics.DATA_QUALITY.labels(source="market").set(mapping.get(status, 0.0))
     except Exception:
         pass
+
+
+def set_asset_quality(symbol: str, status: str):
+    """
+    Qualité de données PAR ACTIF (faille 1 corrigée — mentalité n°5 : chaque
+    donnée doit avoir un score de confiance). Un actif dont la source est
+    indisponible est marqué UNAVAILABLE et NE PEUT PAS être tradé.
+    """
+    STATE.setdefault("asset_data_status", {})[symbol] = status
+    STATE["assets"].setdefault(symbol, {})["data_status"] = status
+    if status == DataQualityStatus.UNAVAILABLE:
+        STATE["assets"][symbol]["has_real_price"] = False
+
+
+def _neutral(value, default: float = 0.0) -> float:
+    """
+    Convertit un indicateur éventuellement indisponible en valeur NEUTRE.
+    Contrairement à une donnée inventée, 0.0 = « aucune information » et
+    n'apporte aucune direction à la décision (mentalité n°20 : je ne sais pas).
+    """
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return float(value)
+    return default
+
+
+def mark_real_price(symbol: str, price: float, volume_24h=None):
+    """
+    Enregistre un prix RÉEL reçu d'une source de marché. Met à jour le flag
+    has_real_price (seul vrai « feu vert » pour trader cet actif).
+    """
+    STATE["assets"][symbol]["price"] = float(price)
+    STATE["assets"][symbol]["has_real_price"] = True
+    STATE["assets"][symbol]["data_status"] = DataQualityStatus.LIVE
+    STATE.setdefault("last_known_prices", {})[symbol] = float(price)
+    if volume_24h is not None:
+        STATE["assets"][symbol]["volume_24h"] = float(volume_24h)
+    # Le dernier prix global réel (BTC) alimente le dashboard
+    if symbol == "BTCUSDT":
+        STATE["last_price"] = float(price)
+        STATE["price_history"].append(float(price))
+        if len(STATE["price_history"]) > 120:
+            STATE["price_history"] = STATE["price_history"][-120:]
+
+
+def update_asset_order_book(symbol: str, bids: list, asks: list):
+    """
+    Met à jour le carnet d'ordres RÉEL d'un actif (multi-assets).
+    `order_book` reste l'alias historique pour BTCUSDT (télémétrie/dashboard).
+    """
+    STATE.setdefault("order_books", {})[symbol] = {"bids": bids, "asks": asks}
+    if symbol == "BTCUSDT":
+        STATE["order_book"] = {"bids": bids, "asks": asks}
+    STATE.setdefault("asset_data_status", {})[symbol] = DataQualityStatus.LIVE
+    STATE["assets"][symbol]["data_status"] = DataQualityStatus.LIVE
+
 
 
 def require_auth(credentials=Depends(auth_security_optional)):
@@ -736,36 +807,93 @@ async def fetch_yahoo_finance_candles(ticker: str, interval="1h", range_str="5d"
     return pd.DataFrame()
 
 
-async def fetch_historical_market_data(symbol="BTCUSDT"):
-    """
-    Fetches real historical price candles (OHLCV) from Binance API to train models.
-    """
-    url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=120"
-    
+def _klines_to_df(data: list) -> pd.DataFrame:
+    """Convertit une réponse klines (Binance ou Bybit) en DataFrame OHLCV réel."""
+    bars = []
+    for b in data:
+        bars.append({
+            "timestamp": pd.to_datetime(b[0], unit='ms'),
+            "open": float(b[1]),
+            "high": float(b[2]),
+            "low": float(b[3]),
+            "close": float(b[4]),
+            "volume": float(b[5])
+        })
+    df = pd.DataFrame(bars).set_index("timestamp")
+    return df
+
+
+async def fetch_bybit_klines(symbol: str, interval: str = "1h", limit: int = 120) -> pd.DataFrame:
+    """Barres OHLCV RÉELLES via l'API publique Bybit v5 (secours Binance)."""
     try:
-        async with httpx.AsyncClient(timeout=10.0) as client:
-            response = await client.get(url)
-            if response.status_code == 200:
-                data = response.json()
+        async with bybit_limiter:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                resp = await client.get(
+                    f"https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}"
+                    f"&interval={interval}&limit={limit}"
+                )
+        if resp.status_code == 200 and resp.json().get("retCode") == 0:
+            rows = resp.json().get("result", {}).get("list", [])
+            if rows:
+                # Bybit renvoie les barres de la plus récente à la plus ancienne
+                rows = list(reversed(rows))
                 bars = []
-                for b in data:
+                for b in rows:
                     bars.append({
-                        "timestamp": pd.to_datetime(b[0], unit='ms'),
-                        "open": float(b[1]),
-                        "high": float(b[2]),
-                        "low": float(b[3]),
-                        "close": float(b[4]),
-                        "volume": float(b[5])
+                        "timestamp": pd.to_datetime(int(b[0]), unit='ms'),
+                        "open": float(b[1]), "high": float(b[2]),
+                        "low": float(b[3]), "close": float(b[4]),
+                        "volume": float(b[5]),
                     })
                 df = pd.DataFrame(bars).set_index("timestamp")
-                logger.info(f"Successfully fetched {len(df)} real bars from Binance for training.")
+                logger.info(f"Fetched {len(df)} barres RÉELLES Bybit pour {symbol} ({interval}).")
                 return df
     except Exception as e:
-        logger.error(f"CRITICAL: Failed to fetch Binance historical data: {str(e)}")
-        raise HTTPException(
-            status_code=503, 
-            detail="Binance historical market data is currently offline. Automated trading halted for safety."
-        )
+        logger.warning(f"Bybit klines failed for {symbol}: {e}")
+    return pd.DataFrame()
+
+
+async def fetch_historical_market_data(symbol="BTCUSDT"):
+    """
+    Fetches real historical price candles (OHLCV) from real APIs (Binance, puis
+    Bybit en secours, puis Yahoo pour les actifs non-crypto). AUCUNE donnée
+    simulée : si toutes les sources réelles échouent, renvoie un DataFrame vide
+    (l'appelant marque l'actif UNAVAILABLE et ne trade pas).
+    """
+    # 1) Binance (source primaire)
+    try:
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=120"
+        async with httpx.AsyncClient(timeout=8.0) as client:
+            response = await client.get(url)
+        if response.status_code == 200:
+            df = _klines_to_df(response.json())
+            if not df.empty:
+                logger.info(f"Successfully fetched {len(df)} real bars from Binance for {symbol}.")
+                return df
+    except Exception as e:
+        logger.warning(f"Binance historical fetch failed for {symbol}: {e}")
+
+    # 2) Bybit (secours réel pour les cryptos)
+    if symbol in CRYPTO_SYMBOLS:
+        df = await fetch_bybit_klines(symbol, interval="1h", limit=120)
+        if not df.empty:
+            return df
+
+    # 3) Yahoo Finance (secours réel pour Or/FX/Actions — et cryptos en dernier recours)
+    try:
+        y_ticker = "GC=F" if symbol == "XAUUSD" else "EURUSD=X" if symbol == "EURUSD" else \
+                   ("BTC-USD" if symbol == "BTCUSDT" else "ETH-USD" if symbol == "ETHUSDT"
+                    else "SOL-USD" if symbol == "SOLUSDT" else symbol)
+        df_y = await fetch_yahoo_finance_candles(y_ticker, interval="1h", range_str="5d")
+        if not df_y.empty:
+            logger.info(f"Fetched {len(df_y)} real bars from Yahoo Finance for {symbol}.")
+            return df_y
+    except Exception as e:
+        logger.warning(f"Yahoo historical fetch failed for {symbol}: {e}")
+
+    # HONNÊTETÉ (mentalité n°5) : aucune source réelle -> vide, pas de simulé.
+    logger.warning(f"NO REAL HISTORICAL DATA AVAILABLE for {symbol} — marked UNAVAILABLE.")
+    return pd.DataFrame()
 
 
 def train_ai_models(df):
@@ -851,99 +979,163 @@ async def trigger_realtime_broadcast():
         asyncio.create_task(broadcast_telemetry(None))
 
 
+CRYPTO_SYMBOLS = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+
+
+def _bybit_ws_symbol(symbol: str) -> str:
+    """Convertit un symbole interne en symbole Bybit (même format pour spot)."""
+    return symbol
+
+
+async def fetch_depth_snapshot_rest(symbol: str):
+    """
+    Snapshot REST du carnet d'ordres RÉEL (Bybit v5 depth, limit 5).
+    Utilisé en secours quand le flux WebSocket est indisponible (ex: géoblocage).
+    Ne renvoie rien si la source est injoignable (aucune donnée inventée).
+    """
+    try:
+        async with bybit_limiter:
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                resp = await client.get(
+                    f"https://api.bybit.com/v5/market/depth?category=spot&symbol={symbol}&limit=5"
+                )
+        if resp.status_code == 200:
+            result = resp.json().get("result", {})
+            bids_raw = result.get("b", [])
+            asks_raw = result.get("a", [])
+            bids = [[float(b[0]), float(b[1])] for b in bids_raw[:5]]
+            asks = [[float(a[0]), float(a[1])] for a in asks_raw[:5]]
+            if bids and asks:
+                update_asset_order_book(symbol, bids, asks)
+                logger.info(f"OrderBook REST snapshot (réel) reçu pour {symbol}.")
+                return True
+    except Exception as e:
+        logger.debug(f"Depth REST snapshot failed for {symbol}: {e}")
+    return False
+
+
+async def order_book_snapshot_loop():
+    """
+    Garde-fou carnet d'ordres : maintient un snapshot RÉEL par actif crypto.
+    - Si aucun carnet n'a été reçu via WS pour un symbole -> snapshot REST.
+    - Si un carnet est trop vieux (>20s) -> refresh REST.
+    """
+    while True:
+        try:
+            for symbol in CRYPTO_SYMBOLS:
+                book = STATE.get("order_books", {}).get(symbol)
+                fresh = False
+                if book:
+                    # Vérifie la fraîcheur via le timestamp stocké au moment de la MAJ
+                    fresh = time.time() - book.get("_ts", 0.0) < 20.0
+                if not fresh:
+                    await fetch_depth_snapshot_rest(symbol)
+        except Exception as e:
+            logger.warning(f"Order book snapshot loop error: {e}")
+        await asyncio.sleep(10.0)
+
+
+def _store_depth_update(symbol: str, bids_raw: list, asks_raw: list):
+    """Parse et stocke une mise à jour de profondeur RÉELLE (WS ou REST)."""
+    try:
+        bids = [[float(b[0]), float(b[1])] for b in bids_raw[:5]]
+        asks = [[float(a[0]), float(a[1])] for a in asks_raw[:5]]
+        if bids and asks:
+            update_asset_order_book(symbol, bids, asks)
+            STATE["order_books"][symbol]["_ts"] = time.time()
+    except Exception as e:
+        logger.debug(f"Depth parse error {symbol}: {e}")
+
+
 async def multi_exchange_websocket_listener():
     """
-    Connects concurrently to Binance and Bybit public WebSocket streams.
-    Implements automatic price feed failover: if Binance stream disconnects,
-    the Bybit stream seamlessly keeps updating the state, ensuring 100% genuine real price uptime!
-    
-    Subscribes to combined stream to parse 100% real-world, live 5-level order book depth
-    and actual transaction volumes, completely eliminating any mock or equalized data!
+    Connexion concurrente aux flux WebSocket publics Binance ET Bybit,
+    généralisée à TOUS les actifs crypto (faille 1 corrigée — le carnet
+    d'ordres réel n'est plus limité à BTC).
+
+    - Bybit : tickers + orderbook.5 pour BTCUSDT/ETHUSDT/SOLUSDT
+    - Binance : ticker + depth5 pour les 3 mêmes symboles (quand accessible)
+    - Secours REST : snapshot de profondeur par actif (order_book_snapshot_loop)
+    - Actifs non-crypto (Or/FX/Actions) : pas de carnet public -> honnêtement
+      UNAVAILABLE (le paper-trading utilisera le modèle de slippage).
     """
-    binance_url = "wss://stream.binance.com:9443/stream?streams=btcusdt@ticker/btcusdt@depth5"
+    binance_streams = "/".join(f"{s.lower()}@ticker/{s.lower()}@depth5" for s in CRYPTO_SYMBOLS)
+    binance_url = f"wss://stream.binance.com:9443/stream?streams={binance_streams}"
     bybit_url = "wss://stream.bybit.com/v5/public/spot"
-    
+
     async def listen_binance():
-        logger.info("Connecting to primary Binance Live Ticker & Depth WebSocket...")
+        logger.info("Connecting to primary Binance Live Ticker & Depth WebSocket (multi-assets)...")
         while True:
             try:
                 async with websockets.connect(binance_url, ping_interval=20, ping_timeout=20) as ws:
-                    logger.info("Binance Combined WS Stream Connected!")
+                    logger.info("Binance Combined WS Stream Connected (BTC/ETH/SOL)!")
                     while True:
                         data = await ws.recv()
                         frame = json.loads(data)
-                        
                         stream_name = frame.get("stream", "")
                         msg = frame.get("data", {})
-                        
+
+                        symbol = None
+                        for s in CRYPTO_SYMBOLS:
+                            if stream_name.startswith(s.lower()):
+                                symbol = s
+                                break
+                        if symbol is None:
+                            continue
+
                         if "@ticker" in stream_name:
-                            price = float(msg.get("c", STATE["last_price"]))
-                            STATE["last_price"] = price
-                            STATE["assets"]["BTCUSDT"]["price"] = price
-                            
-                            # Extract actual real-world accumulated transaction volume!
-                            STATE["last_tick_volume"] = float(msg.get("v", 15.0))
-                            
-                            STATE["price_history"].append(price)
-                            if len(STATE["price_history"]) > 60:
-                                STATE["price_history"].pop(0)
-                                
-                            await trigger_realtime_broadcast()
-                                
-                        elif "@depth5" in stream_name:
-                            # Parse 100% genuine, real-time live order book depth and volumes!
-                            bids_raw = msg.get("bids", [])
-                            asks_raw = msg.get("asks", [])
-                            STATE["order_book_symbol"] = "BTCUSDT"  # the depth stream is BTC-only
-                            
-                            bids = [[float(b[0]), float(b[1])] for b in bids_raw[:5]]
-                            asks = [[float(a[0]), float(a[1])] for a in asks_raw[:5]]
-                            
-                            if bids and asks:
-                                STATE["order_book"] = {
-                                    "bids": bids,
-                                    "asks": asks
-                                }
+                            price = msg.get("c")
+                            if price is not None and float(price) > 0:
+                                mark_real_price(symbol, float(price),
+                                                volume_24h=float(msg.get("v", 0.0)))
+                                STATE["last_tick_volume"] = float(msg.get("v", 0.0))
                                 await trigger_realtime_broadcast()
+
+                        elif "@depth5" in stream_name:
+                            _store_depth_update(symbol, msg.get("bids", []), msg.get("asks", []))
+                            await trigger_realtime_broadcast()
             except Exception as e:
                 logger.warning(f"Binance WS disconnected: {str(e)}. Reconnecting in 5s...")
                 await asyncio.sleep(5)
-                
+
     async def listen_bybit():
-        logger.info("Connecting to secondary Bybit Live Ticker WebSocket...")
+        logger.info("Connecting to secondary Bybit Live Ticker + Depth WebSocket (multi-assets)...")
         while True:
             try:
                 async with websockets.connect(bybit_url, ping_interval=20, ping_timeout=20) as ws:
-                    sub_msg = {"op": "subscribe", "args": ["tickers.BTCUSDT"]}
+                    sub_args = [f"tickers.{_bybit_ws_symbol(s)}" for s in CRYPTO_SYMBOLS] + \
+                               [f"orderbook.5.{_bybit_ws_symbol(s)}" for s in CRYPTO_SYMBOLS]
+                    sub_msg = {"op": "subscribe", "args": sub_args}
                     await ws.send(json.dumps(sub_msg))
-                    logger.info("Bybit Ticker WS Stream Connected!")
+                    logger.info(f"Bybit WS subscribed: {', '.join(sub_args)}")
                     while True:
                         data = await ws.recv()
                         msg = json.loads(data)
-                        if "data" in msg:
-                            tick = msg["data"]
-                            if isinstance(tick, list) and len(tick) > 0:
-                                tick = tick[0]
-                            
+                        topic = msg.get("topic", "")
+                        if "tickers." in topic:
+                            tick = msg.get("data", {})
+                            symbol = topic.replace("tickers.", "")
                             last_price_raw = tick.get("lastPrice")
                             if last_price_raw is not None:
                                 price = float(last_price_raw)
-                                STATE["last_price"] = price
-                                STATE["assets"]["BTCUSDT"]["price"] = price
-                                
-                                # Crucial: Append to price_history to populate the live chart on Bybit ticks!
-                                STATE["price_history"].append(price)
-                                if len(STATE["price_history"]) > 60:
-                                    STATE["price_history"].pop(0)
-                                    
-                                await trigger_realtime_broadcast()
+                                if price > 0 and symbol in STATE["assets"]:
+                                    mark_real_price(symbol, price,
+                                                    volume_24h=tick.get("volume24h"))
+                                    STATE["last_tick_volume"] = float(tick.get("volume24h", 0.0) or 0.0)
+                                    await trigger_realtime_broadcast()
+                        elif "orderbook.5." in topic:
+                            symbol = topic.replace("orderbook.5.", "")
+                            d = msg.get("data", {})
+                            _store_depth_update(symbol, d.get("b", []), d.get("a", []))
+                            await trigger_realtime_broadcast()
             except Exception as e:
                 logger.warning(f"Bybit WS disconnected: {str(e)}. Reconnecting in 5s...")
                 await asyncio.sleep(5)
-                
-    # Launch both tasks concurrently
+
+    # Lancement concurrent des 3 tâches
     asyncio.create_task(listen_binance())
     asyncio.create_task(listen_bybit())
+    asyncio.create_task(order_book_snapshot_loop())
 
 
 def validate_startup_config():
@@ -1121,8 +1313,8 @@ async def autonomous_ai_scheduler():
             # 3a0) VISION §1c: causal discovery on REAL features -> store parents
             try:
                 md_c = {"vpin": STATE.get("market_state", {}).get("vpin", 0.5),
-                        "kyle_lambda": 0.0, "sentiment": STATE.get("sentiment_index", 0.0),
-                        "onchain_risk": STATE.get("onchain_risk_score", 0.5),
+                        "kyle_lambda": 0.0, "sentiment": _neutral(STATE.get("sentiment_index")),
+                        "onchain_risk": _neutral(STATE.get("onchain_risk_score"), 0.5),
                         "funding_rates": STATE.get("funding_rates", {}),
                         "symbol": "BTCUSDT"}
                 fdf = build_causal_feature_df(STATE, df, md_c)
@@ -1163,8 +1355,8 @@ async def autonomous_ai_scheduler():
             # 3a2) VISION §3: autonomous research cycle (invent -> test -> promote)
             try:
                 md_r = {"vpin": STATE.get("market_state", {}).get("vpin", 0.5),
-                        "kyle_lambda": 0.0, "sentiment": STATE.get("sentiment_index", 0.0),
-                        "onchain_risk": STATE.get("onchain_risk_score", 0.5),
+                        "kyle_lambda": 0.0, "sentiment": _neutral(STATE.get("sentiment_index")),
+                        "onchain_risk": _neutral(STATE.get("onchain_risk_score"), 0.5),
                         "funding_rates": STATE.get("funding_rates", {}),
                         "market_avg_return": 0.0}
                 _research = hypothesis_generator.run_research_cycle(df, md_r, n_candidates=6)
@@ -1247,11 +1439,17 @@ async def autonomous_ai_scheduler():
             try:
                 hist = STATE.get("historical_bars")
                 if hist is not None and len(hist) > 30:
-                    mc = monte_carlo_tester.execute_stress_test(
-                        initial_capital=STATE["balance_demo"] if STATE["mode"] == "DEMO" else STATE["balance_real"],
-                        current_price=STATE["last_price"],
-                        historical_volatility=float(hist["close"].pct_change().dropna().std() or 0.02),
-                    )
+                    _mc_price = STATE.get("last_known_prices", {}).get("BTCUSDT") or STATE.get("last_price")
+                    if _mc_price is None:
+                        logger.warning("Skipping Monte-Carlo stress test: no real BTC price available yet.")
+                    else:
+                        mc = monte_carlo_tester.execute_stress_test(
+                            initial_capital=STATE["balance_demo"] if STATE["mode"] == "DEMO" else STATE["balance_real"],
+                            current_price=float(_mc_price),
+                            historical_volatility=float(hist["close"].pct_change().dropna().std() or 0.02),
+                        )
+                        ruin_pct = float(mc.get("ruin_probability") or mc.get("ruin_prob") or 0.0)
+                        platform_metrics.RISK_CVAR.set(ruin_pct * 100.0)
                     ruin_pct = float(mc.get("ruin_probability") or mc.get("ruin_prob") or 0.0)
                     platform_metrics.RISK_CVAR.set(ruin_pct * 100.0)
                     logger.info(f"🤖 Monte-Carlo stress: ruin probability = {ruin_pct*100:.2f}% | {mc.get('summary','')}")
@@ -1525,8 +1723,8 @@ async def api_evaluate_signals(payload: SignalEvalRequest, _auth: dict = Depends
             df = await fetch_yahoo_finance_candles(ymap.get(symbol, symbol), interval="1h", range_str="3mo")
     if df is None or df.empty or len(df) < 80:
         raise HTTPException(status_code=503, detail="Insufficient data to evaluate signals.")
-    md = {"vpin": 0.5, "kyle_lambda": 0.0, "onchain_risk": STATE.get("onchain_risk_score", 0.5),
-          "sentiment": STATE.get("sentiment_index", 0.0), "funding_rate_8h": STATE.get("funding_rates", {}).get(symbol, 0.0),
+    md = {"vpin": 0.5, "kyle_lambda": 0.0, "onchain_risk": _neutral(STATE.get("onchain_risk_score"), 0.5),
+          "sentiment": _neutral(STATE.get("sentiment_index")), "funding_rate_8h": STATE.get("funding_rates", {}).get(symbol, 0.0),
           "market_avg_return": 0.0}
     return evaluate_all_signals(df, md)
 
@@ -1616,8 +1814,8 @@ async def api_research_run(_auth: dict = Depends(require_auth)):
         df = await fetch_yahoo_finance_candles("BTC-USD", interval="1h", range_str="3mo")
     if df is None or df.empty or len(df) < 80:
         raise HTTPException(status_code=503, detail="Insufficient data for research (all feeds unavailable).")
-    md = {"vpin": 0.5, "kyle_lambda": 0.0, "sentiment": STATE.get("sentiment_index", 0.0),
-          "onchain_risk": STATE.get("onchain_risk_score", 0.5),
+    md = {"vpin": 0.5, "kyle_lambda": 0.0, "sentiment": _neutral(STATE.get("sentiment_index")),
+          "onchain_risk": _neutral(STATE.get("onchain_risk_score"), 0.5),
           "funding_rates": STATE.get("funding_rates", {}), "market_avg_return": 0.0}
     return hypothesis_generator.run_research_cycle(df, md, n_candidates=10)
 
@@ -2047,24 +2245,30 @@ async def startup_event():
             copy_manager.start_copying(trader_id, data['allocated_capital'])
             
     # Initial historical load from persistent database cache first!
-    # Fallback to fetching from Binance API and writing to cache if not present.
-    logger.info("Initializing historical candles...")
-    df = db.load_candles("BTCUSDT", limit=120)
-    if df.empty or len(df) < 120:
-        logger.info("Database cache is empty or incomplete. Fetching from Binance API...")
-        try:
-            df = await fetch_historical_market_data("BTCUSDT")
-            if df is not None and not df.empty:
-                db.save_candles("BTCUSDT", df)
-            else:
-                logger.error("Failed to load historical candles. Binance API offline.")
-                df = pd.DataFrame()
-        except Exception as e:
-            logger.error(f"Failed to fetch historical market data: {str(e)}")
-            df = pd.DataFrame()
-    else:
-        logger.info("Successfully loaded 120 historical candles from persistent database cache.")
-        
+    # Fallback to fetching REAL data (Binance -> Bybit -> Yahoo) per asset.
+    # HONNÊTETÉ (faille 1) : jamais de barres fabriquées ; un actif sans
+    # historique réel reste UNAVAILABLE et n'est pas tradé.
+    logger.info("Initializing historical candles (multi-assets, sources réelles)...")
+    df = pd.DataFrame()
+    for _sym in STATE["assets"]:
+        _df = db.load_candles(_sym, limit=120)
+        if _df.empty or len(_df) < 10:
+            logger.info(f"Database cache incomplete for {_sym}. Fetching from real APIs (Binance/Bybit/Yahoo)...")
+            try:
+                _df = await fetch_historical_market_data(_sym)
+                if _df is not None and not _df.empty:
+                    db.save_candles(_sym, _df)
+                    logger.info(f"Seeded {len(_df)} barres RÉELLES pour {_sym}.")
+                else:
+                    logger.warning(f"NO REAL HISTORY for {_sym} -> UNAVAILABLE (non tradé).")
+            except Exception as e:
+                logger.error(f"Failed to fetch historical market data for {_sym}: {str(e)}")
+                _df = pd.DataFrame()
+        else:
+            logger.info(f"Loaded {len(_df)} barres RÉELLES depuis le cache DB pour {_sym}.")
+        if _sym == "BTCUSDT" and not _df.empty:
+            df = _df
+
     if not df.empty:
         train_ai_models(df)
     else:
@@ -2162,14 +2366,26 @@ async def live_trading_loop():
         if loop_count % 3 == 1:
             try:
                 res_sent = await news_analyzer.get_market_sentiment_index()
-                STATE["sentiment_index"] = res_sent["sentiment_index"]
-                logger.info(f"Live Sentiment Index synchronized: {STATE['sentiment_index']:.2f}")
+                if res_sent.get("available"):
+                    STATE["sentiment_index"] = res_sent["sentiment_index"]
+                    STATE["sentiment_available"] = True
+                    STATE["sentiment_confidence"] = res_sent.get("confidence", 0.0)
+                    logger.info(f"Live Sentiment Index synchronized: {STATE['sentiment_index']:.2f} "
+                                f"(confiance {STATE['sentiment_confidence']:.0%}, {res_sent.get('num_headlines', 0)} titres réels)")
+                else:
+                    # HONNÊTETÉ (faille 1) : sentiment indisponible -> AUCUNE influence
+                    STATE["sentiment_index"] = None
+                    STATE["sentiment_available"] = False
+                    STATE["sentiment_confidence"] = 0.0
+                    logger.warning("Sentiment UNAVAILABLE (aucune source réelle) -> aucune influence sur les trades.")
                 
                 if res_sent["shock_status"].get("shock_detected"):
                     logger.critical("EXTREME NEWS SHOCK DETECTED! Restricting trade sizes.")
                     news_scale_factor = 0.20
             except Exception as e:
                 logger.warning(f"Failed to fetch sentiment index: {str(e)}")
+                STATE["sentiment_available"] = False
+                STATE["sentiment_index"] = None
                 
         # Check scheduled macroeconomic calendar for approaching shocks
         try:
@@ -2186,6 +2402,8 @@ async def live_trading_loop():
                     STATE["last_sent_macro_event"] = event_name
                     
                 macro_scale_factor = macro_res["scale_reduction_factor"]
+            else:
+                STATE["last_sent_macro_event"] = None
         except Exception as e:
             logger.warning(f"Failed to parse macroeconomic calendar: {str(e)}")
             
@@ -2195,22 +2413,43 @@ async def live_trading_loop():
         if loop_count % 5 == 1:
             try:
                 onchain_data = await onchain_tracker.get_exchange_netflows()
-                STATE["onchain_risk_score"] = onchain_tracker.compute_onchain_risk_score(onchain_data)
-                logger.info(f"Live On-Chain Risk Score synchronized: {STATE['onchain_risk_score']:.2f}")
+                onchain_score = onchain_tracker.compute_onchain_risk_score(onchain_data)
+                STATE["onchain_risk_score"] = onchain_score
+                STATE["onchain_available"] = onchain_score is not None
+                if onchain_score is not None:
+                    logger.info(f"Live On-Chain Risk Score synchronized: {STATE['onchain_risk_score']:.2f}")
+                else:
+                    logger.warning("On-chain UNAVAILABLE -> aucun ajustement on-chain appliqué.")
             except Exception as e:
                 logger.warning(f"Failed to fetch onchain data: {str(e)}")
+                STATE["onchain_available"] = False
+                STATE["onchain_risk_score"] = None
                 
             # Periodically verify non-custodial wallet balances
             STATE["eth_defi_balance"] = defi_wallet.fetch_native_balance()
             
-            # Periodically formulate options volatility structures
-            iv_map = {0: 0.35, 1: 0.55, 2: 0.25, 3: 0.85}
-            active_iv = iv_map.get(STATE["regime_id"], 0.45)
-            STATE["options_strategy"] = volatility_arb_engine.evaluate_optimal_options_strategy(
-                current_price=STATE["last_price"],
-                iv_annual=active_iv,
-                regime_id=STATE["regime_id"]
-            )
+            # Formulate options volatility structures from REAL implied volatility
+            # (faille 1 corrigée : plus d'iv_map codé en dur — mentalité n°5)
+            try:
+                real_iv = await volatility_arb_engine.fetch_real_iv("BTCUSDT")
+                if real_iv is None:
+                    STATE["options_strategy"] = {
+                        "strategy": "UNAVAILABLE",
+                        "details": "Implied volatility réelle indisponible (Deribit hors ligne) — aucune stratégie d'options.",
+                        "implied_volatility_pct": None,
+                        "legs": [],
+                        "estimated_yield_pct": 0.0,
+                    }
+                else:
+                    STATE["options_strategy"] = volatility_arb_engine.evaluate_optimal_options_strategy(
+                        current_price=STATE.get("last_known_prices", {}).get("BTCUSDT") or STATE.get("last_price") or 0.0,
+                        iv_annual=real_iv,
+                        regime_id=STATE["regime_id"]
+                    )
+                    STATE["options_strategy"]["symbol"] = "BTCUSDT"
+                    STATE["options_strategy"]["iv_source"] = "deribit_dvol"
+            except Exception as e:
+                logger.warning(f"Options strategy evaluation failed: {e}")
             
         # 2. Calculate rolling Correlation Matrix across all multi-assets using actual cached historical return series!
         try:
@@ -2260,39 +2499,53 @@ async def live_trading_loop():
         for symbol in active_assets:
             try:
                 # Fetch 100% real-world price ticks for Gold, Forex, Stocks, and Cryptos!
+                # (faille 1 corrigée : plus de prix inventé — mark_real_price uniquement)
+                price_fetched = False
                 try:
-                    async with httpx.AsyncClient() as http_client:
-                        if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
-                            # Query Bybit public API - completely cloud-friendly and geoblock-free!
-                            resp = await http_client.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}")
-                            if resp.status_code == 200:
-                                price_val = float(resp.json().get("result", {}).get("list", [{}])[0].get("lastPrice"))
-                                STATE["assets"][symbol]["price"] = price_val
-                                if symbol == "BTCUSDT":
-                                    STATE["last_price"] = price_val
-                        else:
-                            # Yahoo Finance Real-time Tickers! Gold (GC=F), EURUSD (EURUSD=X), AAPL (AAPL), TSLA (TSLA)
-                            y_ticker = "GC=F" if symbol == "XAUUSD" else "EURUSD=X" if symbol == "EURUSD" else symbol
-                            df_y = await fetch_yahoo_finance_candles(y_ticker, interval="1m", range_str="1d")
-                            if not df_y.empty:
-                                STATE["assets"][symbol]["price"] = float(df_y['close'].iloc[-1])
-                                # Persist to database cache dynamically!
+                    if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
+                        # Bybit public API - real ticker with real 24h volume
+                        async with bybit_limiter:
+                            async with httpx.AsyncClient() as http_client:
+                                resp = await http_client.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}")
+                        if resp.status_code == 200:
+                            t = resp.json().get("result", {}).get("list", [{}])[0]
+                            price_val = float(t.get("lastPrice"))
+                            if price_val > 0:
+                                mark_real_price(symbol, price_val, volume_24h=t.get("volume24h"))
+                                STATE["last_tick_volume"] = float(t.get("volume24h", 0.0) or 0.0)
+                                price_fetched = True
+                    else:
+                        # Yahoo Finance Real-time Tickers! Gold (GC=F), EURUSD (EURUSD=X), AAPL (AAPL), TSLA (TSLA)
+                        y_ticker = "GC=F" if symbol == "XAUUSD" else "EURUSD=X" if symbol == "EURUSD" else symbol
+                        df_y = await fetch_yahoo_finance_candles(y_ticker, interval="1m", range_str="1d")
+                        if not df_y.empty:
+                            price_val = float(df_y['close'].iloc[-1])
+                            if price_val > 0:
+                                mark_real_price(symbol, price_val)
+                                # Persist to database cache dynamically (barres RÉELLES Yahoo)
                                 db.save_candles(symbol, df_y)
+                                price_fetched = True
                 except Exception as e:
                     logger.error(f"Failed to fetch live price tick for {symbol}: {str(e)}")
-                    # Price is marked as None (Unavailable), completely halting trading for this asset!
-                    STATE["assets"][symbol]["price"] = None
-                    set_data_quality(DataQualityStatus.STALE)
-                
+                    # Le prix reste celui de la dernière donnée réelle, sinon None
+                    if not STATE["assets"][symbol].get("has_real_price"):
+                        STATE["assets"][symbol]["price"] = None
+                        set_asset_quality(symbol, DataQualityStatus.UNAVAILABLE)
+
                 current_price = STATE["assets"][symbol]["price"]
-                if current_price is None:
-                    logger.warning(f"Skipping trade loop for {symbol} due to unavailable price feed.")
+                if current_price is None or not STATE["assets"][symbol].get("has_real_price"):
+                    set_asset_quality(symbol, DataQualityStatus.UNAVAILABLE)
+                    logger.warning(
+                        f"Skipping trade loop for {symbol}: AUCUNE donnée réelle "
+                        f"(règle « AUCUNE DONNÉE -> AUCUN ORDRE », mentalité n°5)."
+                    )
                     continue
-                
+
                 # Market data quality: a live tick arrived -> LIVE
+                set_asset_quality(symbol, DataQualityStatus.LIVE)
                 set_data_quality(DataQualityStatus.LIVE)
 
-                # AUDIT C3: fire custom price alerts on this tick
+                # AUDIT C3: fire custom price alerts on this tick (prix réel uniquement)
                 try:
                     check_price_alerts(symbol, current_price)
                 except Exception as _ae:
@@ -2309,88 +2562,116 @@ async def live_trading_loop():
                         }, default=str))
                     except Exception:
                         pass
-            
-                # EVALUATE GENUINE FUNDING RATE ARBITRAGE (100% Real-World API data from Binance Futures!)
+
+                # Refresh périodique des barres RÉELLES (crypto: Bybit klines 1m)
+                # (faille 1 corrigée : plus AUCUNE bougie synthétique fabriquée)
+                try:
+                    _kf_key = f"kline_refresh_{symbol}"
+                    if symbol in CRYPTO_SYMBOLS and time.time() - STATE.get(_kf_key, 0.0) > 60.0:
+                        STATE[_kf_key] = time.time()
+                        df_min = await fetch_bybit_klines(symbol, interval="1m", limit=5)
+                        if not df_min.empty:
+                            db.save_candles(symbol, df_min)
+                except Exception as _ke:
+                    logger.debug(f"Kline refresh failed for {symbol}: {_ke}")
+
+                # EVALUATE GENUINE FUNDING RATE ARBITRAGE (100% Real-World API data)
+                # (faille 1 corrigée : funding 8h JAMAIS inventé — si la source
+                #  échoue, l'arbitrage de funding est simplement ignoré)
                 if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
-                    funding_8h = 0.0001
+                    funding_8h = None
                     try:
                         async with httpx.AsyncClient() as http_client:
                             resp = await http_client.get(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}")
                             if resp.status_code == 200:
-                                funding_8h = float(resp.json().get("lastFundingRate", 0.0001))
-                                STATE.setdefault("funding_rates", {})[symbol] = funding_8h
+                                fr = resp.json().get("lastFundingRate")
+                                if fr is not None:
+                                    funding_8h = float(fr)
+                                    STATE.setdefault("funding_rates", {})[symbol] = funding_8h
                     except Exception:
                         pass
-                    
+
                     spot_p = current_price
-                    perp_p = current_price
+                    perp_p = None
                     try:
                         async with httpx.AsyncClient() as http_client:
                             resp_f = await http_client.get(f"https://fapi.binance.com/fapi/v1/ticker/price?symbol={symbol}")
                             if resp_f.status_code == 200:
-                                perp_p = float(resp_f.json().get("price", current_price))
+                                pp = resp_f.json().get("price")
+                                if pp is not None:
+                                    perp_p = float(pp)
                     except Exception as e:
-                        logger.error(f"Failed to fetch real-world perpetual price for {symbol}: {str(e)}")
-                
-                    opportunities = funding_arb_engine.analyze_funding_opportunities(
-                        symbol=symbol,
-                        spot_price=spot_p,
-                        perp_price=perp_p,
-                        funding_rate_8h=funding_8h
-                    )
-                
-                    action = opportunities.get("action")
-                    if action == "ENTER_ARBITRAGE":
-                        arb_exec_mode = os.getenv("ARBITRAGE_EXECUTION", "signal_only")
-                        if arb_exec_mode != "auto":
-                            # AUDIT B12-1: honest label - analysis only, no position opened.
-                            logger.info(
-                                f"FUNDING ARB {symbol}: signal-only (ARBITRAGE_EXECUTION={arb_exec_mode}). "
-                                f"Funding {funding_8h*100:.3f}%/8h - NOT executed."
-                            )
-                            db.add_audit_log(
-                                "FUNDING_ARBITRAGE_SIGNAL",
-                                "127.0.0.1",
-                                f"Funding arb signal on {symbol} (rate {funding_8h*100:.3f}%/8h) - signal only, not executed."
-                            )
-                        else:
-                            funding_arb_engine.active_arbitrages[symbol] = {
-                                "qty": STATE[active_balance_key] * 0.30 / spot_p,
-                                "entry_spot_price": spot_p,
-                                "entry_perp_price": perp_p,
-                                "accumulated_funding": 0.0
-                            }
-                            db.add_audit_log(
-                                "FUNDING_ARBITRAGE_ENTERED",
-                                "127.0.0.1",
-                                f"Entered Delta-Neutral Cash-and-Carry on {symbol} (Funding Rate: {funding_8h*100:.3f}% / 8h)."
-                            )
-                        await telegram_bot.send_push_notification(
-                            f"🛡️ *ARBITRAGE DE FINANCEMENT ACTIF*\n"
-                            f"-----------------------------------------\n"
-                            f"📈 Actif : `{symbol}`\n"
-                            f"💵 Taux de financement : *{funding_8h*100:.3f}% / 8h*\n"
-                            f"⚖️ Stratégie : *Delta-Neutre (Cash-and-Carry)*\n"
-                            f"💰 Allocation : *30% du capital*\n"
-                            f"🔒 *Risque de prix : 0% (Totalement immunisé !)*"
+                        logger.debug(f"Failed to fetch real-world perpetual price for {symbol}: {str(e)}")
+
+                    # Toutes les données doivent être réelles pour évaluer l'arbitrage
+                    opportunities = {}
+                    if funding_8h is None or perp_p is None or perp_p <= 0:
+                        logger.info(
+                            f"FUNDING ARB {symbol}: données réelles indisponibles "
+                            f"(funding={funding_8h}, perp={perp_p}) -> évaluation ignorée."
                         )
-                    elif action == "EXIT_ARBITRAGE":
-                        acc_funding = opportunities.get("accumulated_funding", 0.0)
-                        STATE[active_balance_key] += acc_funding
-                        if symbol in funding_arb_engine.active_arbitrages:
-                            del funding_arb_engine.active_arbitrages[symbol]
+                    else:
+                        opportunities = funding_arb_engine.analyze_funding_opportunities(
+                            symbol=symbol,
+                            spot_price=spot_p,
+                            perp_price=perp_p,
+                            funding_rate_8h=funding_8h
+                        )
+                else:
+                    opportunities = {}
+
+                action = opportunities.get("action")
+                if action == "ENTER_ARBITRAGE":
+                    arb_exec_mode = os.getenv("ARBITRAGE_EXECUTION", "signal_only")
+                    if arb_exec_mode != "auto":
+                        # AUDIT B12-1: honest label - analysis only, no position opened.
+                        logger.info(
+                            f"FUNDING ARB {symbol}: signal-only (ARBITRAGE_EXECUTION={arb_exec_mode}). "
+                            f"Funding {funding_8h*100:.3f}%/8h - NOT executed."
+                        )
                         db.add_audit_log(
-                            "FUNDING_ARBITRAGE_EXITED",
+                            "FUNDING_ARBITRAGE_SIGNAL",
                             "127.0.0.1",
-                            f"Wound down funding arbitrage on {symbol}. Accumulated yield: ${acc_funding:.2f} USD."
+                            f"Funding arb signal on {symbol} (rate {funding_8h*100:.3f}%/8h) - signal only, not executed."
                         )
-                        await telegram_bot.send_push_notification(
-                            f"💰 *ARBITRAGE DE FINANCEMENT BOUCLÉ*\n"
-                            f"-----------------------------------------\n"
-                            f"📈 Actif : `{symbol}`\n"
-                            f"💵 Intérêts perçus : *+${acc_funding:.2f} USD*\n"
-                            f"⚖️ Statut : *Positions spot/perp clôturées*"
+                    else:
+                        funding_arb_engine.active_arbitrages[symbol] = {
+                            "qty": STATE[active_balance_key] * 0.30 / spot_p,
+                            "entry_spot_price": spot_p,
+                            "entry_perp_price": perp_p,
+                            "accumulated_funding": 0.0
+                        }
+                        db.add_audit_log(
+                            "FUNDING_ARBITRAGE_ENTERED",
+                            "127.0.0.1",
+                            f"Entered Delta-Neutral Cash-and-Carry on {symbol} (Funding Rate: {funding_8h*100:.3f}% / 8h)."
                         )
+                    await telegram_bot.send_push_notification(
+                        f"🛡️ *ARBITRAGE DE FINANCEMENT ACTIF*\n"
+                        f"-----------------------------------------\n"
+                        f"📈 Actif : `{symbol}`\n"
+                        f"💵 Taux de financement : *{funding_8h*100:.3f}% / 8h*\n"
+                        f"⚖️ Stratégie : *Delta-Neutre (Cash-and-Carry)*\n"
+                        f"💰 Allocation : *30% du capital*\n"
+                        f"🔒 *Risque de prix : 0% (Totalement immunisé !)*"
+                    )
+                elif action == "EXIT_ARBITRAGE":
+                    acc_funding = opportunities.get("accumulated_funding", 0.0)
+                    STATE[active_balance_key] += acc_funding
+                    if symbol in funding_arb_engine.active_arbitrages:
+                        del funding_arb_engine.active_arbitrages[symbol]
+                    db.add_audit_log(
+                        "FUNDING_ARBITRAGE_EXITED",
+                        "127.0.0.1",
+                        f"Wound down funding arbitrage on {symbol}. Accumulated yield: ${acc_funding:.2f} USD."
+                    )
+                    await telegram_bot.send_push_notification(
+                        f"💰 *ARBITRAGE DE FINANCEMENT BOUCLÉ*\n"
+                        f"-----------------------------------------\n"
+                        f"📈 Actif : `{symbol}`\n"
+                        f"💵 Intérêts perçus : *+${acc_funding:.2f} USD*\n"
+                        f"⚖️ Statut : *Positions spot/perp clôturées*"
+                    )
                     
                 # EVALUATE GENUINE DEX-CEX CROSS-VENUE ARBITRAGE (100% Real-World spreads Bybit vs Binance!)
                 bybit_p = None # Starts as None (Unavailable)
@@ -2466,31 +2747,22 @@ async def live_trading_loop():
                     
                 # 4. Formulate signal and sizing
                 # Query the asset's own genuine price series from persistent DB cache!
+                # HONNÊTETÉ (faille 1 corrigée) : plus AUCUNE bougie synthétique
+                # fabriquée à partir du tick (volume inventé, OHLC dérivé). Si
+                # l'historique réel est insuffisant (<10 barres), l'actif n'est
+                # pas tradé — « AUCUNE DONNÉE -> AUCUN ORDRE » (mentalité n°5).
                 df = db.load_candles(symbol, limit=120)
                 if df.empty or len(df) < 10:
-                    df = STATE["historical_bars"]
                     STATE["using_fallback_data"] = True
-                else:
-                    STATE["using_fallback_data"] = False
+                    set_asset_quality(symbol, DataQualityStatus.STALE)
+                    logger.warning(
+                        f"{symbol}: historique réel insuffisant ({len(df) if not df.empty else 0} barres) "
+                        f"-> signaux ignorés (aucune donnée fabriquée)."
+                    )
+                    continue
+                STATE["using_fallback_data"] = False
                 
                 if df is not None:
-                    # Update bars df
-                    vol_val = STATE.get("last_tick_volume")
-                    if vol_val is None:
-                        vol_val = 15.0
-                    
-                    new_row = pd.DataFrame([{
-                        "open": current_price * 0.9995,
-                        "high": current_price * 1.0005,
-                        "low": current_price * 0.9990,
-                        "close": current_price,
-                        "volume": vol_val
-                    }], index=[pd.Timestamp.now()])
-                    df = pd.concat([df.iloc[1:], new_row])
-                
-                    # Persist the newly fetched/generated candle to our database cache for ALL multi-assets!
-                    db.save_candles(symbol, new_row)
-                
                     # Predict Regime HMM
                     recent_returns = df['close'].pct_change().dropna().values[-10:]
                     ret_mean = np.mean(recent_returns) if len(recent_returns) > 0 else 0.0
@@ -2688,8 +2960,8 @@ async def live_trading_loop():
                         'max_inventory': STATE[active_balance_key] / current_price if STATE[active_balance_key] > 0 else 0.0,
                         'vpin': float(vpin_val),
                         'kyle_lambda': float(kyles_lambda_val),
-                        'onchain_risk': float(STATE.get("onchain_risk_score", 0.0)),
-                        'sentiment': float(STATE.get("sentiment_index", 0.0)),
+                        'onchain_risk': _neutral(STATE.get("onchain_risk_score")),
+                        'sentiment': _neutral(STATE.get("sentiment_index")),
                         'funding_rate_8h': float(STATE.get("funding_rates", {}).get(symbol, 0.0)),
                         'market_avg_return': float(_avg),
                         'cross_asset_bias': cross_asset_bias(symbol, STATE),
@@ -2711,8 +2983,11 @@ async def live_trading_loop():
                     # Feed trade feedback to Thompson Sampling strategy re-allocator!
                     meta_engine.update_bandit_feedback(symbol, consensus["contributions"], actual_return)
                 
-                    # Incorporate sentiment index
-                    final_signal = (0.80 * final_signal) + (0.20 * STATE["sentiment_index"])
+                    # Incorporate sentiment index — UNIQUEMENT si le sentiment est
+                    # réel et disponible (faille 1 corrigée : jamais de sentiment
+                    # inventé ou absent dans la décision)
+                    if STATE.get("sentiment_available") and STATE.get("sentiment_index") is not None:
+                        final_signal = (0.80 * final_signal) + (0.20 * STATE["sentiment_index"])
                     # VISION_FUTUR §3/§4: cross-asset bias (BTC regime informs others, soft)
                     final_signal = float(np.clip(final_signal + cross_asset_bias(symbol, STATE), -1.0, 1.0))
                     final_signal = max(-1.0, min(1.0, final_signal))
@@ -2810,10 +3085,12 @@ async def live_trading_loop():
                     except Exception:
                         pass
                 
-                    # ON-CHAIN RISK REGULATION
-                    if STATE["onchain_risk_score"] > 0.75:
-                        target_qty *= 0.50
-                        logger.info(f"ON-CHAIN WARNING: Scaling down position size for {symbol} due to high network risk.")
+                    # ON-CHAIN RISK REGULATION (faille 1 corrigée : uniquement si le
+                    # score on-chain est RÉEL et disponible — sinon aucun ajustement)
+                    if STATE.get("onchain_available") and STATE.get("onchain_risk_score") is not None:
+                        if STATE["onchain_risk_score"] > 0.75:
+                            target_qty *= 0.50
+                            logger.info(f"ON-CHAIN WARNING: Scaling down position size for {symbol} due to high network risk.")
                     
                     # MULTI-ASSET CORRELATION RISK REGULATION
                     if corr_df is not None and not corr_df.empty:
@@ -3010,7 +3287,9 @@ async def live_trading_loop():
                                 # so paper validation is statistically meaningful.
                                 _paper_fee = None
                                 if active_mode == "DEMO":
-                                    _paper_book = STATE.get("order_book") if STATE.get("order_book_symbol") == symbol else None
+                                    _paper_book = STATE.get("order_books", {}).get(symbol)
+                                if _paper_book is None:
+                                    _paper_book = STATE.get("order_book") if symbol == "BTCUSDT" else None
                                     _paper = simulate_paper_fill(
                                         symbol=symbol, side=side, qty=trade_qty_formatted,
                                         arrival_price=current_price,
@@ -3172,7 +3451,12 @@ async def live_trading_loop():
         net_equity = STATE[active_balance_key]
         updated_positions = db.get_positions()
         for p in updated_positions:
-            asset_price = STATE["assets"].get(p['symbol'], {}).get("price", STATE["last_price"])
+            # Valorisation avec le DERNIER PRIX RÉEL connu (jamais de valeur inventée)
+            asset_price = STATE["assets"].get(p['symbol'], {}).get("price")
+            if asset_price is None:
+                asset_price = STATE.get("last_known_prices", {}).get(p['symbol'], 0.0)
+            if asset_price is None:
+                asset_price = 0.0
             net_equity += p['qty'] * asset_price
             
         STATE["current_equity"] = net_equity
@@ -3217,10 +3501,15 @@ async def live_trading_loop():
             STATE["kill_switch_active"] = True
             STATE["is_running"] = False
             
-            # Flat close exposures
+            # Flat close exposures (prix réel connu uniquement)
             for p in updated_positions:
                 try:
-                    asset_price = STATE["assets"].get(p['symbol'], {}).get("price", STATE["last_price"])
+                    asset_price = STATE["assets"].get(p['symbol'], {}).get("price")
+                    if asset_price is None:
+                        asset_price = STATE.get("last_known_prices", {}).get(p['symbol'])
+                    if asset_price is None:
+                        logger.error(f"CIRCUIT BREAKER: cannot flatten {p['symbol']} (no real price) - manual action required.")
+                        continue
                     if active_mode == "REAL" and client:
                         client.create_order(symbol=p['symbol'].replace("USDT", "/USDT"), type='market', side='sell', amount=p['qty'])
                     close_val = p['qty'] * asset_price * 0.999
@@ -3312,7 +3601,8 @@ def update_metrics_from_state():
     """
     active_mode = STATE["mode"]
     active_balance_key = "balance_demo" if active_mode == "DEMO" else "balance_real"
-    platform_metrics.MARKET_LAST_PRICE.labels(symbol="BTCUSDT").set(STATE["last_price"])
+    _lp = STATE["last_price"]
+    platform_metrics.MARKET_LAST_PRICE.labels(symbol="BTCUSDT").set(_lp if _lp is not None else 0.0)
     platform_metrics.MARKET_EQUITY.labels(mode=active_mode).set(STATE["current_equity"])
     platform_metrics.MARKET_BALANCE.labels(mode=active_mode).set(STATE[active_balance_key])
 
@@ -3327,8 +3617,8 @@ def update_metrics_from_state():
         (STATE["current_equity"] / STATE[active_balance_key] - 1.0) * 100.0 if STATE[active_balance_key] > 0 else 0.0
     )
     platform_metrics.POSITIONS_OPEN.set(len(STATE.get("cached_positions") or []))
-    platform_metrics.SENTIMENT_INDEX.set(STATE["sentiment_index"])
-    platform_metrics.ONCHAIN_RISK.set(STATE["onchain_risk_score"])
+    platform_metrics.SENTIMENT_INDEX.set(_neutral(STATE.get("sentiment_index")))
+    platform_metrics.ONCHAIN_RISK.set(_neutral(STATE.get("onchain_risk_score"), 0.5))
     platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
 
 
@@ -3383,10 +3673,16 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         
         # ADVANCED TELEMETRY EXPOSURE
         "sentiment_index": STATE["sentiment_index"],
+        "sentiment_available": STATE.get("sentiment_available", False),
+        "sentiment_confidence": STATE.get("sentiment_confidence", 0.0),
         "onchain_risk_score": STATE["onchain_risk_score"],
+        "onchain_available": STATE.get("onchain_available", False),
         "eth_defi_balance": STATE["eth_defi_balance"],
         "defi_wallet_address": STATE["defi_wallet_address"],
         "assets_telemetry": STATE["assets"],
+        "asset_data_status": STATE.get("asset_data_status", {}),
+        "order_books": {k: {kk: vv for kk, vv in v.items() if kk != "_ts"} for k, v in STATE.get("order_books", {}).items()},
+        "macro_calendar": macro_calendar.get_calendar(limit=5),
         "options_strategy": STATE["options_strategy"],
         
         "using_fallback_data": STATE.get("using_fallback_data", False),
@@ -3909,7 +4205,12 @@ async def engage_kill_switch(_auth: dict = Depends(require_auth)):
     
     for p in positions:
         try:
-            asset_price = STATE["assets"].get(p['symbol'], {}).get("price", STATE["last_price"])
+            asset_price = STATE["assets"].get(p['symbol'], {}).get("price")
+            if asset_price is None:
+                asset_price = STATE.get("last_known_prices", {}).get(p['symbol'])
+            if asset_price is None:
+                logger.error(f"Kill switch: cannot close {p['symbol']} (no real price) - manual action required.")
+                continue
             if active_mode == "REAL" and client:
                 client.create_order(symbol=p['symbol'].replace("USDT", "/USDT"), type='market', side='sell', amount=p['qty'])
                 
