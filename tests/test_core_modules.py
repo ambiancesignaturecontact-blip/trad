@@ -434,3 +434,50 @@ def test_copy_mirror_fetch_public_positions():
         pytest.skip("no positions returned (network/geo)")
     assert pos[0]["coin"]
     assert pos[0]["szi"] != 0.0
+
+
+# ---------------- DEMO == REAL: high-fidelity paper execution ----------------
+def test_paper_execution_book_walk_and_fees():
+    from core.paper_execution import simulate_paper_fill
+    book = {"bids": [[63900.0, 2.0], [63890.0, 5.0]], "asks": [[63910.0, 2.0], [63920.0, 5.0]]}
+    # BUY 1 BTC walks the first ask level
+    r = simulate_paper_fill("BTCUSDT", "BUY", 1.0, 63905.0, book, "Binance", balance=900000)
+    assert r["status"] == "FILLED"
+    assert r["partial"] is False
+    assert abs(r["slippage_bps"]) < 5  # tight real book -> low slippage
+    assert 60 < r["fee"] < 70          # ~0.1% taker fee on ~64k notional
+
+    # large order on a thin book -> PARTIAL fill at the book VWAP
+    r2 = simulate_paper_fill("BTCUSDT", "BUY", 8.0, 63905.0, book, "Binance", balance=900000)
+    assert r2["status"] == "FILLED"
+    assert r2["partial"] is True
+    assert r2["fill_qty"] == 7.0  # only 7 BTC available in the asks
+
+    # no book -> modeled slippage (larger)
+    r3 = simulate_paper_fill("BTCUSDT", "BUY", 1.0, 63905.0, None, "Binance", balance=900000)
+    assert r3["status"] == "FILLED"
+    assert r3["slippage_bps"] > r["slippage_bps"]
+
+
+def test_paper_execution_rejects_like_real_exchange():
+    from core.paper_execution import simulate_paper_fill
+    book = {"bids": [[63900.0, 2.0]], "asks": [[63910.0, 2.0]]}
+    # below min notional
+    r = simulate_paper_fill("BTCUSDT", "BUY", 0.00001, 63905.0, book, "Binance", balance=900000)
+    assert r["status"] == "REJECTED" and "min notional" in r["reason"]
+    # insufficient balance
+    r2 = simulate_paper_fill("BTCUSDT", "BUY", 10.0, 63905.0, book, "Binance", balance=1000)
+    assert r2["status"] == "REJECTED" and "insufficient" in r2["reason"]
+
+
+# ---------------- regression: wrong-symbol order book must NOT be used ----------------
+def test_paper_execution_ignores_wrong_symbol_book():
+    """The live book is BTC-only; other symbols must use modeled slippage,
+    never the BTC book (this bug once filled EURUSD at $60,010!)."""
+    from core.paper_execution import simulate_paper_fill
+    btc_book = {"bids": [[63900.0, 2.0]], "asks": [[63910.0, 2.0]]}
+    # EURUSD with the BTC book passed by mistake -> should NOT fill at ~64000
+    r = simulate_paper_fill("EURUSD", "BUY", 100.0, 1.15, btc_book, "Bybit", balance=100000)
+    assert r["status"] == "FILLED"
+    assert r["fill_price"] < 5.0, f"EURUSD must not fill against BTC book (got {r['fill_price']})"
+    assert r["slippage_bps"] < 1000.0

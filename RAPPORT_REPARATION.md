@@ -281,3 +281,35 @@ retraining, validation, déploiement et journalisation en boucle fermée.
 - Bugs de branchement corrigés : `import uuid` manquant, ordre helpers/endpoints, `Optional` non importé dans db_manager.
 
 **Tests : 74 passed.** Serveur final en ligne.
+
+---
+
+# 🔧 TOUR 7 — 18 août 2026 (DEMO == REAL : paper-trading haute fidélité)
+
+## 29. Problème utilisateur : « le DEMO doit être comme le REAL pour être fiable »
+Le DEMO remplissait au prix courant + 0,03 % — optimiste, donc validation paper peu fiable.
+Corrigé avec un **moteur de paper-trading haute fidélité** (`core/paper_execution.py`) :
+- **Book-walking** sur le vrai carnet d'ordres (BTC via le depth WS Binance) → prix VWAP réel
+- **Slippage modélisé** (volatilité × liquidité × taille) + **apprentissage du SlippageModel**
+  par venue quand pas de carnet
+- **Frais taker/maker par venue** (Binance/Bybit 0,1 % taker)
+- **Latence simulée** (75 ms ± jitter) avec dérive de prix proportionnelle au tick
+- **Rejets réalistes** (notional < 10 $, précision, solde insuffisant) + **fills partiels**
+- **ExecutionAlpha + SlippageModel apprennent aussi en paper** → les métriques d'exécution
+  sont significatives avant le REAL
+
+## 30. BUG RÉEL trouvé grâce au nouveau moteur (et corrigé)
+Le carnet live n'existe que pour **BTC** mais était passé pour **tous les symboles** :
+EURUSD s'est rempli contre le carnet BTC à **60 010 $** (au lieu de 1,15 $) → effondrement
+de l'équité DEMO en un tick (106 k → −13 k) et slippage gauge aberrant (5e8 bps).
+Corrections :
+- suivi du symbole du carnet (`STATE["order_book_symbol"]`) — book-walk seulement si même symbole
+- **garde de plausibilité dans le moteur** : un fill book-walké déviant de >10 % du prix
+  d'arrivée = carnet invalide → repli sur slippage modélisé (défense en profondeur)
+- gardes anti-absurdes dans `ExecutionAlpha`/`SlippageModel` (>1000 bps ignorés)
+- balance DEMO réinitialisée à 100 000
+
+## 31. Vérifications
+- ✅ `pytest` : **86 passed** (dont test de régression wrong-symbol-book + tests paper engine)
+- ✅ Fills paper sains en live (EURUSD @ 1,1578 ; slippage normal ; equity stable)
+- ✅ Fills partiels (8 BTC sur carnet de 7 → 7 BTC VWAP), rejets réalistes, frais 0,1 %

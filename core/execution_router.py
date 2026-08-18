@@ -34,6 +34,8 @@ class ExecutionAlpha:
     def __init__(self):
         self.samples: list = []
 
+    MAX_SANE_SLIPPAGE_BPS = 1000.0  # >10% is a data error, not a real fill
+
     def record(self, symbol: str, side: str, arrival_price: float,
                realized_price: float, style: str) -> float:
         """Returns slippage in bps (positive = adverse)."""
@@ -43,6 +45,9 @@ class ExecutionAlpha:
             slip = (realized_price - arrival_price) / arrival_price * 1e4
         else:
             slip = (arrival_price - realized_price) / arrival_price * 1e4
+        if abs(slip) > self.MAX_SANE_SLIPPAGE_BPS:
+            logger.warning(f"Ignoring absurd slippage {slip:.0f} bps for {symbol} ({style}) - data error")
+            return 0.0
         self.samples.append({
             "symbol": symbol, "side": side, "style": style,
             "slippage_bps": round(slip, 3), "ts": time.time(),
@@ -62,7 +67,12 @@ class SlippageModel:
     def __init__(self):
         self.stats: Dict[str, dict] = defaultdict(lambda: {"n": 0, "sum_bps": 0.0, "last": 0.0})
 
+    MAX_SANE_SLIPPAGE_BPS = 1000.0
+
     def update(self, venue: str, symbol: str, slippage_bps: float) -> None:
+        if abs(slippage_bps) > self.MAX_SANE_SLIPPAGE_BPS:
+            logger.warning(f"Slippage model: ignoring absurd {slippage_bps:.0f} bps ({venue}:{symbol})")
+            return
         key = f"{venue}:{symbol}"
         s = self.stats[key]
         s["n"] += 1

@@ -29,6 +29,7 @@ from core.volatility_targeting import volatility_scale_factor
 from core.signal_library import SIGNAL_LIBRARY, evaluate_all_signals, evaluate_signal
 from core.execution_router import ExecutionAlpha, SlippageModel, decide_style
 from core.copy_mirror import fetch_trader_positions, build_mirror_orders, mirror_status_text
+from core.paper_execution import simulate_paper_fill
 from core.reporting import build_daily_report, compute_health_score, build_concierge_message
 
 # Import our quant models
@@ -836,6 +837,7 @@ async def multi_exchange_websocket_listener():
                             # Parse 100% genuine, real-time live order book depth and volumes!
                             bids_raw = msg.get("bids", [])
                             asks_raw = msg.get("asks", [])
+                            STATE["order_book_symbol"] = "BTCUSDT"  # the depth stream is BTC-only
                             
                             bids = [[float(b[0]), float(b[1])] for b in bids_raw[:5]]
                             asks = [[float(a[0]), float(a[1])] for a in asks_raw[:5]]
@@ -2456,9 +2458,47 @@ async def live_trading_loop():
                                 # Record order timestamp for the idempotence gate
                                 STATE["last_order_times"][symbol] = time.time()
                                 
+                                # PAPER EXECUTION (DEMO == REAL, high fidelity): book-walk the real
+                                # order book, apply per-venue fees, latency, impact and rejections
+                                # so paper validation is statistically meaningful.
+                                _paper_fee = None
+                                if active_mode == "DEMO":
+                                    _paper_book = STATE.get("order_book") if STATE.get("order_book_symbol") == symbol else None
+                                    _paper = simulate_paper_fill(
+                                        symbol=symbol, side=side, qty=trade_qty_formatted,
+                                        arrival_price=current_price,
+                                        order_book=_paper_book,
+                                        venue="Binance" if symbol in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit",
+                                        volatility=vol_mean if "vol_mean" in dir() else 0.002,
+                                        balance=STATE[active_balance_key],
+                                        slippage_model=slippage_model,
+                                    )
+                                    if _paper.get("rejected"):
+                                        logger.warning(f"PAPER REJECTED {symbol} {side} {trade_qty_formatted}: {_paper['reason']}")
+                                        db.add_audit_log("DEMO_ORDER_REJECTED", "127.0.0.1",
+                                                         f"{symbol} {side} {trade_qty_formatted}: {_paper['reason']}")
+                                        platform_metrics.ORDERS_FAILED.labels(mode="DEMO").inc()
+                                        continue
+                                    execution_price = _paper["fill_price"]
+                                    _paper_fee = _paper["fee"]
+                                    if _paper.get("partial"):
+                                        trade_qty_formatted = _paper["fill_qty"]  # respect partial fills
+                                    # execution-quality tracking learns from paper too
+                                    execution_alpha.record(symbol, side, current_price, execution_price, "paper")
+                                    slippage_model.update("Binance" if symbol in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit", symbol, _paper["slippage_bps"])
+                                    platform_metrics.EXEC_SLIPPAGE_BPS.labels(style="paper").set(execution_alpha.avg_slippage_bps("paper"))
+                                    try:
+                                        db.add_event(time.time(), "paper_fill", json.dumps({
+                                            "symbol": symbol, "side": side, "qty": trade_qty_formatted,
+                                            "arrival": current_price, "fill": execution_price,
+                                            "slippage_bps": _paper["slippage_bps"], "fee": _paper_fee,
+                                            "latency_ms": _paper["latency_ms"],
+                                        }, default=str))
+                                    except Exception:
+                                        pass
                                 # Ledger update
                                 order_cost = execution_price * trade_qty_formatted
-                                commission = order_cost * 0.001
+                                commission = _paper_fee if _paper_fee is not None else order_cost * 0.001
                             
                                 if side == "BUY":
                                     STATE[active_balance_key] -= (order_cost + commission)
