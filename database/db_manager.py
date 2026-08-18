@@ -163,6 +163,16 @@ class DBManager:
                 # Create a default admin user if not exists
                 # Bootstrap admin is created/updated at startup with a REAL bcrypt hash
                 # (password from ADMIN_PASSWORD env or a generated one - see main.py login)
+                # FIRST: defensive migration for existing tables that lacked 'role' (audit fix).
+                try:
+                    cursor.execute(
+                        "ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) DEFAULT 'VIEWER'"
+                    )
+                    conn.commit()
+                    logger.info("Database Migration: ensured 'role' column on users table.")
+                except Exception:
+                    if self.is_postgres:
+                        conn.rollback()
                 cursor.execute("""
                     INSERT INTO users (id, username, password_hash, role)
                     VALUES (1, 'admin_quant', 'hash_admin_secret', 'ADMIN')
