@@ -717,3 +717,55 @@ def test_backup_and_restore_roundtrip(tmp_path):
     from database.db_manager import DBManager, DB_PATH
     db = DBManager()
     assert db.get_user("admin_quant") is not None
+
+
+# ---- Phase A/D: Postgres pool must RETURN connections (fix PoolError) ----
+def test_pg_pool_connections_are_returned():
+    """Regression: get_connection() must putconn() every connection so the pool
+    is never exhausted (was: psycopg2.pool.PoolError in production)."""
+    from database.db_manager import DBManager, _PooledPGConn
+
+    class FakeRaw:
+        """Pretends to be a psycopg2 connection (context manager + cursor)."""
+        def __init__(self):
+            self.committed = False
+            self.rolled = False
+            self.cursor_factory = None
+            self.closed = False
+        def commit(self): self.committed = True
+        def rollback(self): self.rolled = True
+        def cursor(self, *a, **k): return object()
+
+    class FakePool:
+        def __init__(self):
+            self.out = []
+            self.back = []
+            self.raw = FakeRaw()
+        def getconn(self):
+            self.out.append(self.raw)
+            return self.raw
+        def putconn(self, conn):
+            self.back.append(conn)
+
+    # _pg_pool is a CLASS-level cache: override it on the class for the test
+    pool = FakePool()
+    _orig_pool = DBManager._pg_pool
+    DBManager._pg_pool = pool
+    try:
+        dbm = DBManager.__new__(DBManager)
+        dbm.is_postgres = True
+
+        # Simulate MANY sequential acquisitions (as startup does: init + several queries)
+        for _ in range(60):  # > 20 (pool max) would exhaust without the fix
+            with dbm.get_connection() as conn:
+                conn.cursor()
+        # With the fix every raw connection was returned
+        assert len(pool.back) == 60, f"only {len(pool.back)} returned (pool would exhaust)"
+        assert pool.back[0] is pool.raw
+
+        # close() path also returns
+        c = dbm.get_connection()
+        c.close()
+        assert pool.back[-1] is pool.raw
+    finally:
+        DBManager._pg_pool = _orig_pool

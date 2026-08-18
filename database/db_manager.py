@@ -16,6 +16,66 @@ DATABASE_URL = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
 DB_PATH = os.getenv("SQLITE_DB_PATH", os.path.join(os.getcwd(), "trading_platform.db"))
 KEY_PATH = os.getenv("SECRET_KEY_PATH", os.path.join(os.getcwd(), "secret.key"))
 
+class _PooledPGConn:
+    """
+    Wraps a psycopg2 ThreadedConnectionPool connection so that every acquisition
+    is ALWAYS returned to the pool (putconn) when the context exits or close() is
+    called. Without this, the pool is exhausted after N=pool_size queries ->
+    psycopg2.pool.PoolError: connection pool exhausted (production crash).
+    """
+
+    def __init__(self, pool, conn):
+        object.__setattr__(self, "_pool", pool)
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_returned", False)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __setattr__(self, name, value):
+        if name in ("_pool", "_conn", "_returned"):
+            object.__setattr__(self, name, value)
+        else:
+            setattr(self._conn, name, value)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if exc_type is None:
+            try:
+                self._conn.commit()
+            except Exception:
+                pass
+        else:
+            try:
+                self._conn.rollback()
+            except Exception:
+                pass
+        self._return()
+        return False
+
+    def close(self):
+        self._return()
+
+    def commit(self):
+        self._conn.commit()
+
+    def rollback(self):
+        self._conn.rollback()
+
+    def cursor(self, *args, **kwargs):
+        return self._conn.cursor(*args, **kwargs)
+
+    def _return(self):
+        if not self._returned:
+            object.__setattr__(self, "_returned", True)
+            try:
+                self._pool.putconn(self._conn)
+            except Exception:
+                pass
+
+
 class DBManager:
     """
     Dual-dialect, Multi-User SaaS DB manager supporting SQLite for local runs,
@@ -91,7 +151,7 @@ class DBManager:
         of a fresh TCP+TLS handshake per query."""
         if cls._pg_pool is None:
             from psycopg2.pool import ThreadedConnectionPool
-            cls._pg_pool = ThreadedConnectionPool(1, 12, cls._pg_dsn())
+            cls._pg_pool = ThreadedConnectionPool(2, 20, cls._pg_dsn())
         return cls._pg_pool
 
     @classmethod
@@ -103,9 +163,9 @@ class DBManager:
         if self.is_postgres:
             from psycopg2.extras import RealDictCursor
             pool = self._get_pg_pool()
-            conn = pool.getconn()
-            conn.cursor_factory = RealDictCursor
-            return conn
+            raw = pool.getconn()
+            raw.cursor_factory = RealDictCursor
+            return _PooledPGConn(pool, raw)
         else:
             conn = sqlite3.connect(DB_PATH, check_same_thread=False)
             conn.row_factory = sqlite3.Row
