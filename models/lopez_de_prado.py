@@ -50,7 +50,9 @@ def calculate_deflated_sharpe_ratio(observed_sharpe: float, num_trials: int, tri
     """
     if num_trials <= 1:
         return observed_sharpe
-        
+
+    observed_sharpe = float(np.clip(observed_sharpe, -0.999, 0.999))  # avoid sqrt(neg)
+    
     # Euler-Mascheroni constant approximation for expected maximum of standard normals
     gamma = 0.5772156649
     expected_max_z = (1.0 - gamma) * stats.norm.ppf(1.0 - 1.0 / num_trials) + gamma * stats.norm.ppf(1.0 - 1.0 / (num_trials * np.e))

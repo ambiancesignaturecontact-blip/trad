@@ -40,6 +40,11 @@ ONCHAIN_RISK = Gauge("quant_onchain_risk_score", "Latest on-chain risk score")
 # --- Data quality ---
 DATA_QUALITY = Gauge("quant_data_quality", "Data quality status (0=UNAVAILABLE..4=LIVE)", ["source"])
 
+# --- Execution quality (VISION §3.1/§7) ---
+EXEC_SLIPPAGE_BPS = Gauge("quant_exec_slippage_bps", "Average realized-vs-arrival slippage in bps", ["style"])
+EXEC_FILLS = Counter("quant_exec_fills_total", "Executed fills by style", ["style"])
+EXEC_TWAP_SLICES = Counter("quant_exec_twap_slices_total", "TWAP slices emitted")
+
 # --- AI / autonomy (audit B9-3) ---
 AI_OOS_SHARPE = Gauge("quant_ai_oos_sharpe", "Latest walk-forward out-of-sample Sharpe")
 AI_PPO_BUFFER = Gauge("quant_ai_ppo_buffer", "RL experiences collected for PPO training")

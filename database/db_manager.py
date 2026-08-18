@@ -787,3 +787,131 @@ class DBManager:
         except Exception as e:
             logger.error(f"delete_user failed: {e}")
             return False
+
+    # ==================== EXPERIMENTS REGISTRY (VISION §2.2) ====================
+    def ensure_experiments_table(self):
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS experiments (
+                            id SERIAL PRIMARY KEY,
+                            hypothesis TEXT,
+                            status TEXT DEFAULT 'PENDING',
+                            result TEXT,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )""")
+                else:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS experiments (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            hypothesis TEXT,
+                            status TEXT DEFAULT 'PENDING',
+                            result TEXT,
+                            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                        )""")
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"ensure_experiments_table: {e}")
+
+    def add_experiment(self, hypothesis: str, status: str = "PENDING", result: str = "") -> int:
+        self.ensure_experiments_table()
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute(
+                        "INSERT INTO experiments (hypothesis, status, result) VALUES (%s, %s, %s) RETURNING id",
+                        (hypothesis, status, result),
+                    )
+                    rid = cur.fetchone()["id"]
+                else:
+                    cur.execute(
+                        "INSERT INTO experiments (hypothesis, status, result) VALUES (?, ?, ?)",
+                        (hypothesis, status, result),
+                    )
+                    rid = cur.lastrowid
+                conn.commit()
+                return int(rid)
+        except Exception as e:
+            logger.error(f"add_experiment failed: {e}")
+            return 0
+
+    def list_experiments(self, limit: int = 100) -> list:
+        self.ensure_experiments_table()
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute("SELECT id, hypothesis, status, result, created_at FROM experiments ORDER BY id DESC LIMIT %s", (int(limit),))
+                else:
+                    cur.execute("SELECT id, hypothesis, status, result, created_at FROM experiments ORDER BY id DESC LIMIT ?", (int(limit),))
+                return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"list_experiments failed: {e}")
+            return []
+
+    # ==================== EVENT JOURNAL (VISION §7.1: replayable) ====================
+    def ensure_events_table(self):
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS events (
+                            id SERIAL PRIMARY KEY,
+                            ts DOUBLE PRECISION,
+                            event_type TEXT,
+                            payload TEXT,
+                            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                        )""")
+                else:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS events (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            ts REAL,
+                            event_type TEXT,
+                            payload TEXT,
+                            created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                        )""")
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"ensure_events_table: {e}")
+
+    def add_event(self, ts: float, event_type: str, payload: str) -> bool:
+        self.ensure_events_table()
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute("INSERT INTO events (ts, event_type, payload) VALUES (%s, %s, %s)", (ts, event_type, payload))
+                else:
+                    cur.execute("INSERT INTO events (ts, event_type, payload) VALUES (?, ?, ?)", (ts, event_type, payload))
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.debug(f"add_event failed: {e}")
+            return False
+
+    def list_events(self, event_type: str = "", since: float = 0.0, limit: int = 500) -> list:
+        self.ensure_events_table()
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                ph = "%s" if self.is_postgres else "?"
+                if event_type and since:
+                    cur.execute(f"SELECT ts, event_type, payload FROM events WHERE event_type = {ph} AND ts >= {ph} ORDER BY ts DESC LIMIT {ph}",
+                                (event_type, since, int(limit)))
+                elif event_type:
+                    cur.execute(f"SELECT ts, event_type, payload FROM events WHERE event_type = {ph} ORDER BY ts DESC LIMIT {ph}",
+                                (event_type, int(limit)))
+                elif since:
+                    cur.execute(f"SELECT ts, event_type, payload FROM events WHERE ts >= {ph} ORDER BY ts DESC LIMIT {ph}",
+                                (since, int(limit)))
+                else:
+                    cur.execute(f"SELECT ts, event_type, payload FROM events ORDER BY ts DESC LIMIT {ph}", (int(limit),))
+                return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"list_events failed: {e}")
+            return []

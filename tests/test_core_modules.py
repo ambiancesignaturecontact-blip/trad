@@ -293,3 +293,69 @@ def test_market_replay_logic():
         except Exception as e:
             last_err = e
     pytest.skip(f"No public feed available in this environment: {last_err}")
+
+
+# ---------------- VISION: signal library + gates ----------------
+def test_signal_library_evaluates_and_ranks():
+    import numpy as np, pandas as pd
+    from core.signal_library import SIGNAL_LIBRARY, evaluate_all_signals
+    rng = np.random.default_rng(0)
+    close = 100 * np.cumprod(1 + rng.normal(0, 0.01, 400))
+    df = pd.DataFrame({"close": close, "high": close * 1.005, "low": close * 0.995,
+                       "volume": rng.uniform(500, 2000, 400)})
+    res = evaluate_all_signals(df, {"vpin": 0.5, "kyle_lambda": 0, "onchain_risk": 0.5,
+                                    "sentiment": 0, "funding_rate_8h": 0, "market_avg_return": 0})
+    assert len(res["ranking"]) >= 5
+    for k, v in res["results"].items():
+        if v.get("valid"):
+            assert 0.0 <= v["deflated_sharpe"] <= 1.0
+
+
+def test_deflated_sharpe_gate():
+    from models.lopez_de_prado import calculate_deflated_sharpe_ratio
+    # a strong, non-snooped Sharpe -> high DSR
+    strong = calculate_deflated_sharpe_ratio(0.8, 12, 0.1, 500)
+    weak = calculate_deflated_sharpe_ratio(0.05, 12, 0.1, 100)
+    assert strong > 0.95
+    assert weak < 0.95
+
+
+# ---------------- VISION: volatility targeting ----------------
+def test_volatility_targeting_scales_exposure():
+    from core.volatility_targeting import volatility_scale_factor
+    rng = np.random.default_rng(1)
+    lo, hi = [], []
+    p = 1000.0
+    for _ in range(80):
+        p *= (1 + 0.00005 * rng.normal()); lo.append(p)
+    p = 1000.0
+    for _ in range(80):
+        p *= (1 + 0.002 * rng.normal()); hi.append(p)
+    assert volatility_scale_factor(lo) > 1.0
+    assert volatility_scale_factor(hi) < 1.0
+    assert volatility_scale_factor([]) == 1.0
+
+
+# ---------------- VISION: execution router + alpha ----------------
+def test_execution_router_and_alpha():
+    from core.execution_router import ExecutionAlpha, decide_style
+    assert decide_style(2.0, 0.9, 0.001) == "market"
+    assert decide_style(40.0, 0.1, 0.001) == "limit"
+    assert decide_style(2.0, 0.9, 0.5) == "twap"
+    a = ExecutionAlpha()
+    a.record("BTCUSDT", "BUY", 100.0, 100.05, "market")
+    a.record("BTCUSDT", "BUY", 100.0, 100.02, "market")
+    assert 0 < a.avg_slippage_bps("market") < 10
+
+
+# ---------------- VISION: factor model + risk parity ----------------
+def test_factor_model_and_risk_parity():
+    import numpy as np
+    from core.factor_model import compute_factor_exposures, risk_parity_weights
+    r = [0.001] * 60
+    exp = compute_factor_exposures(r, [0.0005] * 60, [0.001] * 60, [0.0002] * 60, [0.0001] * 60)
+    assert exp["valid"] is True
+    rets = {"A": [0.001] * 50, "B": list(np.random.randn(50) * 0.02)}
+    w = risk_parity_weights(rets)
+    assert w["A"] > w["B"]  # low-vol strategy gets more weight
+    assert abs(sum(w.values()) - 1.0) < 1e-3

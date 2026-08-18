@@ -67,11 +67,14 @@ class RiskManager:
         if current_price <= 0 or atr <= 0:
             return 0.0
             
-        # 1. Fractional Kelly Sizing
-        # Kelly % = (p * R - (1-p)) / R
+        # 1. Fractional Kelly Sizing - NET OF FEES (VISION §6)
+        # Kelly % = (p * R - (1-p)) / R, with R reduced by the round-trip cost
+        # so the size accounts for transaction drag (Kelly brut surestime).
         p = win_rate
         R = reward_risk_ratio
-        kelly_fraction = (p * R - (1 - p)) / R
+        round_trip_cost = self.params.get('round_trip_cost_pct', 0.002)
+        R_net = max(R - round_trip_cost, 0.01)
+        kelly_fraction = (p * R_net - (1 - p)) / R_net
         
         # Apply fractional multiplier for institutional safety
         safe_kelly_pct = max(0.0, kelly_fraction * self.params['fractional_kelly_multiplier'])

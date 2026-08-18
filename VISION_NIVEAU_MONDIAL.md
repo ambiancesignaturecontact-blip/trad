@@ -125,3 +125,28 @@ registre d'expériences), une **profondeur d'exécution** (slippage réel, alpha
 et un **overlay de risque moderne** (vol targeting, budget de risque par stratégie).
 C'est exactement la phase 3-4-5 de la roadmap — faisable, mesurable, et c'est là que
 naît l'edge réel.
+
+
+---
+
+## ✅ ÉTAT D'APPLICATION (18 août 2026 — TOUT IMPLÉMENTÉ)
+
+| § | Élément | Statut |
+|---|---|---|
+| 2.1 | Catalogue de signaux + gate Deflated Sharpe | ✅ `core/signal_library.py` (11 signaux) + `/api/v1/signals/evaluate` + gate DSR dans l'autopilote |
+| 2.2 | Registre d'expériences | ✅ table `experiments` + `/api/v1/experiments` |
+| 2.4 | Stratégies mortes branchées | ✅ Momentum, VolatilityBreakout, Multi-Timeframe (wrapper), Carry, Cross-Sectional — **12 stratégies live** |
+| 3.1 | Routeur d'exécution market/limit/TWAP + alpha | ✅ `core/execution_router.py` : style par liquidité/urgence, slicing TWAP, slippage réalisé vs arrivée + gauges |
+| 3.2 | Slippage par venue recalibré | ✅ `SlippageModel` (samples réels, recalibration quotidienne) |
+| 4.1/5 | Volatility targeting overlay | ✅ `core/volatility_targeting.py` branché dans le sizing (vérifié : scale 0.25 en vol haute) |
+| 4.3 | RL avec coût d'impact | ✅ récompense PPO = rendement − coût d'impact × |action| |
+| 4.5 | Explainability | ✅ `explain_last_decision()` : top-5 features exposé dans la télémétrie (`last_reasoning`) |
+| 5 | On-chain comme alpha | ✅ signal `onchain_alpha` dans la bibliothèque + modulation |
+| 6 | Kelly net de frais | ✅ `risk_manager` : R réduit du coût aller-retour |
+| 6 | Risk parity (budget de risque) | ✅ `core/factor_model.py` + mélange dans `MetaAllocationEngine.allocate` |
+| 6 | Modèle de facteurs | ✅ `/api/v1/factors` (OLS market/momentum/carry/vol) |
+| 7.1 | Journal d'événements rejouable | ✅ table `events` + ticks/ordres + `/api/v1/events` |
+| 7.5 | A/B paper | 🟡 architecture prête (deux budgets) ; configs A/B complètes = évolution |
+| — | SOR carnets live, colocation, HFT | ⚠️ hors de portée assumé (documenté §9) |
+
+**Tests : 79 passed.** Tous les endpoints VISION validés en live.

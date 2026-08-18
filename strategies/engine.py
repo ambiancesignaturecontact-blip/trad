@@ -304,9 +304,10 @@ class MetaAllocationEngine:
     + Walk-Forward dynamique (LOT 11) : les poids sont ajustés en fonction
       des performances récentes des stratégies sur les 80 derniers trades.
     """
-    def __init__(self, strategies=None):
+    def __init__(self, strategies=None, regime_allocator=None):
         self.strategies = strategies or []
         self.num_strategies = len(self.strategies)
+        self.regime_allocator = regime_allocator
         
         # Thompson Sampling parameters: Alpha (successes) & Beta (failures) for each strategy
         self.alpha_bandit = np.ones(self.num_strategies)
@@ -422,12 +423,30 @@ class MetaAllocationEngine:
             dominant_strategy = "Scalping" if signals_dict.get("Scalping", 0.0) != 0.0 else "Statistical Arbitrage"
 
         classical_signal = 0.0
+        regime_weights = {}
+        if self.regime_allocator is not None:
+            try:
+                regime_weights = self.regime_allocator.get_regime_weights(regime_state_id)
+            except Exception:
+                regime_weights = {}
+        # VISION §6: risk-parity budget (weight by 1/vol so each strategy
+        # contributes a comparable amount of RISK, not capital)
+        risk_weights = {}
+        try:
+            from core.factor_model import risk_parity_weights
+            risk_weights = risk_parity_weights(self.recent_performance)
+        except Exception:
+            risk_weights = {}
         for i, s in enumerate(self.strategies):
-            # Combinaison : MAB + Walk-Forward + Regime dominance
-            weight = mab_weights[i] * 0.50
-            weight += self.walkforward_weights[i] * 0.30
+            # Combinaison : MAB + Walk-Forward + Regime dominance + Regime allocator + Risk parity
+            weight = mab_weights[i] * 0.30
+            weight += self.walkforward_weights[i] * 0.20
             if s.name == dominant_strategy:
-                weight += 0.20
+                weight += 0.12
+            if s.name in regime_weights:
+                weight += float(regime_weights[s.name]) * 0.18
+            if s.name in risk_weights:
+                weight += float(risk_weights[s.name]) * 0.20
             classical_signal += signals_dict.get(s.name, 0.0) * weight
 
         mean_confidence = conf_dict.get(dominant_strategy, 0.5)
@@ -469,7 +488,7 @@ class MetaAllocationEngine:
             strategy_contributions[s.name] = {
                 "signal": float(signals_dict.get(s.name, 0.0)),
                 "confidence": float(conf_dict.get(s.name, 0.0)),
-                "weight": float(mab_weights[i] * 0.50 + self.walkforward_weights[i] * 0.30 + (0.20 if is_dominant else 0.0))
+                "weight": float(mab_weights[i] * 0.30 + self.walkforward_weights[i] * 0.20 + (0.12 if is_dominant else 0.0) + (float(regime_weights.get(s.name, 0.0)) * 0.18) + (float(risk_weights.get(s.name, 0.0)) * 0.20))
             }
         
         return {

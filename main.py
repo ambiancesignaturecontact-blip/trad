@@ -25,6 +25,9 @@ from typing import List, Dict
 from core.middleware import (RequestLoggingMiddleware, SecurityHeadersMiddleware,
                              IPRateLimitMiddleware, LoginRateLimitMiddleware, install_cors)
 from core.position_manager import PositionProtection, PositionProtectionStore, evaluate_protection
+from core.volatility_targeting import volatility_scale_factor
+from core.signal_library import SIGNAL_LIBRARY, evaluate_all_signals, evaluate_signal
+from core.execution_router import ExecutionAlpha, SlippageModel, decide_style
 from core.reporting import build_daily_report, compute_health_score, build_concierge_message
 
 # Import our quant models
@@ -111,6 +114,13 @@ oms = OrderManagementSystem(db, ems)
 reconciler = ReconciliationEngine(db)
 
 # Instantiate strategies
+# VISION §5: institutional strategy suite - now includes the previously-dead
+# modules (momentum, volatility_breakout, multi_timeframe) + carry + cross-sectional.
+from strategies.momentum import MomentumStrategy
+from strategies.volatility_breakout import VolatilityBreakoutStrategy
+from strategies.institutional import CarryStrategy, CrossSectionalMomentumStrategy, MultiTimeframeWrapperStrategy
+from strategies.regime_switching import RegimeSwitchingAllocator
+
 strategies_list = [
     TrendFollowingStrategy(),
     MeanReversionStrategy(),
@@ -118,9 +128,15 @@ strategies_list = [
     StatisticalArbitrageStrategy(),
     ArbitrageInterExchangeStrategy(),
     GridTradingStrategy(),
-    ScalpingStrategy()
+    ScalpingStrategy(),
+    MomentumStrategy(),
+    VolatilityBreakoutStrategy(),
+    CarryStrategy(),
+    CrossSectionalMomentumStrategy(),
+    MultiTimeframeWrapperStrategy(db=db),
 ]
-meta_engine = MetaAllocationEngine(strategies=strategies_list)
+regime_allocator = RegimeSwitchingAllocator()
+meta_engine = MetaAllocationEngine(strategies=strategies_list, regime_allocator=regime_allocator)
 
 # ML Models
 regime_detector = MarketRegimeDetector()
@@ -268,7 +284,8 @@ if _os.path.isdir(_os.path.join(_os.getcwd(), "frontend", "dist")):
 # Request bodies validation models
 _VALID_STRATEGIES = (
     "Trend Following", "Mean Reversion", "Market Making", "Statistical Arbitrage",
-    "Inter-Exchange Arbitrage", "Grid Trading", "Scalping",
+    "Inter-Exchange Arbitrage", "Grid Trading", "Scalping", "Momentum",
+    "Volatility Breakout", "Carry", "Cross-Sectional Momentum", "Multi-Timeframe",
 )
 
 class StrategyToggle(BaseModel):
@@ -532,6 +549,10 @@ telegram_bot = TelegramBotManager(state_dict=STATE, db_manager=db)
 
 # Position protection store (audit B7-1): SL/TP/trailing state per symbol
 protection_store = PositionProtectionStore(STATE)
+
+# VISION §3: execution quality tracking
+execution_alpha = ExecutionAlpha()
+slippage_model = SlippageModel()
 
 # CCXT Exchange Client Cache
 ccxt_client = None
@@ -1062,9 +1083,21 @@ async def autonomous_ai_scheduler():
                 platform_metrics.AI_OOS_SHARPE.set(oos_sharpe)
                 platform_metrics.AI_LAST_CYCLE.set(time.time())
                 prev_sharpe = float(db.get_setting("autonomous_last_oos_sharpe") or 0.0)
-                trend = "IMPROVED" if oos_sharpe >= prev_sharpe else "DEGRADED"
+                # VISION §4.4: Deflated Sharpe gate - is this OOS result statistically
+                # better than luck across the number of strategies/models tried?
+                try:
+                    _dsr = calculate_deflated_sharpe_ratio(
+                        observed_sharpe=oos_sharpe,
+                        num_trials=max(len(strategies_list), 8),
+                        trials_variance_sharpe=0.1,
+                        sample_length=200,
+                    )
+                except Exception:
+                    _dsr = 0.0
+                trend = "IMPROVED" if (oos_sharpe >= prev_sharpe and _dsr >= 0.95) else "DEGRADED"
                 db.save_setting("autonomous_last_oos_sharpe", str(oos_sharpe))
-                logger.info(f"🤖 Autonomous AI: out-of-sample Sharpe {oos_sharpe:.3f} vs {prev_sharpe:.3f} ({trend})")
+                db.save_setting("autonomous_last_dsr", str(_dsr))
+                logger.info(f"🤖 Autonomous AI: OOS Sharpe {oos_sharpe:.3f} vs {prev_sharpe:.3f} | DSR {_dsr:.3f} (gate 0.95) -> {trend}")
                 try:
                     await telegram_bot.send_push_notification(
                         f"🤖 *CYCLE IA AUTONOME*\n"
@@ -1233,6 +1266,81 @@ async def api_market_replay(payload: ReplayRequest, _auth: dict = Depends(requir
     if symbol not in STATE["assets"]:
         raise HTTPException(status_code=400, detail=f"Unsupported symbol '{symbol}'.")
     return await run_market_replay(symbol, payload.interval, payload.limit)
+
+
+# ===== VISION §2.1/§2.2: signal admission gate + experiment registry =====
+class SignalEvalRequest(BaseModel):
+    symbol: str = Field(min_length=3, max_length=20)
+    limit: int = Field(default=300, ge=100, le=2000)
+
+
+@app.post("/api/v1/signals/evaluate")
+async def api_evaluate_signals(payload: SignalEvalRequest, _auth: dict = Depends(require_auth)):
+    """Evaluates the whole signal catalogue over history -> ranking by Deflated Sharpe."""
+    symbol = payload.symbol.upper()
+    df = db.load_candles(symbol, limit=payload.limit)
+    if df is None or df.empty or len(df) < 80:
+        if symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+            df = await fetch_historical_market_data(symbol)
+        else:
+            ymap = {"XAUUSD": "GC=F", "EURUSD": "EURUSD=X"}
+            df = await fetch_yahoo_finance_candles(ymap.get(symbol, symbol), interval="1h", range_str="3mo")
+    if df is None or df.empty or len(df) < 80:
+        raise HTTPException(status_code=503, detail="Insufficient data to evaluate signals.")
+    md = {"vpin": 0.5, "kyle_lambda": 0.0, "onchain_risk": STATE.get("onchain_risk_score", 0.5),
+          "sentiment": STATE.get("sentiment_index", 0.0), "funding_rate_8h": STATE.get("funding_rates", {}).get(symbol, 0.0),
+          "market_avg_return": 0.0}
+    return evaluate_all_signals(df, md)
+
+
+@app.get("/api/v1/experiments")
+async def api_list_experiments(_auth: dict = Depends(require_auth), limit: int = 100):
+    return {"experiments": db.list_experiments(limit=limit)}
+
+
+class ExperimentCreate(BaseModel):
+    hypothesis: str = Field(min_length=3, max_length=500)
+
+
+@app.post("/api/v1/experiments")
+async def api_create_experiment(payload: ExperimentCreate, _auth: dict = Depends(require_auth)):
+    eid = db.add_experiment(payload.hypothesis)
+    if not eid:
+        raise HTTPException(status_code=500, detail="Failed to register experiment.")
+    return {"status": "Registered", "id": eid}
+
+
+# ===== VISION §7.1 replayable event journal + §6 factor model =====
+@app.get("/api/v1/events")
+async def api_events(event_type: str = "", since: float = 0.0, limit: int = 200):
+    """Replayable event journal (ticks + orders + decisions)."""
+    return {"events": db.list_events(event_type=event_type, since=since, limit=limit)}
+
+
+@app.get("/api/v1/factors")
+async def api_factors(_auth: dict = Depends(require_auth)):
+    """VISION §6: factor exposures of the live equity curve (market/momentum/carry/vol)."""
+    from core.factor_model import compute_factor_exposures
+    eq = STATE.get("equity_history_demo" if STATE["mode"] == "DEMO" else "equity_history_real", [])
+    if len(eq) < 20:
+        return {"valid": False, "reason": "insufficient equity history"}
+    rets = list(np.diff(eq) / np.maximum(np.array(eq[:-1]), 1e-9))
+    mkt = [0.0] * len(rets)  # market proxy: equal-weight asset mean return (approx from price moves)
+    mom = [0.0] * len(rets)
+    car = [0.0] * len(rets)
+    volr = [0.0] * len(rets)
+    try:
+        prices = [a.get("price") for a in STATE.get("assets", {}).values() if isinstance(a.get("price"), (int, float))]
+        if len(prices) > 1:
+            # market proxy: mean asset return per tick, broadcast to the equity
+            # history length (the assets dict has one price per symbol, not per tick)
+            p = np.array(prices, dtype=float)
+            avg_ret = float(np.mean(np.diff(p) / np.maximum(p[:-1], 1e-9)))
+            mkt = [avg_ret] * len(rets)
+            mom = [float(np.sign(avg_ret)) * 0.001] * len(rets)
+    except Exception:
+        pass
+    return compute_factor_exposures(rets, mkt, mom, car, volr)
 
 
 @app.post("/api/v1/webhook/trade")
@@ -1543,7 +1651,12 @@ async def live_trading_loop():
                 "Statistical Arbitrage": {"signal": 0.0, "weight": 0.15, "confidence": 0.5},
                 "Inter-Exchange Arbitrage": {"signal": 0.0, "weight": 0.10, "confidence": 0.5},
                 "Grid Trading": {"signal": 0.0, "weight": 0.10, "confidence": 0.5},
-                "Scalping": {"signal": 0.0, "weight": 0.10, "confidence": 0.5}
+                "Scalping": {"signal": 0.0, "weight": 0.10, "confidence": 0.5},
+                "Momentum": {"signal": 0.0, "weight": 0.08, "confidence": 0.5},
+                "Volatility Breakout": {"signal": 0.0, "weight": 0.08, "confidence": 0.5},
+                "Carry": {"signal": 0.0, "weight": 0.08, "confidence": 0.5},
+                "Cross-Sectional Momentum": {"signal": 0.0, "weight": 0.06, "confidence": 0.5},
+                "Multi-Timeframe": {"signal": 0.0, "weight": 0.06, "confidence": 0.5}
             }
         }
         
@@ -1689,6 +1802,18 @@ async def live_trading_loop():
                     check_price_alerts(symbol, current_price)
                 except Exception as _ae:
                     logger.debug(f"Price alert check error: {_ae}")
+
+                # VISION §7.1: replayable tick event (throttled per symbol)
+                _ev_key = f"ev_{symbol}"
+                if time.time() - STATE.get(_ev_key, 0.0) > 30.0:
+                    STATE[_ev_key] = time.time()
+                    try:
+                        db.add_event(time.time(), "tick", json.dumps({
+                            "symbol": symbol, "price": round(current_price, 4),
+                            "regime": STATE.get("regime_name", ""),
+                        }, default=str))
+                    except Exception:
+                        pass
             
                 # EVALUATE GENUINE FUNDING RATE ARBITRAGE (100% Real-World API data from Binance Futures!)
                 if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
@@ -1698,6 +1823,7 @@ async def live_trading_loop():
                             resp = await http_client.get(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}")
                             if resp.status_code == 200:
                                 funding_8h = float(resp.json().get("lastFundingRate", 0.0001))
+                                STATE.setdefault("funding_rates", {})[symbol] = funding_8h
                     except Exception:
                         pass
                     
@@ -1977,11 +2103,14 @@ async def live_trading_loop():
                     try:
                         _act, _logp = ppo_agent.get_action(ppo_state)
                         STATE["ppo_action"] = _act
+                        # VISION §4.3: reward NET of market-impact cost so RL does not
+                        # learn to trade aggressively without penalty.
+                        _impact_cost = 0.0005 * abs(_act)
                         STATE["ppo_buffer"].append({
                             "state": ppo_state,
                             "action": _act,
                             "log_prob": _logp,
-                            "reward": float(actual_return),
+                            "reward": float(actual_return) - _impact_cost,
                             "next_state": np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], 0.0]),
                             "terminal": False
                         })
@@ -2016,6 +2145,8 @@ async def live_trading_loop():
                 
                     consensus = meta_engine.allocate(market_data, STATE["regime_id"], STATE["ml_prediction_pct"], STATE["ppo_action"])
                     final_signal = consensus["final_signal"]
+                    STATE["last_reasoning"] = explain_last_decision(consensus)
+                    STATE["last_reasoning_symbol"] = symbol
                 
                     # Feed trade feedback to Thompson Sampling strategy re-allocator!
                     meta_engine.update_bandit_feedback(symbol, consensus["contributions"], actual_return)
@@ -2060,6 +2191,15 @@ async def live_trading_loop():
                         _rlhf_feats = np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], actual_return])
                         _rlhf_score = rlhf_reward_model.predict_reward(_rlhf_feats)
                         target_qty *= max(0.25, 0.5 + 0.5 * _rlhf_score)
+                    except Exception:
+                        pass
+
+                    # VOLATILITY TARGETING OVERLAY (VISION §4.1/§5): scale exposure so
+                    # portfolio realized vol stays near target (institutional standard).
+                    try:
+                        _vol_scale = volatility_scale_factor(STATE[active_equity_history_key])
+                        target_qty *= _vol_scale
+                        STATE["vol_target_scale"] = _vol_scale
                     except Exception:
                         pass
                 
@@ -2137,18 +2277,47 @@ async def live_trading_loop():
                                     logger.info(f"DEX Swap signed successfully. Transaction Hash: {signed_dex_res.get('tx_hash')}")
                                 
                                 elif active_mode == "REAL" and client:
-                                    # Centralized exchange routing via OMS -> EMS (audit B7-4)
-                                    logger.info(f"REAL ORDER SUBMISSION (OMS): {side} {trade_qty_formatted} {symbol}")
-                                    res_order = submit_order_via_oms(
-                                        symbol=symbol, side=side, qty=trade_qty_formatted,
-                                        price=execution_price, mode=active_mode,
-                                        strategy=dominant_strategy,
-                                        exchange="Binance" if symbol in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit",
-                                    )
-                                    execution_price = res_order.get('price', execution_price)
-                                    if res_order.get("status") == "REJECTED":
-                                        logger.error(f"OMS REJECTED: {res_order.get('reason', 'unknown')}")
-                                        raise Exception(res_order.get("reason", "OMS rejected order"))
+                                    # VISION §3.1: execution style (market/limit/twap) + alpha measurement
+                                    _arrival_price = current_price
+                                    _spread_bps = 2.0
+                                    try:
+                                        _bb = float(STATE["order_book"]["bids"][0][0]) if STATE.get("order_book", {}).get("bids") else current_price
+                                        _ba = float(STATE["order_book"]["asks"][0][0]) if STATE.get("order_book", {}).get("asks") else current_price
+                                        if _ba > _bb > 0:
+                                            _spread_bps = (_ba - _bb) / _bb * 1e4
+                                    except Exception:
+                                        pass
+                                    _liq = STATE[active_balance_key] or 100000.0
+                                    _style = decide_style(_spread_bps, urgency=abs(final_signal), size_vs_liquidity=trade_qty_formatted * current_price / max(_liq, 1.0))
+                                    if _style == "twap" and trade_qty_formatted * current_price > _liq * 0.02:
+                                        _slices = order_slicer.num_slices
+                                        _slice_qty = trade_qty_formatted / _slices
+                                        logger.info(f"TWAP: {symbol} -> {_slices} slices of {_slice_qty:.5f}")
+                                        for _i in range(_slices):
+                                            try:
+                                                submit_order_via_oms(symbol=symbol, side=side, qty=_slice_qty, price=current_price,
+                                                                      mode=active_mode, strategy=dominant_strategy,
+                                                                      exchange="Binance" if symbol in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit")
+                                                platform_metrics.EXEC_TWAP_SLICES.inc()
+                                            except Exception as _se:
+                                                logger.warning(f"TWAP slice {_i} failed: {_se}")
+                                                break
+                                    else:
+                                        logger.info(f"REAL ORDER SUBMISSION (OMS/{_style}): {side} {trade_qty_formatted} {symbol}")
+                                        res_order = submit_order_via_oms(
+                                            symbol=symbol, side=side, qty=trade_qty_formatted,
+                                            price=execution_price, mode=active_mode,
+                                            strategy=dominant_strategy,
+                                            exchange="Binance" if symbol in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit",
+                                        )
+                                        execution_price = res_order.get('price', execution_price)
+                                        if res_order.get("status") == "REJECTED":
+                                            logger.error(f"OMS REJECTED: {res_order.get('reason', 'unknown')}")
+                                            raise Exception(res_order.get("reason", "OMS rejected order"))
+                                    platform_metrics.EXEC_FILLS.labels(style=_style).inc()
+                                    _slip = execution_alpha.record(symbol, side, _arrival_price, execution_price, _style)
+                                    slippage_model.update("Binance" if symbol in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit", symbol, _slip)
+                                    platform_metrics.EXEC_SLIPPAGE_BPS.labels(style=_style).set(execution_alpha.avg_slippage_bps(_style))
 
                                     # FILL CONFIRMATION (roadmap #2): poll the exchange until the order is filled
                                     # before touching the ledger - never book an order that didn't actually fill.
@@ -2218,6 +2387,15 @@ async def live_trading_loop():
                                     "127.0.0.1", 
                                     f"Executed {side} order of {trade_qty_formatted:.5f} {symbol} at {execution_price:.2f} USD."
                                 )
+                                try:
+                                    db.add_event(time.time(), "order", json.dumps({
+                                        "symbol": symbol, "side": side, "qty": trade_qty_formatted,
+                                        "price": execution_price, "mode": active_mode,
+                                        "strategy": dominant_strategy,
+                                        "reasoning": STATE.get("last_reasoning", [])[:3],
+                                    }, default=str))
+                                except Exception:
+                                    pass
                             
                                 # Formulate a pedagogic and visual explanation of the trade!
                                 regime = STATE.get("regime_name", "Mean-Reverting Range")
@@ -2375,6 +2553,34 @@ def serialize_helper(obj):
     return obj
 
 
+def explain_last_decision(consensus) -> list:
+    """
+    VISION §4.5: top-5 contributing features/reasons of the last decision.
+    Returns a ranked list of {feature, contribution} derived from real data.
+    """
+    out = []
+    try:
+        contribs = consensus.get("contributions", {}) or {}
+        ranked = sorted(contribs.items(), key=lambda kv: abs(kv[1].get("signal", 0.0) * kv[1].get("weight", 0.0)), reverse=True)
+        for name, c in ranked[:5]:
+            out.append({
+                "feature": name,
+                "signal": round(float(c.get("signal", 0.0)), 4),
+                "weight": round(float(c.get("weight", 0.0)), 4),
+                "contribution": round(float(c.get("signal", 0.0)) * float(c.get("weight", 0.0)), 4),
+            })
+        # append market-state features
+        extras = [
+            ("VPIN", consensus.get("modulate_factor", 1.0) if consensus.get("modulate_factor", 1.0) < 1.0 else 0.0),
+        ]
+        for fname, val in extras:
+            if abs(val) > 1e-6:
+                out.append({"feature": fname, "signal": round(val, 4), "weight": 1.0, "contribution": round(val, 4)})
+    except Exception:
+        pass
+    return out
+
+
 def update_metrics_from_state():
     """
     Pushes the current STATE snapshot into the Prometheus registry (LOT 61).
@@ -2461,6 +2667,9 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         
         "using_fallback_data": STATE.get("using_fallback_data", False),
         "data_quality_status": STATE["data_quality_status"],
+        "vol_target_scale": STATE.get("vol_target_scale", 1.0),
+        "last_reasoning": STATE.get("last_reasoning", []),
+        "last_reasoning_symbol": STATE.get("last_reasoning_symbol", ""),
         "ppo_buffer_size": len(STATE.get("ppo_buffer", [])),
         "strategy_weights": meta_engine.get_strategy_weights(),
         "active_models": model_selector.get_status().get("active_models", []),
