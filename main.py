@@ -67,6 +67,7 @@ from models.onchain_tracker import OnChainTracker
 from models.defi_wallet import NonCustodialDeFiWallet
 from models.mlops_pipeline import MLOpsAutoTrainer
 from models.risk_covariance import RiskCovarianceEngine
+from market_data.multi_source import MultiSourcePriceEngine
 from models.volatility_arbitrage import OptionsVolatilityArbitrageEngine
 from models.telegram_bot import TelegramBotManager
 from models.funding_arbitrage import FundingRateArbitrageEngine
@@ -374,7 +375,10 @@ STATE = {
     "last_tick_volume": None,         # Volume réel (Bybit ticker) — plus de 15.0 inventé
     "price_history": [],              # Historique de prix RÉELS uniquement
     "order_book": None,               # Carnet BTCUSDT réel (None tant qu'aucun flux reçu)
-    "order_books": {},                # Carnets réels PAR ACTIF (multi-assets)
+    "order_books": {},                # Carnets réels consolidés BBO PAR ACTIF
+    "exchange_order_books": {},          # Carnets réels PAR EXCHANGE x PAR ACTIF
+    "price_consensus": {},               # Consensus multi-sources par actif (PDF)
+    "price_divergent": {},               # Flag de divergence anormale (gel du trading)
     "regime_id": 2,                   # Initialized to Range (modèle, pas une donnée de marché)
     "regime_name": "Mean-Reverting Range",
     "ml_prediction_pct": 0.0,
@@ -512,14 +516,33 @@ def mark_real_price(symbol: str, price: float, volume_24h=None):
             STATE["price_history"] = STATE["price_history"][-120:]
 
 
-def update_asset_order_book(symbol: str, bids: list, asks: list):
+def update_asset_order_book(symbol: str, bids: list, asks: list, exchange: str = "bybit"):
     """
-    Met à jour le carnet d'ordres RÉEL d'un actif (multi-assets).
-    `order_book` reste l'alias historique pour BTCUSDT (télémétrie/dashboard).
+    Met à jour le carnet d'ordres RÉEL d'un actif (multi-assets, multi-exchange).
+    Stocke le carnet PAR exchange puis consolide le BEST BOOK (meilleur spread)
+    dans order_books[symbol] — `order_book` reste l'alias historique pour BTCUSDT.
     """
-    STATE.setdefault("order_books", {})[symbol] = {"bids": bids, "asks": asks}
-    if symbol == "BTCUSDT":
-        STATE["order_book"] = {"bids": bids, "asks": asks}
+    STATE.setdefault("exchange_order_books", {}).setdefault(exchange, {})[symbol] = {
+        "bids": bids, "asks": asks, "_ts": time.time(),
+    }
+    # Consolidation BBO : le carnet de l'exchange avec le meilleur spread
+    best = None
+    for ex, books in STATE.get("exchange_order_books", {}).items():
+        b = books.get(symbol)
+        if not b or not b.get("bids") or not b.get("asks"):
+            continue
+        try:
+            spread = float(b["asks"][0][0]) - float(b["bids"][0][0])
+        except Exception:
+            continue
+        if best is None or spread < best[0]:
+            best = (spread, ex, b)
+    if best is not None:
+        consolidated = {"bids": best[2]["bids"], "asks": best[2]["asks"],
+                        "exchange": best[1]}
+        STATE.setdefault("order_books", {})[symbol] = consolidated
+        if symbol == "BTCUSDT":
+            STATE["order_book"] = consolidated
     STATE.setdefault("asset_data_status", {})[symbol] = DataQualityStatus.LIVE
     STATE["assets"][symbol]["data_status"] = DataQualityStatus.LIVE
 
@@ -680,6 +703,7 @@ slippage_model = SlippageModel()
 mixture_of_experts = MixtureOfExperts(state_dim=4)
 hypothesis_generator = HypothesisGenerator(db=db)
 risk_committee = RiskCommittee(veto_threshold=0.85)
+price_engine = MultiSourcePriceEngine()  # consensus prix multi-exchange (PDF: redondance 2+ sources)
 execution_bandit = ExecutionStyleBandit()
 strategy_exec_attr = StrategyExecutionAttribution()
 
@@ -959,6 +983,16 @@ def evaluate_real_safety_gate(symbol: str) -> bool:
         logger.error("SAFETY GATE: Risk circuit breaker is ACTIVE.")
         return False
         
+    # 4bis. Multi-Source Divergence Check (PDF : « divergence anormale entre 2
+    # sources = alarme et gel du trading » — mentalité n°5)
+    if STATE.get("price_divergent", {}).get(symbol):
+        cons = STATE.get("price_consensus", {}).get(symbol, {})
+        logger.error(
+            f"SAFETY GATE: Divergence multi-sources {cons.get('divergence_pct')}% "
+            f"(seuil {cons.get('threshold_pct')}%) sur {symbol} -> ordre réel BLOQUÉ."
+        )
+        return False
+        
     # 5. Model Registry Approval Check
     from models.mlops_pipeline import ModelStatus
     if mlops_trainer.active_model_status != ModelStatus.DEPLOYED:
@@ -1007,7 +1041,7 @@ async def fetch_depth_snapshot_rest(symbol: str):
             bids = [[float(b[0]), float(b[1])] for b in bids_raw[:5]]
             asks = [[float(a[0]), float(a[1])] for a in asks_raw[:5]]
             if bids and asks:
-                update_asset_order_book(symbol, bids, asks)
+                update_asset_order_book(symbol, bids, asks, exchange="bybit")
                 logger.info(f"OrderBook REST snapshot (réel) reçu pour {symbol}.")
                 return True
     except Exception as e:
@@ -1036,14 +1070,14 @@ async def order_book_snapshot_loop():
         await asyncio.sleep(10.0)
 
 
-def _store_depth_update(symbol: str, bids_raw: list, asks_raw: list):
+def _store_depth_update(symbol: str, bids_raw: list, asks_raw: list, exchange: str = "bybit"):
     """Parse et stocke une mise à jour de profondeur RÉELLE (WS ou REST)."""
     try:
         bids = [[float(b[0]), float(b[1])] for b in bids_raw[:5]]
         asks = [[float(a[0]), float(a[1])] for a in asks_raw[:5]]
         if bids and asks:
-            update_asset_order_book(symbol, bids, asks)
-            STATE["order_books"][symbol]["_ts"] = time.time()
+            update_asset_order_book(symbol, bids, asks, exchange=exchange)
+            STATE.setdefault("order_books", {}).setdefault(symbol, {})["_ts"] = time.time()
     except Exception as e:
         logger.debug(f"Depth parse error {symbol}: {e}")
 
@@ -1093,7 +1127,7 @@ async def multi_exchange_websocket_listener():
                                 await trigger_realtime_broadcast()
 
                         elif "@depth5" in stream_name:
-                            _store_depth_update(symbol, msg.get("bids", []), msg.get("asks", []))
+                            _store_depth_update(symbol, msg.get("bids", []), msg.get("asks", []), exchange="binance")
                             await trigger_realtime_broadcast()
             except Exception as e:
                 logger.warning(f"Binance WS disconnected: {str(e)}. Reconnecting in 5s...")
@@ -1127,7 +1161,7 @@ async def multi_exchange_websocket_listener():
                         elif "orderbook.5." in topic:
                             symbol = topic.replace("orderbook.5.", "")
                             d = msg.get("data", {})
-                            _store_depth_update(symbol, d.get("b", []), d.get("a", []))
+                            _store_depth_update(symbol, d.get("b", []), d.get("a", []), exchange="bybit")
                             await trigger_realtime_broadcast()
             except Exception as e:
                 logger.warning(f"Bybit WS disconnected: {str(e)}. Reconnecting in 5s...")
@@ -1137,6 +1171,24 @@ async def multi_exchange_websocket_listener():
     asyncio.create_task(listen_binance())
     asyncio.create_task(listen_bybit())
     asyncio.create_task(order_book_snapshot_loop())
+
+
+async def price_consensus_loop():
+    """
+    Rafraîchit le consensus multi-sources de TOUS les actifs toutes les 20s.
+    Le résultat alimente STATE["price_consensus"] (télémétrie + boucle de trading).
+    """
+    while True:
+        try:
+            for sym in list(STATE["assets"].keys()):
+                try:
+                    cons = await price_engine.get_consensus(sym, max_age_seconds=0.0)
+                    STATE.setdefault("price_consensus", {})[sym] = cons
+                except Exception as se:
+                    logger.debug(f"Consensus refresh failed for {sym}: {se}")
+        except Exception as e:
+            logger.warning(f"Price consensus loop error: {e}")
+        await asyncio.sleep(20.0)
 
 
 def validate_startup_config():
@@ -2282,6 +2334,10 @@ async def startup_event():
     # Start the continuous WebSockets trading execution background process
     asyncio.create_task(live_trading_loop())
     
+    # Start the multi-source price consensus engine (PDF: redondance 2+ sources)
+    asyncio.create_task(price_consensus_loop())
+    logger.info("✅ Multi-source price consensus loop started (Binance/Bybit/Coinbase/Kraken/OKX/CoinGecko/CryptoCompare/Yahoo...)")
+    
     # Start the official Dual-Exchange WebSockets Stream
     asyncio.create_task(multi_exchange_websocket_listener())
     
@@ -2504,29 +2560,66 @@ async def live_trading_loop():
                 # (faille 1 corrigée : plus de prix inventé — mark_real_price uniquement)
                 price_fetched = False
                 try:
+                    # ===== PRIX CONSENSUS MULTI-SOURCES (PDF : redondance 2+ sources croisées) =====
+                    # Crypto : Binance + Bybit + Coinbase + Kraken + OKX (+ CoinGecko/CryptoCompare 60s)
+                    # Or/FX/Actions : Yahoo + gold-api (XAU) / er-api (EURUSD) ; AAPL/TSLA = Yahoo seul (SINGLE_SOURCE honnête)
                     if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
-                        # Bybit public API - real ticker with real 24h volume
-                        async with bybit_limiter:
-                            async with httpx.AsyncClient() as http_client:
-                                resp = await http_client.get(f"https://api.bybit.com/v5/market/tickers?category=spot&symbol={symbol}")
-                        if resp.status_code == 200:
-                            t = resp.json().get("result", {}).get("list", [{}])[0]
-                            price_val = float(t.get("lastPrice"))
-                            if price_val > 0:
-                                mark_real_price(symbol, price_val, volume_24h=t.get("volume24h"))
-                                STATE["last_tick_volume"] = float(t.get("volume24h", 0.0) or 0.0)
-                                price_fetched = True
+                        cons = await price_engine.get_consensus(symbol)
+                        STATE.setdefault("price_consensus", {})[symbol] = cons
+                        if cons.get("price") and cons["price"] > 0:
+                            mark_real_price(symbol, cons["price"],
+                                            volume_24h=STATE["assets"][symbol].get("volume_24h"))
+                            price_fetched = True
+                            if cons["status"] == "DIVERGENT":
+                                # GEL DU TRADING (PDF) : divergence anormale entre sources
+                                STATE.setdefault("price_divergent", {})[symbol] = True
+                                logger.critical(
+                                    f"⚠️ DIVERGENCE MULTI-SOURCES {symbol}: "
+                                    f"{cons['divergence_pct']:.3f}% > seuil {cons['threshold_pct']:.2f}% "
+                                    f"sur {cons['n_sources']} sources {list(cons['sources'].keys())} "
+                                    f"-> GEL du trading pour {symbol}."
+                                )
+                                try:
+                                    db.add_audit_log(
+                                        "SOURCE_DIVERGENCE", "127.0.0.1",
+                                        f"{symbol}: divergence {cons['divergence_pct']:.3f}% "
+                                        f"(sources {list(cons['sources'].keys())}) -> trading gelé."
+                                    )
+                                except Exception:
+                                    pass
+                                continue
+                            STATE.setdefault("price_divergent", {})[symbol] = False
+                        else:
+                            set_asset_quality(symbol, DataQualityStatus.UNAVAILABLE)
                     else:
-                        # Yahoo Finance Real-time Tickers! Gold (GC=F), EURUSD (EURUSD=X), AAPL (AAPL), TSLA (TSLA)
+                        # Barres réelles Yahoo persistées (pour l'historique)
                         y_ticker = "GC=F" if symbol == "XAUUSD" else "EURUSD=X" if symbol == "EURUSD" else symbol
                         df_y = await fetch_yahoo_finance_candles(y_ticker, interval="1m", range_str="1d")
                         if not df_y.empty:
-                            price_val = float(df_y['close'].iloc[-1])
-                            if price_val > 0:
-                                mark_real_price(symbol, price_val)
-                                # Persist to database cache dynamically (barres RÉELLES Yahoo)
-                                db.save_candles(symbol, df_y)
-                                price_fetched = True
+                            db.save_candles(symbol, df_y)
+                        cons = await price_engine.get_consensus(symbol)
+                        STATE.setdefault("price_consensus", {})[symbol] = cons
+                        if cons.get("price") and cons["price"] > 0:
+                            mark_real_price(symbol, cons["price"])
+                            price_fetched = True
+                            if cons["status"] == "DIVERGENT":
+                                STATE.setdefault("price_divergent", {})[symbol] = True
+                                logger.critical(
+                                    f"⚠️ DIVERGENCE MULTI-SOURCES {symbol}: "
+                                    f"{cons['divergence_pct']:.3f}% > seuil {cons['threshold_pct']:.2f}% "
+                                    f"-> GEL du trading pour {symbol}."
+                                )
+                                try:
+                                    db.add_audit_log(
+                                        "SOURCE_DIVERGENCE", "127.0.0.1",
+                                        f"{symbol}: divergence {cons['divergence_pct']:.3f}% -> trading gelé."
+                                    )
+                                except Exception:
+                                    pass
+                                continue
+                            STATE.setdefault("price_divergent", {})[symbol] = False
+                        else:
+                            set_asset_quality(symbol, DataQualityStatus.UNAVAILABLE)
                 except Exception as e:
                     logger.error(f"Failed to fetch live price tick for {symbol}: {str(e)}")
                     # Le prix reste celui de la dernière donnée réelle, sinon None
@@ -2582,16 +2675,27 @@ async def live_trading_loop():
                 #  échoue, l'arbitrage de funding est simplement ignoré)
                 if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
                     funding_8h = None
+                    # Funding croisé Binance <-> Bybit (PDF : 2 sources indépendantes)
                     try:
-                        async with httpx.AsyncClient() as http_client:
-                            resp = await http_client.get(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}")
-                            if resp.status_code == 200:
-                                fr = resp.json().get("lastFundingRate")
-                                if fr is not None:
-                                    funding_8h = float(fr)
-                                    STATE.setdefault("funding_rates", {})[symbol] = funding_8h
-                    except Exception:
-                        pass
+                        fcons = await price_engine.get_funding_consensus(symbol)
+                        if fcons.get("status") == "DIVERGENT":
+                            logger.warning(
+                                f"FUNDING {symbol}: divergence anormale entre sources "
+                                f"{fcons.get('sources')} -> funding ignoré (gel arbitrage)."
+                            )
+                            try:
+                                db.add_audit_log(
+                                    "FUNDING_SOURCE_DIVERGENCE", "127.0.0.1",
+                                    f"{symbol}: funding Binance/Bybit divergent {fcons.get('sources')} -> ignoré."
+                                )
+                            except Exception:
+                                pass
+                        else:
+                            funding_8h = fcons.get("funding_rate_8h")
+                            if funding_8h is not None:
+                                STATE.setdefault("funding_rates", {})[symbol] = funding_8h
+                    except Exception as fe:
+                        logger.debug(f"Funding consensus failed for {symbol}: {fe}")
 
                     spot_p = current_price
                     perp_p = None
@@ -3684,6 +3788,8 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "assets_telemetry": STATE["assets"],
         "asset_data_status": STATE.get("asset_data_status", {}),
         "order_books": {k: {kk: vv for kk, vv in v.items() if kk != "_ts"} for k, v in STATE.get("order_books", {}).items()},
+        "price_consensus": STATE.get("price_consensus", {}),
+        "price_divergent": STATE.get("price_divergent", {}),
         "macro_calendar": macro_calendar.get_calendar(limit=5),
         "options_strategy": STATE["options_strategy"],
         "real_iv": STATE.get("real_iv", {}),

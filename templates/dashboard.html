@@ -276,11 +276,11 @@ window.qpLogin = async function () {
 
                 <!-- Price ticker -->
                 <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
-                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">PRIX EN DIRECT (BTC)</p>
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">PRIX CONSENSUS (BTC) — MULTI-SOURCES</p>
                     <h3 id="val-price" class="text-xl font-black mt-1 text-emerald-400 glow-text-green">$0.00</h3>
                     <div class="flex items-center space-x-1 mt-0.5 text-[10px] font-bold text-slate-500">
-                        <span class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
-                        <span>DOUBLE-WEBSOCKET ACTIVE</span>
+                        <span id="dot-source" class="w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping"></span>
+                        <span id="val-sources">DOUBLE-WEBSOCKET ACTIVE</span>
                     </div>
                 </div>
 
@@ -762,6 +762,24 @@ window.qpLogin = async function () {
             safeSetText('val-initial-cap', `Init: $${initialCap.toLocaleString(undefined, {minimumFractionDigits:0, maximumFractionDigits:0})}`);
 
             safeSetText('val-price', `$${(data.last_price || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
+            // Consensus multi-sources (PDF : redondance 2+ sources croisées)
+            const pcons = (data.price_consensus && data.price_consensus.BTCUSDT) || null;
+            const srcEl = document.getElementById('val-sources');
+            const dotEl = document.getElementById('dot-source');
+            if (pcons && pcons.n_sources > 0) {
+                const srcNames = Object.keys(pcons.sources || {}).join(' · ');
+                safeSetText('val-sources', `${pcons.n_sources} SOURCES · écart ${pcons.divergence_pct}% · ${srcNames}`);
+                if (pcons.status === 'DIVERGENT') {
+                    if (dotEl) dotEl.className = 'w-1.5 h-1.5 rounded-full bg-rose-500 animate-ping';
+                } else if (pcons.status === 'SINGLE_SOURCE') {
+                    if (dotEl) dotEl.className = 'w-1.5 h-1.5 rounded-full bg-amber-400';
+                } else {
+                    if (dotEl) dotEl.className = 'w-1.5 h-1.5 rounded-full bg-emerald-400 animate-ping';
+                }
+            } else {
+                safeSetText('val-sources', 'AUCUNE SOURCE RÉELLE (UNAVAILABLE)');
+                if (dotEl) dotEl.className = 'w-1.5 h-1.5 rounded-full bg-rose-500';
+            }
             safeSetText('val-regime', data.regime_name || "N/A");
 
             // Advanced metrics telemetry — affichage honnête UNAVAILABLE
