@@ -38,7 +38,8 @@ from core.meta_cognition import (adaptive_conviction_threshold, decide_no_trade,
 from core.execution_agent import ExecutionStyleBandit, tradability_factor, StrategyExecutionAttribution
 from core.risk_committee import RiskCommittee, daily_risk_budget
 from core.self_assessment import simulation_divergence, honesty_factor, meta_attribution, health_honesty_component
-from core.llm_narrative import daily_market_narrative, explain_decision, answer_question
+from core.llm_narrative import (daily_market_narrative, explain_decision, answer_question,
+                                 daily_market_narrative_async, answer_question_async)
 from core.organization import Organization
 from core.research_discipline import (pre_register_hypothesis, double_validation, live_p_value, meta_label_filter)
 from core.robustness import (save_state_snapshot, restore_state_snapshot, Supervisor, chaos_cut_feed,
@@ -1305,7 +1306,7 @@ async def concierge_scheduler():
                 await telegram_bot.send_push_notification(build_concierge_message(report))
                 # VISION_FUTUR §3: LLM narrative appended (OpenRouter or structured)
                 try:
-                    _narr = daily_market_narrative(report, STATE)
+                    _narr = await daily_market_narrative_async(report, STATE)
                     if _narr:
                         STATE["last_narrative"] = _narr
                         await telegram_bot.send_push_notification(_narr)
@@ -1641,7 +1642,7 @@ async def api_assistant(payload: AskRequest, _auth: dict = Depends(require_auth)
         "desk_allocations": STATE.get("desk_allocations", {}),
         "admitted_signals": list(hypothesis_generator.admitted.keys()),
     }
-    return {"answer": answer_question(payload.question, context)}
+    return {"answer": await answer_question_async(payload.question, context)}
 
 
 @app.post("/api/v1/narrative")
@@ -1649,7 +1650,7 @@ async def api_narrative(_auth: dict = Depends(require_auth)):
     """VISION_FUTUR §3/§6: daily market narrative (LLM via OpenRouter, structured fallback)."""
     from core.reporting import build_daily_report
     report = build_daily_report(STATE, db)
-    narrative = daily_market_narrative(report, STATE)
+    narrative = await daily_market_narrative_async(report, STATE)
     STATE["last_narrative"] = narrative
     return {"narrative": narrative}
 
