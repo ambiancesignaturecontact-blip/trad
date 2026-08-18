@@ -46,10 +46,24 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
 
 
 class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """Security headers. NOTE: Telegram Mini-App renders /telegram inside an
+    iframe from web.telegram.org / native app, so X-Frame-Options must NOT be
+    sent there (would block the mini-app with 'refuses to connect'). We instead
+    allow framing via CSP frame-ancestors for Telegram origins on that path."""
+
     async def dispatch(self, request: Request, call_next):
         response = await call_next(request)
+        # Telegram Mini-App must be embeddable - no X-Frame-Options on /telegram
+        is_telegram = request.url.path.startswith("/telegram")
         for k, v in SECURITY_HEADERS.items():
+            if k == "X-Frame-Options" and is_telegram:
+                continue
             response.headers.setdefault(k, v)
+        if is_telegram:
+            # allow Telegram to frame the mini-app (CSP frame-ancestors is the modern way)
+            response.headers["Content-Security-Policy"] = (
+                "frame-ancestors https://web.telegram.org https://telegram.org;"
+            )
         if os.getenv("ENABLE_HSTS", "true").lower() == "true":
             for k, v in HSTS_HEADER.items():
                 response.headers.setdefault(k, v)

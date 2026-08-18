@@ -22,13 +22,21 @@ def test_position_size_micro_capital():
 
 def test_circuit_breaker_daily_drawdown():
     risk = RiskManager()
-    risk.set_initial_capital(1000.0)
-    
-    # Simulate 3% daily loss (should trigger with 2.5% limit)
+    risk.set_initial_capital(1000.0)  # small account -> 10% daily limit
+
+    # 3% loss under the 10% small-account limit -> should NOT trip
     tripped, msg = risk.check_circuit_breaker(970.0)
-    
-    assert tripped is True
-    assert "DAILY DRAWDOWN" in msg
+    assert tripped is False
+
+    # 12% loss exceeds the 10% small-account limit -> trips
+    tripped2, msg2 = risk.check_circuit_breaker(880.0)
+    assert tripped2 is True
+    assert "DAILY DRAWDOWN" in msg2
+
+    # micro-account (50$) gets 18% daily limit so noise doesn't lock it
+    risk.set_initial_capital(50.0)
+    tripped3, _ = risk.check_circuit_breaker(47.5)  # 5% loss on 50$
+    assert tripped3 is False
 
 def test_validate_order_safety():
     risk = RiskManager()

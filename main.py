@@ -2032,6 +2032,11 @@ async def startup_event():
             STATE["initial_capital_demo"] = val
             STATE["current_equity"] = val
             STATE["equity_history_demo"] = [val]
+            # Bind risk parameters to actual capital (micro-budget: wider drawdown limits)
+            try:
+                risk_manager.set_initial_capital(val)
+            except Exception as e:
+                logger.warning(f"set_initial_capital failed: {e}")
             logger.info(f"Loaded persisted demo balance from database: ${val:,.2f} USD")
         except Exception as e:
             logger.error(f"Failed to load persisted demo balance: {str(e)}")
@@ -3719,6 +3724,7 @@ async def set_demo_balance(payload: SetBalanceRequest, _auth: dict = Depends(req
     if payload.balance <= 0:
         raise HTTPException(status_code=400, detail="Balance must be positive.")
     STATE["balance_demo"] = payload.balance
+    risk_manager.set_initial_capital(payload.balance)
     STATE["initial_capital_demo"] = payload.balance
     STATE["current_equity"] = payload.balance
     STATE["equity_history_demo"] = [payload.balance]

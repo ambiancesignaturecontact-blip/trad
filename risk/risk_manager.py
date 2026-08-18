@@ -23,10 +23,27 @@ class RiskManager:
         """
         Dynamically binds risk parameters to actual starting AUM.
         Essential for micro-accounts (e.g. 50 Euros) and macro portfolios.
+        Micro-accounts (< $1k) get WIDER drawdown limits so the circuit breaker
+        does not trip on normal noise (2.5% daily would lock a $50 account after
+        a single small move). Values follow config.yaml risk.daily_drawdown_micro
+        / risk.daily_drawdown_normal.
         """
         self.daily_start_equity = float(capital)
         self.peak_equity = float(capital)
         self.circuit_breaker_active = False
+
+        if capital < 1000.0:
+            # micro-account: 18% daily / 35% lifetime (config.yaml micro values)
+            self.params['max_daily_drawdown_pct'] = 0.18
+            self.params['max_total_drawdown_pct'] = 0.35
+        elif capital < 100000.0:
+            # small account: 10% daily / 20% lifetime
+            self.params['max_daily_drawdown_pct'] = 0.10
+            self.params['max_total_drawdown_pct'] = 0.20
+        else:
+            # institutional: 2.5% daily / 8% lifetime (tightest)
+            self.params['max_daily_drawdown_pct'] = 0.025
+            self.params['max_total_drawdown_pct'] = 0.08
 
     def check_circuit_breaker(self, current_equity):
         """

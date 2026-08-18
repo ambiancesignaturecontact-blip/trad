@@ -17,14 +17,14 @@ def test_circuit_breakers():
     })
     
     # Set starting values
-    risk.set_initial_capital(100.0)
-    
+    risk.set_initial_capital(100.0)  # micro-account -> 18% daily limit
+
     # 1. Check within normal bounds
     tripped, msg = risk.check_circuit_breaker(95.0) # 5% drawdown
     assert tripped is False
-    
-    # 2. Check daily drawdown breach (12% drawdown)
-    tripped, msg = risk.check_circuit_breaker(85.0)
+
+    # 2. Check daily drawdown breach (19% > 18% micro limit)
+    tripped, msg = risk.check_circuit_breaker(81.0)
     assert tripped is True
     assert "DAILY DRAWDOWN BREACHED" in msg
 
