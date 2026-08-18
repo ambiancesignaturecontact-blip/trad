@@ -481,3 +481,122 @@ def test_paper_execution_ignores_wrong_symbol_book():
     assert r["status"] == "FILLED"
     assert r["fill_price"] < 5.0, f"EURUSD must not fill against BTC book (got {r['fill_price']})"
     assert r["slippage_bps"] < 1000.0
+
+
+# ================= VISION EVOLUTION tests =================
+
+# ---- §1 PENSER ----
+def test_regime_probabilities_are_soft():
+    import numpy as np
+    from models.regime_detector import MarketRegimeDetector
+    from core.world_model import compute_regime_probs
+    det = MarketRegimeDetector()
+    det.fit(np.column_stack([np.random.randn(200) * 0.01, np.random.rand(200) * 0.02]))
+    probs = compute_regime_probs(det, np.array([[0.0, 0.01]]))
+    assert len(probs) >= 2
+    assert abs(sum(probs.values()) - 1.0) < 0.05  # normalized
+
+
+def test_causal_parents_discovery():
+    import numpy as np, pandas as pd
+    from core.world_model import discover_causal_parents
+    rng = np.random.default_rng(0)
+    n = 200
+    cause = rng.normal(0, 1, n)
+    returns = 0.5 * cause + 0.1 * rng.normal(0, 1, n)
+    noise = rng.normal(0, 1, n)
+    df = pd.DataFrame({"returns": returns, "cause": cause, "noise": noise})
+    parents = discover_causal_parents(df, target="returns", alpha=0.05)
+    assert "cause" in parents
+    assert "noise" not in parents
+
+
+def test_counterfactual_alpha():
+    from core.world_model import counterfactual_alpha
+    a = counterfactual_alpha({"side": "BUY", "entry": 100, "exit": 105}, benchmark_return=0.02)
+    assert abs(a - 0.03) < 1e-9  # +5% trade vs +2% market = +3% alpha
+
+
+# ---- §2 APPRENDRE ----
+def test_mixture_of_experts_gate_and_decide():
+    import numpy as np
+    from core.mixture_experts import MixtureOfExperts, risk_adjusted_reward
+    moe = MixtureOfExperts(state_dim=4)
+    gate = moe.gate(regime_id=0, vol_mean=0.001)
+    assert abs(sum(gate.values()) - 1.0) < 1e-6
+    res = moe.decide(np.zeros(4), 0, 0.001)
+    assert -1.0 <= res["action"] <= 1.0
+    assert set(res["votes"].keys()) == {"scalping", "swing", "position"}
+    # risk-adjusted reward penalizes drawdown
+    r_flat = risk_adjusted_reward(0.01, 0.5, [100, 101, 102, 103, 104, 105], impact_cost=0.0005)
+    r_dd = risk_adjusted_reward(0.01, 0.5, [100, 102, 101, 103, 104, 90], impact_cost=0.0005)
+    assert r_flat > r_dd
+
+
+# ---- §3 INVENTER ----
+def test_hypothesis_generator_cycle():
+    import numpy as np, pandas as pd
+    from core.hypothesis_generator import HypothesisGenerator
+    gen = HypothesisGenerator(db=None)
+    rng = np.random.default_rng(0)
+    close = 100 * np.cumprod(1 + rng.normal(0, 0.01, 400))
+    df = pd.DataFrame({"close": close, "high": close * 1.005, "low": close * 0.995,
+                       "volume": rng.uniform(500, 2000, 400)})
+    res = gen.run_research_cycle(df, {"vpin": 0.5, "kyle_lambda": 0, "sentiment": 0,
+                                      "onchain_risk": 0.5, "funding_rates": {}, "market_avg_return": 0.0},
+                                 n_candidates=4)
+    assert res["candidates"] == 4
+    assert "admitted" in res
+    assert len(gen.admitted) <= gen.max_admitted
+
+
+# ---- §4 DÉCIDER ----
+def test_adaptive_conviction_and_hedging():
+    from core.meta_cognition import adaptive_conviction_threshold, hedging_decision
+    good = adaptive_conviction_threshold([0.5] * 30, [0.01] * 30, base_threshold=0.15)
+    bad = adaptive_conviction_threshold([0.5] * 15 + [-0.5] * 15, [0.01] * 30, base_threshold=0.15)
+    assert good < bad  # accurate bot lowers its bar, inaccurate raises it
+    hedge = hedging_decision("BTCUSDT",
+                             [{"symbol": "BTCUSDT", "qty": 1.0, "avg_price": 60000},
+                              {"symbol": "ETHUSDT", "qty": 20.0, "avg_price": 3000}],
+                             {"BTCUSDT": {"ETHUSDT": 0.9}}, max_correlation=0.85)
+    assert hedge is not None and hedge["hedge_side"] in ("BUY", "SELL")
+
+
+# ---- §5 EXÉCUTER ----
+def test_execution_bandit_and_tradability():
+    from core.execution_agent import ExecutionStyleBandit, tradability_factor, StrategyExecutionAttribution
+    bandit = ExecutionStyleBandit(epsilon=0.0)
+    for _ in range(20):
+        style = bandit.choose_style("BTCUSDT", "normal", 2.0, 0.9)
+        bandit.observe("BTCUSDT", "normal", style, 1.0 if style == "market" else 8.0)
+    best = bandit.choose_style("BTCUSDT", "normal", 2.0, 0.9)
+    assert best == "market"  # market learned to be cheapest
+    assert 0.3 <= tradability_factor(5.0) < 1.0
+    attr = StrategyExecutionAttribution()
+    attr.record("Momentum", 4.0, "market")
+    assert attr.report()["Momentum"]["avg_bps"] == 4.0
+
+
+# ---- §6 SE PROTÉGER ----
+def test_risk_committee_veto():
+    from core.risk_committee import RiskCommittee, strategy_risk_score, daily_risk_budget
+    import numpy as np
+    high_vol = list(np.random.randn(40) * 0.05)
+    low_vol = [0.0005] * 40
+    assert strategy_risk_score("X", high_vol, 0.8, 0.05) > strategy_risk_score("Y", low_vol, 0.2, 0.0)
+    budget = daily_risk_budget({"A": low_vol, "B": high_vol}, stress_correlation=0.9)
+    assert abs(sum(budget.values()) - 1.0) < 1e-3
+    assert budget["A"] > budget["B"]
+
+
+# ---- §7 SE CONNAÎTRE ----
+def test_self_assessment():
+    from core.self_assessment import simulation_divergence, honesty_factor, meta_attribution, health_honesty_component
+    d = simulation_divergence(3.0, 6.0)
+    assert d > 0.5  # realized twice the modeled slippage
+    assert honesty_factor(0.0) == 1.0
+    assert honesty_factor(2.0) < 1.0
+    attr = meta_attribution([{"reasons": ["Momentum"], "pnl": 5}, {"reasons": ["Momentum"], "pnl": -1}])
+    assert attr["Momentum"]["win_rate"] == 0.5
+    assert health_honesty_component(1.0, 80) < 80

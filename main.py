@@ -30,6 +30,14 @@ from core.signal_library import SIGNAL_LIBRARY, evaluate_all_signals, evaluate_s
 from core.execution_router import ExecutionAlpha, SlippageModel, decide_style
 from core.copy_mirror import fetch_trader_positions, build_mirror_orders, mirror_status_text
 from core.paper_execution import simulate_paper_fill
+from core.world_model import (compute_regime_probs, compute_market_state,
+                              discover_causal_parents, build_causal_feature_df, counterfactual_alpha)
+from core.mixture_experts import MixtureOfExperts, risk_adjusted_reward, curriculum_sort
+from core.hypothesis_generator import HypothesisGenerator
+from core.meta_cognition import (adaptive_conviction_threshold, decide_no_trade, hedging_decision)
+from core.execution_agent import ExecutionStyleBandit, tradability_factor, StrategyExecutionAttribution
+from core.risk_committee import RiskCommittee, daily_risk_budget
+from core.self_assessment import simulation_divergence, honesty_factor, meta_attribution, health_honesty_component
 from core.reporting import build_daily_report, compute_health_score, build_concierge_message
 
 # Import our quant models
@@ -382,6 +390,14 @@ STATE = {
     "price_alerts": [],               # custom price alerts (audit C3)
     "ab_base": [],                    # A/B paper: baseline hypothetical equity
     "ab_vol": [],                     # A/B paper: vol-targeted hypothetical equity
+    "regime_probs": {},               # VISION §1a: soft HMM probabilities
+    "market_state": {},               # VISION §1b: joint market state
+    "causal_parents": [],             # VISION §1c: causal parents of returns
+    "conviction_threshold": 0.15,     # VISION §4a: adaptive
+    "no_trade_stats": {"count": 0},   # VISION §4b
+    "last_hedge_ts": 0.0,             # VISION §4c
+    "recent_signals": [],             # for meta-cognition (rolling)
+    "recent_returns": [],             # for meta-cognition (rolling)
     "using_fallback_data": False     # True when synthetic fallback candles are in use
 }
 
@@ -557,6 +573,13 @@ protection_store = PositionProtectionStore(STATE)
 # VISION §3: execution quality tracking
 execution_alpha = ExecutionAlpha()
 slippage_model = SlippageModel()
+
+# VISION §2-§7: cognitive architecture instances
+mixture_of_experts = MixtureOfExperts(state_dim=4)
+hypothesis_generator = HypothesisGenerator(db=db)
+risk_committee = RiskCommittee(veto_threshold=0.85)
+execution_bandit = ExecutionStyleBandit()
+strategy_exec_attr = StrategyExecutionAttribution()
 
 # CCXT Exchange Client Cache
 ccxt_client = None
@@ -1025,6 +1048,99 @@ async def autonomous_ai_scheduler():
             else:
                 logger.info(f"🤖 Autonomous AI: PPO buffer {len(buf)}/50 - collecting more experiences.")
 
+            # 3a0) VISION §1c: causal discovery on REAL features -> store parents
+            try:
+                md_c = {"vpin": STATE.get("market_state", {}).get("vpin", 0.5),
+                        "kyle_lambda": 0.0, "sentiment": STATE.get("sentiment_index", 0.0),
+                        "onchain_risk": STATE.get("onchain_risk_score", 0.5),
+                        "funding_rates": STATE.get("funding_rates", {}),
+                        "symbol": "BTCUSDT"}
+                fdf = build_causal_feature_df(STATE, df, md_c)
+                if fdf is not None and len(fdf) >= 40:
+                    parents = discover_causal_parents(fdf, target="returns")
+                    STATE["causal_parents"] = parents
+                    db.save_setting("causal_parents", json.dumps(parents))
+                    logger.info(f"🧠 Causal parents of returns: {parents}")
+            except Exception as ce:
+                logger.warning(f"Causal discovery skipped: {ce}")
+
+            # 3a1) VISION §2c/2d: OFFLINE RL on the replayable event journal
+            try:
+                events = db.list_events(event_type="paper_fill", limit=500)
+                samples = []
+                for e in events:
+                    try:
+                        p = json.loads(e["payload"])
+                        samples.append({
+                            "state": np.array([0.0, float(p.get("slippage_bps", 0.0)) / 100.0, 0.0, 0.0]),
+                            "action": 1.0 if p.get("side") == "BUY" else -1.0,
+                            "log_prob": 0.0,
+                            "reward": -float(p.get("slippage_bps", 0.0)) / 10000.0,
+                            "next_state": np.array([0.0, 0.0, 0.0, 0.0]),
+                            "terminal": False,
+                            "vol": 0.01,
+                        })
+                    except Exception:
+                        continue
+                if len(samples) >= 30:
+                    for _h, _exp in mixture_of_experts.experts.items():
+                        n = _exp.train_offline(curriculum_sort(samples))
+                        if n:
+                            logger.info(f"🧠 OFFLINE RL: {_h} expert trained on {n} journal samples")
+            except Exception as oe:
+                logger.warning(f"Offline RL skipped: {oe}")
+
+            # 3a2) VISION §3: autonomous research cycle (invent -> test -> promote)
+            try:
+                md_r = {"vpin": STATE.get("market_state", {}).get("vpin", 0.5),
+                        "kyle_lambda": 0.0, "sentiment": STATE.get("sentiment_index", 0.0),
+                        "onchain_risk": STATE.get("onchain_risk_score", 0.5),
+                        "funding_rates": STATE.get("funding_rates", {}),
+                        "market_avg_return": 0.0}
+                _research = hypothesis_generator.run_research_cycle(df, md_r, n_candidates=6)
+                logger.info(f"🧪 RESEARCH CYCLE: {_research['candidates']} tested, "
+                            f"{len(_research['promoted'])} promoted, admitted={len(_research['admitted'])}")
+            except Exception as re:
+                logger.warning(f"Research cycle skipped: {re}")
+
+            # 3a3) VISION §6: risk committee veto + daily risk budget
+            try:
+                _vetoes = risk_committee.evaluate(meta_engine, STATE)
+                for v in _vetoes:
+                    db.add_audit_log("RISK_COMMITTEE", "127.0.0.1", f"{v['action']} {v['strategy']} (score {v['score']})")
+                try:
+                    _stress_corr = float(db.get_setting("autonomous_last_stress_corr") or 0.5)
+                except Exception:
+                    _stress_corr = 0.5
+                _budget = daily_risk_budget(meta_engine.recent_performance, _stress_corr)
+                STATE["risk_budget"] = _budget
+            except Exception as kce:
+                logger.warning(f"Risk committee skipped: {kce}")
+
+            # 3a4) VISION §7: self-assessment (meta-attribution of reasons + divergence)
+            try:
+                from core.reporting import build_daily_report
+                _rep = build_daily_report(STATE, db)
+                _reasons_log = []
+                for _o in db.list_events(event_type="order", limit=200):
+                    try:
+                        _p = json.loads(_o["payload"])
+                        _reasons_log.append({"reasons": [r.get("feature", "") for r in (_p.get("reasoning") or [])[:3]],
+                                             "pnl": 0.0})
+                    except Exception:
+                        continue
+                if _reasons_log:
+                    _attr = meta_attribution(_reasons_log)
+                    db.save_setting("reason_effectiveness", json.dumps(_attr))
+                    logger.info(f"🔍 Meta-attribution: {len(_attr)} reasons tracked")
+                _real_slip = execution_alpha.avg_slippage_bps("market") or 3.0
+                _div = simulation_divergence(3.0, _real_slip)  # modeled baseline 3bps
+                STATE["sim_divergence"] = _div
+                db.save_setting("sim_divergence", str(_div))
+                logger.info(f"🔍 Sim vs live slippage divergence: {_div:.2f}")
+            except Exception as sae:
+                logger.warning(f"Self-assessment skipped: {sae}")
+
             # 3a) MONTE-CARLO DAILY STRESS (audit B10-2): measure tail risk continuously
             try:
                 hist = STATE.get("historical_bars")
@@ -1363,6 +1479,68 @@ async def api_factors(_auth: dict = Depends(require_auth)):
     except Exception:
         pass
     return compute_factor_exposures(rets, mkt, mom, car, volr)
+
+
+# ===== VISION endpoints =====
+@app.get("/api/v1/research")
+async def api_research(_auth: dict = Depends(require_auth)):
+    """VISION §3: hypothesis generator status (admitted signals + meta-prior)."""
+    return hypothesis_generator.get_status()
+
+
+@app.post("/api/v1/research/run")
+async def api_research_run(_auth: dict = Depends(require_auth)):
+    """Manually triggers one autonomous research cycle (uses cached real candles,
+    with Yahoo/Binance fallback so it works anywhere)."""
+    df = STATE.get("historical_bars")
+    if df is None or df.empty or len(df) < 80:
+        df = db.load_candles("BTCUSDT", limit=400)
+    if df is None or df.empty or len(df) < 80:
+        df = await fetch_yahoo_finance_candles("BTC-USD", interval="1h", range_str="3mo")
+    if df is None or df.empty or len(df) < 80:
+        raise HTTPException(status_code=503, detail="Insufficient data for research (all feeds unavailable).")
+    md = {"vpin": 0.5, "kyle_lambda": 0.0, "sentiment": STATE.get("sentiment_index", 0.0),
+          "onchain_risk": STATE.get("onchain_risk_score", 0.5),
+          "funding_rates": STATE.get("funding_rates", {}), "market_avg_return": 0.0}
+    return hypothesis_generator.run_research_cycle(df, md, n_candidates=10)
+
+
+@app.get("/api/v1/committee")
+async def api_committee(_auth: dict = Depends(require_auth)):
+    """VISION §6: AI risk committee status (vetoes + scores + budget)."""
+    return {**risk_committee.status(), "risk_budget": STATE.get("risk_budget", {})}
+
+
+@app.get("/api/v1/moe")
+async def api_moe(_auth: dict = Depends(require_auth)):
+    """VISION §2: mixture-of-experts status (votes, gate, offline training)."""
+    return {
+        "gate": STATE.get("moe_gate", {}),
+        "last_votes": STATE.get("moe_votes", {}),
+        "buffers": {h: len(e.buffer) for h, e in mixture_of_experts.experts.items()},
+        "execution_bandit": execution_bandit.status(),
+    }
+
+
+@app.get("/api/v1/self")
+async def api_self(_auth: dict = Depends(require_auth)):
+    """VISION §7: self-assessment (divergence, reason effectiveness, honesty)."""
+    reason_eff = {}
+    try:
+        raw = db.get_setting("reason_effectiveness")
+        if raw:
+            import json as _j
+            reason_eff = _j.loads(raw)
+    except Exception:
+        pass
+    return {
+        "sim_divergence": STATE.get("sim_divergence", 0.0),
+        "causal_parents": STATE.get("causal_parents", []),
+        "conviction_threshold": STATE.get("conviction_threshold", 0.15),
+        "no_trade_stats": STATE.get("no_trade_stats", {}),
+        "reason_effectiveness": reason_eff,
+        "strategy_exec_attribution": strategy_exec_attr.report(),
+    }
 
 
 @app.post("/api/v1/webhook/trade")
@@ -2104,6 +2282,13 @@ async def live_trading_loop():
                     vol_mean = np.std(recent_returns) if len(recent_returns) > 0 else 0.01
                     STATE["regime_id"] = int(regime_detector.predict(np.array([[ret_mean, vol_mean]]))[0])
                     STATE["regime_name"] = regime_detector.get_regime_name(STATE["regime_id"])
+
+                    # VISION §1a/1b: soft regime probabilities + joint market state
+                    try:
+                        STATE["regime_probs"] = compute_regime_probs(regime_detector, np.array([[ret_mean, vol_mean]]))
+                        STATE["market_state"] = compute_market_state(STATE, STATE["regime_probs"], vol_mean)
+                    except Exception:
+                        pass
                 
                     # Predict temporal change using our true pure NumPy LSTM Deep Neural Network!
                     seq_features = df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0).values[-5:]
@@ -2126,6 +2311,20 @@ async def live_trading_loop():
                     positions = db.get_positions()
                     asset_position = next((p for p in positions if p['symbol'] == symbol), None)
                     pos_qty = asset_position['qty'] if asset_position else 0.0
+
+                    # VISION §4c: integrated hedging decision - only when correlation is
+                    # extreme and we haven't hedged recently (cooldown 1h, small size).
+                    try:
+                        if time.time() - STATE.get("last_hedge_ts", 0.0) > 3600 and len(positions) >= 2:
+                            _hedge = hedging_decision(symbol, positions, STATE.get("corr_matrix_cache", {}), max_correlation=0.85)
+                            if _hedge:
+                                STATE["last_hedge_ts"] = time.time()
+                                db.add_audit_log("HEDGE_DECISION", "127.0.0.1",
+                                                 f"Hedge {_hedge['hedge_side']} {_hedge['hedge_qty']:.5f} {_hedge['hedge_symbol']}: {_hedge['reason']}")
+                                db.add_event(time.time(), "hedge", json.dumps(_hedge, default=str))
+                                logger.info(f"🛡️ HEDGE: {_hedge['hedge_symbol']} {_hedge['hedge_side']} {_hedge['hedge_qty']:.5f}")
+                    except Exception:
+                        pass
 
                     # ===== POSITION PROTECTION (audit B7-1): STOP-LOSS / TAKE-PROFIT / TRAILING =====
                     # Protection is evaluated FIRST, before any new signal, so an open
@@ -2178,6 +2377,17 @@ async def live_trading_loop():
                                     f"PROTECTION_{action}", "127.0.0.1",
                                     f"{action} executed on {symbol} @ {exit_price:.2f} (entry {prot.entry_price:.2f})",
                                 )
+                                # VISION §1d: counterfactual marginal alpha vs the market move
+                                try:
+                                    _mkt_move = float(actual_return) if "actual_return" in dir() else 0.0
+                                    _alpha = counterfactual_alpha(
+                                        {"side": exit_side, "entry": prot.entry_price, "exit": exit_price},
+                                        benchmark_return=_mkt_move)
+                                    db.add_event(time.time(), "closed_trade_alpha",
+                                                 json.dumps({"symbol": symbol, "action": action,
+                                                             "marginal_alpha": round(_alpha, 6)}, default=str))
+                                except Exception:
+                                    pass
                                 protection_store.remove(symbol)
                                 platform_metrics.ORDERS_TOTAL.labels(mode=active_mode, side=exit_side).inc()
                                 try:
@@ -2204,18 +2414,27 @@ async def live_trading_loop():
                     # experiences so the PPO agent trains itself from live outcomes.
                     try:
                         _act, _logp = ppo_agent.get_action(ppo_state)
-                        STATE["ppo_action"] = _act
-                        # VISION §4.3: reward NET of market-impact cost so RL does not
-                        # learn to trade aggressively without penalty.
-                        _impact_cost = 0.0005 * abs(_act)
+                        # VISION §2a: blend the legacy PPO with the Mixture-of-Experts gated action
+                        _moe = mixture_of_experts.decide(ppo_state, STATE["regime_id"], vol_mean)
+                        STATE["ppo_action"] = float(np.clip(0.5 * _act + 0.5 * _moe["action"], -1.0, 1.0))
+                        STATE["moe_votes"] = _moe["votes"]
+                        STATE["moe_gate"] = _moe["gate"]
+                        # VISION §2b: reward NET of impact + drawdown penalty
+                        _reward = risk_adjusted_reward(
+                            actual_return=float(actual_return),
+                            action=STATE["ppo_action"],
+                            equity_history=STATE[active_equity_history_key],
+                        )
                         STATE["ppo_buffer"].append({
                             "state": ppo_state,
-                            "action": _act,
+                            "action": STATE["ppo_action"],
                             "log_prob": _logp,
-                            "reward": float(actual_return) - _impact_cost,
+                            "reward": _reward,
                             "next_state": np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], 0.0]),
                             "terminal": False
                         })
+                        mixture_of_experts.collect_experience(ppo_state, STATE["ppo_action"], _logp, _reward,
+                                                              np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], 0.0]))
                         if len(STATE["ppo_buffer"]) > 2000:
                             STATE["ppo_buffer"] = STATE["ppo_buffer"][-2000:]
                     except Exception as e:
@@ -2306,6 +2525,15 @@ async def live_trading_loop():
                     except Exception:
                         pass
 
+                    # VISION §5b: tradability/capacity filter - if realized slippage is
+                    # high for this venue/symbol, reduce size (the simulation is respected).
+                    try:
+                        _slip_avg = slippage_model.expected_slippage_bps(
+                            "Binance" if symbol in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit", symbol, fallback=5.0)
+                        target_qty *= tradability_factor(_slip_avg)
+                    except Exception:
+                        pass
+
                     # VISION §7.5: A/B paper - same signals, two configurations
                     # (baseline vs vol-targeted) recorded as hypothetical equity.
                     try:
@@ -2332,7 +2560,24 @@ async def live_trading_loop():
                         target_qty *= reduction_factor
                     
                     target_qty *= abs(final_signal)
-                    target_direction = np.sign(final_signal) if abs(final_signal) > settings.get_float("trading", "signal_threshold", 0.15) else 0.0
+                    # VISION §4a: adaptive conviction threshold from recent accuracy
+                    STATE["recent_signals"].append(float(final_signal))
+                    STATE["recent_returns"].append(float(actual_return))
+                    for _k in ("recent_signals", "recent_returns"):
+                        if len(STATE[_k]) > 200:
+                            STATE[_k] = STATE[_k][-200:]
+                    try:
+                        STATE["conviction_threshold"] = adaptive_conviction_threshold(
+                            STATE["recent_signals"], STATE["recent_returns"],
+                            base_threshold=settings.get_float("trading", "signal_threshold", 0.15))
+                    except Exception:
+                        pass
+                    target_direction = np.sign(final_signal) if abs(final_signal) > STATE.get("conviction_threshold", 0.15) else 0.0
+                    # VISION §4b: explicit NO_TRADE decision when abstaining
+                    if target_direction == 0.0 and final_signal != 0.0:
+                        decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
+                                        [f"regime={STATE.get('regime_name','')}", f"moe={STATE.get('moe_gate',{})}"],
+                                        STATE["no_trade_stats"], db)
                     desired_qty = target_direction * target_qty
                     trade_qty = desired_qty - pos_qty
                 
@@ -2403,6 +2648,12 @@ async def live_trading_loop():
                                         pass
                                     _liq = STATE[active_balance_key] or 100000.0
                                     _style = decide_style(_spread_bps, urgency=abs(final_signal), size_vs_liquidity=trade_qty_formatted * current_price / max(_liq, 1.0))
+                                    # VISION §5a: learned execution-style bandit refines the choice
+                                    try:
+                                        _volr = STATE.get("market_state", {}).get("vol_regime", "normal")
+                                        _style = execution_bandit.choose_style(symbol, _volr, _spread_bps, abs(final_signal))
+                                    except Exception:
+                                        pass
                                     if _style == "twap" and trade_qty_formatted * current_price > _liq * 0.02:
                                         _slices = order_slicer.num_slices
                                         _slice_qty = trade_qty_formatted / _slices
@@ -2432,6 +2683,12 @@ async def live_trading_loop():
                                     _slip = execution_alpha.record(symbol, side, _arrival_price, execution_price, _style)
                                     slippage_model.update("Binance" if symbol in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit", symbol, _slip)
                                     platform_metrics.EXEC_SLIPPAGE_BPS.labels(style=_style).set(execution_alpha.avg_slippage_bps(_style))
+                                    try:
+                                        _volr2 = STATE.get("market_state", {}).get("vol_regime", "normal")
+                                        execution_bandit.observe(symbol, _volr2, _style, _slip)
+                                        strategy_exec_attr.record(dominant_strategy, _slip, _style)
+                                    except Exception:
+                                        pass
 
                                     # FILL CONFIRMATION (roadmap #2): poll the exchange until the order is filled
                                     # before touching the ledger - never book an order that didn't actually fill.
@@ -2822,6 +3079,12 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "vol_target_scale": STATE.get("vol_target_scale", 1.0),
         "last_reasoning": STATE.get("last_reasoning", []),
         "last_reasoning_symbol": STATE.get("last_reasoning_symbol", ""),
+        "regime_probs": STATE.get("regime_probs", {}),
+        "conviction_threshold": STATE.get("conviction_threshold", 0.15),
+        "no_trade_count": STATE.get("no_trade_stats", {}).get("count", 0),
+        "moe_gate": STATE.get("moe_gate", {}),
+        "risk_budget": STATE.get("risk_budget", {}),
+        "sim_divergence": STATE.get("sim_divergence", 0.0),
         "ppo_buffer_size": len(STATE.get("ppo_buffer", [])),
         "strategy_weights": meta_engine.get_strategy_weights(),
         "active_models": model_selector.get_status().get("active_models", []),

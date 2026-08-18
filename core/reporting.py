@@ -80,6 +80,17 @@ def compute_health_score(state: Dict, db) -> int:
     except Exception:
         pass
 
+    # 7. VISION §7c: honesty - when the simulation diverges from reality, distrust it
+    try:
+        _div = float(state.get("sim_divergence", 0.0))
+        if _div > 0.5:
+            score -= 15
+            reasons.append(f"écart simulé/réel {_div:.1f}x")
+        elif _div > 0.2:
+            score -= 5
+    except Exception:
+        pass
+
     return max(0, min(100, int(score))), reasons
 
 
