@@ -67,7 +67,7 @@ from db_manager import DBManager
 from backtester.engine import EventDrivenBacktester
 
 # NEW ADVANCED MODELS
-from models.sentiment_analyzer import NewsSentimentAnalyzer
+from models.sentiment_analyzer import NewsSentimentAnalyzer, SOURCE_WEIGHTS as SOURCE_WEIGHTS_REF
 from models.onchain_tracker import OnChainTracker
 from models.defi_wallet import NonCustodialDeFiWallet
 from models.mlops_pipeline import MLOpsAutoTrainer
@@ -416,6 +416,10 @@ STATE = {
     "sentiment_index": None,
     "sentiment_available": False,
     "sentiment_confidence": 0.0,
+    "recent_headlines": [],             # LOT 5: dernières actualités RÉELLES (source+titre)
+    "news_shock": {"shock_detected": False},  # LOT 5: choc systémique détecté
+    "macro_phase": "NONE",              # LOT 5: APPROACHING/ACTIVE/AFTERMATH/NONE
+    "macro_event": "",                  # LOT 5: événement macro en cours
     "onchain_risk_score": None,
     "onchain_available": False,
     "eth_defi_balance": 0.0,
@@ -1892,6 +1896,64 @@ async def api_health():
     return {"health_score": score, "reasons": reasons, "mode": STATE["mode"], "ts": time.time()}
 
 
+@app.get("/api/v1/news")
+async def api_v1_news(_auth: dict = Depends(require_auth)):
+    """
+    LOT 5 (PDF Pilier I) : état des ACTUALITÉS RÉELLES.
+    Expose le sentiment (index + confiance), les dernières headlines réelles
+    avec leur source, le choc systémique éventuel et la pondération des sources.
+    Audit : aucune donnée fictive — headlines vides si sources hors ligne.
+    """
+    return {
+        "sentiment_index": STATE.get("sentiment_index"),
+        "available": STATE.get("sentiment_available", False),
+        "confidence": STATE.get("sentiment_confidence", 0.0),
+        "num_headlines": len(STATE.get("recent_headlines", [])),
+        "headlines": STATE.get("recent_headlines", [])[:20],
+        "shock_status": STATE.get("news_shock", {"shock_detected": False}),
+        "source_weights": {k: v for k, v in SOURCE_WEIGHTS_REF.items()},
+        "ts": time.time(),
+    }
+
+
+class MacroOverrideRequest(BaseModel):
+    """Pilotage humain du risque macro (LOT 5, PDF Pilier I)."""
+    action: str = Field(pattern="^(reduce|halt|reset)$")
+    factor: float = Field(default=0.5, ge=0.05, le=1.0)
+
+
+@app.post("/api/v1/macro/override")
+async def api_v1_macro_override(payload: MacroOverrideRequest,
+                                _auth: dict = Depends(require_auth)):
+    """
+    LOT 5 (PDF Pilier I) : pilotage HUMAIN du risque macro.
+    - reduce : applique un facteur de taille manuel (défaut 0.5)
+    - halt   : passe la machine à états en HALT (nouveaux ordres bloqués)
+    - reset  : revient à NORMAL, facteur 1.0
+    L'opérateur reste le décideur final (mentalité n°10).
+    """
+    try:
+        if payload.action == "reduce":
+            STATE["macro_scale_factor_tactile"] = payload.factor
+            db.add_audit_log("MACRO_OVERRIDE", "127.0.0.1",
+                             f"Opérateur: réduction macro manuelle x{payload.factor}")
+            return {"ok": True, "action": "reduce", "factor": payload.factor,
+                    "risk_state": risk_state.to_dict()}
+        if payload.action == "halt":
+            risk_state.enter(RiskStateMachine.HALT, "MACRO_OVERRIDE")
+            STATE["risk_state"] = risk_state.to_dict()
+            db.add_audit_log("MACRO_OVERRIDE", "127.0.0.1", "Opérateur: HALT macro manuel")
+            return {"ok": True, "action": "halt", "risk_state": risk_state.to_dict()}
+        # reset
+        risk_state.reset(reason="macro/override")
+        STATE["macro_scale_factor_tactile"] = 1.0
+        STATE["risk_state"] = risk_state.to_dict()
+        db.add_audit_log("MACRO_OVERRIDE", "127.0.0.1", "Opérateur: reset macro (NORMAL)")
+        return {"ok": True, "action": "reset", "risk_state": risk_state.to_dict()}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
 @app.get("/api/v1/report/daily")
 async def api_daily_report():
     """AUDIT C2: daily P&L report (per strategy / asset / mode + risk)."""
@@ -2736,6 +2798,12 @@ async def live_trading_loop():
         if loop_count % 3 == 1:
             try:
                 res_sent = await news_analyzer.get_market_sentiment_index()
+                # LOT 5 : stocker les actualités RÉELLES pour l'endpoint /api/v1/news
+                try:
+                    STATE["recent_headlines"] = news_analyzer.get_recent_headlines(limit=20)
+                    STATE["news_shock"] = res_sent.get("shock_status", {})
+                except Exception:
+                    pass
                 if res_sent.get("available"):
                     STATE["sentiment_index"] = res_sent["sentiment_index"]
                     STATE["sentiment_available"] = True
@@ -2749,6 +2817,9 @@ async def live_trading_loop():
                     STATE["sentiment_confidence"] = 0.0
                     logger.warning("Sentiment UNAVAILABLE (aucune source réelle) -> aucune influence sur les trades.")
                 
+                # HIÉRARCHIE DE L'INFORMATION (LOT 5, PDF Pilier I) : un choc
+                # SYSTÉMIQUE (hack, insolvabilité, ban...) ≠ bruit. Seuls les
+                # tokens systémiques du détecteur déclenchent une action forte.
                 if res_sent["shock_status"].get("shock_detected"):
                     logger.critical("EXTREME NEWS SHOCK DETECTED! Restricting trade sizes.")
                     news_scale_factor = 0.20
@@ -2758,6 +2829,12 @@ async def live_trading_loop():
                     # fortement qu'aux événements systémiques.
                     if os.getenv("NEWS_SHOCK_ACTION", "reduce").lower() == "halt":
                         risk_state.enter(RiskStateMachine.HALT, "NEWS_SHOCK")
+                        # Durée du HALT pilotable par l'opérateur
+                        try:
+                            risk_state.cooldown_seconds = float(
+                                os.getenv("NEWS_SHOCK_HALT_MINUTES", "15")) * 60.0
+                        except (TypeError, ValueError):
+                            risk_state.cooldown_seconds = 15.0 * 60.0
                         try:
                             asyncio.create_task(telegram_bot.send_push_notification(
                                 f"🔴 *HALT MÉDIA* — choc systémique détecté. Nouveaux ordres bloqués."))
@@ -2771,23 +2848,40 @@ async def live_trading_loop():
                 STATE["sentiment_index"] = None
                 
         # Check scheduled macroeconomic calendar for approaching shocks
+        # LOT 5 (PDF Pilier I) : gestion des phases AVANT / PENDANT / APRÈS
+        # (mentalité n°4 : on ne trade pas l'événement, on trade la réaction)
         try:
             macro_res = macro_calendar.check_upcoming_macro_shocks()
+            STATE["macro_phase"] = macro_res.get("phase", "NONE")
+            STATE["macro_event"] = macro_res.get("event", "")
             if macro_res.get("upcoming_shock"):
                 event_name = macro_res["event"]
                 time_left = macro_res["time_to_event_minutes"]
+                phase = macro_res.get("phase", "APPROACHING")
                 
-                # Check if we have already sent this alert
+                # Check if we have already sent this alert (par phase)
                 last_sent_event = STATE.get("last_sent_macro_event")
-                if last_sent_event != event_name:
+                if last_sent_event != f"{event_name}|{phase}":
                     # Send the newly implemented INTERACTIVE TACTILE mobile alert!
                     await telegram_bot.send_interactive_macro_alert(event_name, time_left)
-                    STATE["last_sent_macro_event"] = event_name
+                    STATE["last_sent_macro_event"] = f"{event_name}|{phase}"
                     
                 macro_scale_factor = macro_res["scale_reduction_factor"]
-                # LOT 2 : événement macro réel proche -> CAUTION (réduction
-                # préventive, mentalité n°4 : on trade la réaction, pas l'événement)
-                risk_state.enter(RiskStateMachine.CAUTION, f"MACRO:{macro_res['event']}")
+                # Machine à états selon la PHASE (LOT 5) :
+                #  - ACTIVE (HIGH) : l'événement EST EN COURS -> HALT réel
+                #    (durée NEWS_SHOCK_HALT_MINUTES), on ne trade pas la bougie
+                #  - ACTIVE (MEDIUM/LOW) / APPROACHING / AFTERMATH : CAUTION
+                if phase == "ACTIVE" and macro_res.get("request_halt"):
+                    if risk_state.state != RiskStateMachine.HALT:
+                        risk_state.enter(RiskStateMachine.HALT, f"MACRO_ACTIVE:{event_name}")
+                        # HALT dédié : durée pilotable par l'opérateur
+                        try:
+                            risk_state.cooldown_seconds = float(
+                                os.getenv("NEWS_SHOCK_HALT_MINUTES", "15")) * 60.0
+                        except (TypeError, ValueError):
+                            risk_state.cooldown_seconds = 15.0 * 60.0
+                else:
+                    risk_state.enter(RiskStateMachine.CAUTION, f"MACRO:{phase}:{event_name}")
             else:
                 STATE["last_sent_macro_event"] = None
         except Exception as e:
@@ -4282,6 +4376,10 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "sentiment_index": STATE["sentiment_index"],
         "sentiment_available": STATE.get("sentiment_available", False),
         "sentiment_confidence": STATE.get("sentiment_confidence", 0.0),
+        "recent_headlines": STATE.get("recent_headlines", [])[:10],
+        "news_shock": STATE.get("news_shock", {"shock_detected": False}),
+        "macro_phase": STATE.get("macro_phase", "NONE"),
+        "macro_event": STATE.get("macro_event", ""),
         "onchain_risk_score": STATE["onchain_risk_score"],
         "onchain_available": STATE.get("onchain_available", False),
         "eth_defi_balance": STATE["eth_defi_balance"],

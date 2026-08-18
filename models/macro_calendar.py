@@ -30,6 +30,18 @@ IMPACT_REDUCTION = {
     "LOW": 0.90,      # -10% avant un événement mineur
 }
 
+# LOT 5 (PDF Pilier I) : phases AVANT / PENDANT / APRÈS (mentalité n°4 :
+# « on ne trade pas l'événement, on trade la réaction »).
+EVENT_ACTIVE_WINDOW = 15 * 60        # ±15 min autour du timestamp = événement ACTIF
+EVENT_AFTERMATH_WINDOW = 60 * 60     # 60 min après = réaction erratique à laisser se calmer
+
+# Facteurs par phase (la phase ACTIVE d'un HIGH est la plus dangereuse)
+PHASE_FACTORS = {
+    "APPROACHING": IMPACT_REDUCTION,          # avant : réduction préventive
+    "ACTIVE": {"HIGH": 0.20, "MEDIUM": 0.50, "LOW": 0.70},   # pendant : très prudent
+    "AFTERMATH": {"HIGH": 0.60, "MEDIUM": 0.80, "LOW": 0.90},  # après : retour progressif
+}
+
 
 class MacroeconomicCalendarEngine:
     """
@@ -158,13 +170,20 @@ class MacroeconomicCalendarEngine:
     # ------------------------------------------------------------------ #
     def check_upcoming_macro_shocks(self, warning_window_seconds=14400) -> dict:
         """
-        Scanne le calendrier RÉEL. Si un événement à fort impact approche
-        (fenêtre d'avertissement, défaut 4h), renvoie une demande de réduction
-        préventive de l'exposition avec le facteur adapté à l'impact.
+        Scanne le calendrier RÉEL et gère les TROIS PHASES de chaque événement
+        (LOT 5, PDF Pilier I — mentalité n°4 : on ne trade pas l'événement,
+        on trade la réaction) :
+
+          APPROACHING : dans la fenêtre d'avertissement (défaut 4h) ->
+                        réduction préventive (facteur IMPACT_REDUCTION).
+          ACTIVE      : ±15 min autour du timestamp -> facteur minimum
+                        (0.20 pour un HIGH) + demande de HALT pour les HIGH.
+          AFTERMATH   : jusqu'à 60 min après -> la première réaction est
+                        erratique, on reste prudent puis on revient.
 
         Retour (contrat conservé pour main.py) :
-            upcoming_shock, event, time_to_event_minutes, impact,
-            scale_reduction_factor + source & status honnêtes.
+            upcoming_shock, event, phase, time_to_event_minutes, impact,
+            scale_reduction_factor, request_halt + source & status honnêtes.
         """
         current_epoch = time.time()
 
@@ -173,17 +192,62 @@ class MacroeconomicCalendarEngine:
             # jamais de faux événement (mentalité n°20 : zéro ego, honnêteté).
             return {
                 "upcoming_shock": False,
+                "phase": "NONE",
                 "scale_reduction_factor": 1.0,
+                "request_halt": False,
                 "source": self.source_status,
                 "status": "UNAVAILABLE",
                 "events_loaded": 0,
             }
 
         for ev in self.scheduled_events:
-            time_to_event = ev["timestamp"] - current_epoch
+            ts = ev["timestamp"]
+            impact = ev["impact"]
+
+            # Phase ACTIVE : on est DANS la fenêtre de l'événement
+            if abs(ts - current_epoch) <= EVENT_ACTIVE_WINDOW:
+                factor = PHASE_FACTORS["ACTIVE"].get(impact, 0.7)
+                logger.critical(
+                    f"⚠️ ÉVÉNEMENT MACRO ACTIF : '{ev['event']}' (impact {impact}) "
+                    f"EN COURS -> facteur {factor}."
+                )
+                return {
+                    "upcoming_shock": True,
+                    "event": ev["event"],
+                    "phase": "ACTIVE",
+                    "time_to_event_minutes": (ts - current_epoch) / 60.0,
+                    "impact": impact,
+                    "scale_reduction_factor": factor,
+                    "request_halt": impact == "HIGH",
+                    "source": ev["source"],
+                    "status": "LIVE",
+                    "events_loaded": len(self.scheduled_events),
+                }
+
+            # Phase AFTERMATH : l'événement vient de passer, réaction erratique
+            if 0 < current_epoch - ts <= EVENT_AFTERMATH_WINDOW:
+                factor = PHASE_FACTORS["AFTERMATH"].get(impact, 0.8)
+                logger.warning(
+                    f"🌊 APRÈS ÉVÉNEMENT : '{ev['event']}' (impact {impact}) "
+                    f"réaction à laisser se calmer -> facteur {factor}."
+                )
+                return {
+                    "upcoming_shock": True,
+                    "event": ev["event"],
+                    "phase": "AFTERMATH",
+                    "time_to_event_minutes": (ts - current_epoch) / 60.0,
+                    "impact": impact,
+                    "scale_reduction_factor": factor,
+                    "request_halt": False,
+                    "source": ev["source"],
+                    "status": "LIVE",
+                    "events_loaded": len(self.scheduled_events),
+                }
+
+            # Phase APPROACHING : dans la fenêtre d'avertissement
+            time_to_event = ts - current_epoch
             if 0 < time_to_event <= warning_window_seconds:
-                impact = ev["impact"]
-                factor = IMPACT_REDUCTION.get(impact, 1.0)
+                factor = PHASE_FACTORS["APPROACHING"].get(impact, 1.0)
                 logger.warning(
                     f"⏰ PRÉVENTION RÉELLE : événement macro '{ev['event']}' "
                     f"(impact {impact}, source {ev['source']}) dans "
@@ -192,9 +256,11 @@ class MacroeconomicCalendarEngine:
                 return {
                     "upcoming_shock": True,
                     "event": ev["event"],
+                    "phase": "APPROACHING",
                     "time_to_event_minutes": time_to_event / 60.0,
                     "impact": impact,
                     "scale_reduction_factor": factor,
+                    "request_halt": False,
                     "source": ev["source"],
                     "status": "LIVE",
                     "events_loaded": len(self.scheduled_events),
@@ -202,7 +268,9 @@ class MacroeconomicCalendarEngine:
 
         return {
             "upcoming_shock": False,
+            "phase": "NONE",
             "scale_reduction_factor": 1.0,
+            "request_halt": False,
             "source": self.source_status,
             "status": "LIVE",
             "events_loaded": len(self.scheduled_events),

@@ -7,6 +7,26 @@ import asyncio
 
 logger = logging.getLogger("SentimentAnalyzer")
 
+# LOT 5 (PDF Pilier I) : pondération des sources — toutes les actualités ne se
+# valent pas : Google News (couverture mondiale) et CryptoCompare (marchés)
+# pèsent plus que Reddit (bruit communautaire).
+SOURCE_WEIGHTS = {
+    "cryptocompare": 0.30,
+    "google_news": 0.35,
+    "alpha_vantage": 0.20,
+    "reddit": 0.15,
+}
+
+# Intensificateurs (PDF Pilier I) : amplifient le sentiment du mot de lexique
+# qui suit ("record rally", "massive selloff"...). Multiplicateur borné 1.0-2.0.
+INTENSIFIERS = {
+    "record": 1.5, "all-time": 1.5, "unprecedented": 1.5, "historic": 1.4,
+    "massive": 1.5, "huge": 1.4, "major": 1.3, "sharp": 1.3, "dramatic": 1.3,
+    "extreme": 1.3, "collapse": 1.4, "plunge": 1.3, "surge": 1.3, "soar": 1.3,
+    "slump": 1.3, "tank": 1.3, "crisis": 1.4, "stunning": 1.3, "epic": 1.3,
+    "massive": 1.5, "panic": 1.3,
+}
+
 class NewsSentimentAnalyzer:
     """
     Advanced Context-Aware Financial Natural Language Processing (NLP) Sentiment Analyzer.
@@ -90,20 +110,27 @@ class NewsSentimentAnalyzer:
     async def fetch_all_sources(self) -> list:
         """
         Polls multiple independent news APIs concurrently to avoid any single-point-of-failure.
+        LOT 5 (PDF Pilier I) : mémorise la SOURCE de chaque titre (pour la
+        pondération et l'endpoint /api/v1/news).
         """
         tasks = [
-            self.fetch_cryptocompare_news(),
-            self.fetch_reddit_news(),
-            self.fetch_alpha_vantage_news(),
-            self.fetch_google_news_rss()
+            ("cryptocompare", self.fetch_cryptocompare_news()),
+            ("reddit", self.fetch_reddit_news()),
+            ("alpha_vantage", self.fetch_alpha_vantage_news()),
+            ("google_news", self.fetch_google_news_rss())
         ]
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        results = await asyncio.gather(*[t[1] for t in tasks], return_exceptions=True)
 
-        # Flatten results list
+        # Flatten results list + mémoriser la source de chaque titre
         all_headlines = []
-        for r in results:
+        self._source_map = {}
+        for (name, _), r in zip(tasks, results):
             if isinstance(r, list):
-                all_headlines.extend(r)
+                for h in r:
+                    if h and h not in self._source_map:
+                        all_headlines.append(h)
+                        self._source_map[h] = name
+        self.last_headlines = [(self._source_map[h], h) for h in all_headlines]
 
         # RÈGLE D'HONNÊTETÉ (faille 1 corrigée — mentalité n°5 : la confiance dans
         # le signal compte autant que le signal) : si TOUTES les sources réelles
@@ -114,7 +141,12 @@ class NewsSentimentAnalyzer:
                 "SentimentAnalyzer: toutes les sources réelles sont hors ligne "
                 "-> sentiment UNAVAILABLE (n'influencera AUCUN trade)."
             )
+            self.last_headlines = []
         return list(set(all_headlines))  # Deduplicate
+
+    def get_recent_headlines(self, limit: int = 20) -> list:
+        """LOT 5 : dernières actualités RÉELLES (source + titre) pour l'API."""
+        return [{"source": s, "title": t} for s, t in getattr(self, "last_headlines", [])[:limit]]
 
     async def fetch_google_news_rss(self) -> list:
         """
@@ -132,9 +164,10 @@ class NewsSentimentAnalyzer:
                 titles = []
                 for item in root.iter("item"):
                     title = item.findtext("title")
-                    if title:
-                        # Google News préfixe les titres avec la source ("Site - Titre")
-                        cleaned = title.split(" - ", 1)[-1].strip()
+                    if title and not title.startswith("\""):
+                        # Format Google News : "Titre - Site" (le site est APRÈS
+                        # le dernier séparateur) — on garde le TITRE réel
+                        cleaned = title.rsplit(" - ", 1)[0].strip()
                         titles.append(cleaned)
                 return titles[:10]
         except Exception as e:
@@ -145,6 +178,10 @@ class NewsSentimentAnalyzer:
         """
         Linguistic Parser with Negation and Valence Shifting (Context-Aware FinBERT-like logic).
         Correctly parses e.g. 'crash avoided' -> positive (+0.9), rather than negative (-0.9).
+
+        LOT 5 (PDF Pilier I) : NÉGATION À DISTANCE (jusqu'à 3 mots avant le mot
+        de lexique) + INTENSIFICATEURS ("record rally" amplifié) — le sentiment
+        est plus robuste qu'une simple négation au mot précédent.
         """
         cleaned = re.sub(r'[^a-zA-Z\s]', '', text.lower())
         words = cleaned.split()
@@ -162,13 +199,28 @@ class NewsSentimentAnalyzer:
             if word in self.lexicon:
                 base_sentiment = self.lexicon[word]
                 
-                # Apply negation shift
-                if negate_next:
+                # Négation à distance BIDIRECTIONNELLE (LOT 5, PDF Pilier I) :
+                #  - avant : "reports say no crash" (négation dans les 3 mots précédents)
+                #  - après : "crash avoided" (négation post-posée, typique anglais)
+                negated = negate_next
+                for j in range(max(0, idx - 3), idx):
+                    if words[j] in self.negations:
+                        negated = True
+                        break
+                if not negated and idx + 1 < len(words) and words[idx + 1] in self.negations:
+                    negated = True
+                if negated:
                     # Invert and scale down slightly for semantic naturalness
                     base_sentiment = -base_sentiment * 0.9
                     negate_next = False
-                elif idx > 0 and words[idx-1] in self.negations:
-                    base_sentiment = -base_sentiment * 0.9
+                
+                # Intensificateur : amplifier si un mot fort précède (borné 1.0-2.0)
+                multiplier = 1.0
+                for j in range(max(0, idx - 2), idx):
+                    if words[j] in INTENSIFIERS:
+                        multiplier = max(1.0, min(2.0, INTENSIFIERS[words[j]]))
+                        break
+                base_sentiment *= multiplier
                     
                 score += base_sentiment
                 match_count += 1
@@ -219,8 +271,16 @@ class NewsSentimentAnalyzer:
                 "shock_status": {"shock_detected": False},
             }
 
-        scores = [self.analyze_semantic_context(h) for h in headlines]
-        avg_sentiment = float(sum(scores) / len(scores)) if scores else 0.0
+        # LOT 5 (PDF Pilier I) : moyenne PONDÉRÉE par la fiabilité des sources
+        # (Google News/CryptoCompare > AlphaVantage > Reddit). Une source sans
+        # poids connu = poids 1.0 (neutre).
+        scores = []
+        weights = []
+        for h in headlines:
+            scores.append(self.analyze_semantic_context(h))
+            weights.append(SOURCE_WEIGHTS.get(self._source_map.get(h, ""), 1.0))
+        total_w = sum(weights) or 1.0
+        avg_sentiment = float(sum(s * w for s, w in zip(scores, weights)) / total_w)
 
         # Check for immediate systemic shocks
         shock_status = self.detect_extreme_event_shock(headlines)
