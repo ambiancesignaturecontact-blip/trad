@@ -41,6 +41,47 @@ Tests :
 pytest tests/ -q      # 46 tests
 ```
 
+## 🏗️ Architecture
+
+```mermaid
+flowchart LR
+    subgraph Data["Couche Données (100% réelles)"]
+        WS[WebSockets Binance/Bybit] --> STATE
+        YF[Yahoo Finance - cache TTL] --> STATE
+        HL[Hyperliquid leaderboard public] --> COPY[Copy Trading]
+        ON[On-chain RPC] --> RISK
+    end
+    subgraph Brain["Couche IA"]
+        HMM[HMM Régime] --> META[MetaAllocationEngine 12 stratégies]
+        LSTM[LSTM prédicteur] --> META
+        PPO[PPO RL - récompense nette d'impact] --> META
+        LOT46[Sélecteur de modèles LOT 46] --> META
+        GAN[GAN scénarios extrêmes] --> RISK
+        RLHF[RLHF reward model] --> SIZING
+    end
+    subgraph Strat["Couche Stratégies"]
+        META --> S7[Trend/MeanRev/MM/StatArb/InterExch/Grid/Scalp]
+        META --> S5[Momentum/VolBreakout/MTF/Carry/CrossSec]
+    end
+    subgraph Risk["Couche Risque"]
+        SIZING[Kelly net + ATR + CVaR + max/actif + vol targeting] --> ORD
+        RISK[CVaR + corrélation + Monte-Carlo/GAN + SL/TP + circuit breaker] --> ORD
+    end
+    subgraph Exec["Couche Exécution"]
+        ORD[OMS → EMS] --> ROUTE[Routeur market/limit/TWAP + SOR]
+        ROUTE --> EX[Binance/Bybit CCXT / EVM]
+        ALPHA[Alpha d'exécution + slippage par venue] --> METRICS
+    end
+    subgraph Ops["Couche Ops"]
+        METRICS[/metrics Prometheus + Grafana/]
+        REPO[Rapport P&L + santé + concierge Telegram]
+        EVENTS[Journal d'événements rejouable]
+        AUTH[JWT + 2FA + RBAC multi-utilisateurs]
+    end
+    STATE[(État + SQLite/PostgreSQL)] --- EX
+    STATE --- METRICS
+```
+
 ## 🧪 Modes de fonctionnement
 
 - **DEMO** (défaut) : capital virtuel 100 000 $, données 100 % réelles, aucun ordre réel envoyé.

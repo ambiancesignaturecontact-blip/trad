@@ -378,6 +378,8 @@ STATE = {
     "last_order_times": {},          # per-symbol order cooldown (idempotence)
     "ppo_buffer": [],                 # real RL experiences for autonomous PPO training
     "price_alerts": [],               # custom price alerts (audit C3)
+    "ab_base": [],                    # A/B paper: baseline hypothetical equity
+    "ab_vol": [],                     # A/B paper: vol-targeted hypothetical equity
     "using_fallback_data": False     # True when synthetic fallback candles are in use
 }
 
@@ -1317,6 +1319,23 @@ async def api_events(event_type: str = "", since: float = 0.0, limit: int = 200)
     return {"events": db.list_events(event_type=event_type, since=since, limit=limit)}
 
 
+@app.get("/api/v1/ab")
+async def api_ab(_auth: dict = Depends(require_auth)):
+    """VISION §7.5: A/B paper comparison (baseline vs vol-targeted config)."""
+    import math
+    base, vol = STATE.get("ab_base", []), STATE.get("ab_vol", [])
+    if len(base) < 10 or len(vol) < 10:
+        return {"valid": False, "reason": "insufficient samples", "samples": len(base)}
+    def _stats(curve):
+        eq = np.array(curve)
+        rets = np.diff(eq) / np.maximum(eq[:-1], 1e-9)
+        sharpe = float(rets.mean() / rets.std() * np.sqrt(365 * 24)) if rets.std() > 0 else 0.0
+        return {"return_pct": round((eq[-1] - 1.0) * 100.0, 3), "sharpe": round(sharpe, 3), "vol": round(float(rets.std()), 5)}
+    s_base, s_vol = _stats(base), _stats(vol)
+    leader = "vol_targeted" if s_vol["sharpe"] > s_base["sharpe"] else "baseline"
+    return {"valid": True, "samples": len(base), "baseline": s_base, "vol_targeted": s_vol, "leader": leader}
+
+
 @app.get("/api/v1/factors")
 async def api_factors(_auth: dict = Depends(require_auth)):
     """VISION §6: factor exposures of the live equity curve (market/momentum/carry/vol)."""
@@ -2196,10 +2215,22 @@ async def live_trading_loop():
 
                     # VOLATILITY TARGETING OVERLAY (VISION §4.1/§5): scale exposure so
                     # portfolio realized vol stays near target (institutional standard).
+                    _vol_scale = 1.0
                     try:
                         _vol_scale = volatility_scale_factor(STATE[active_equity_history_key])
                         target_qty *= _vol_scale
                         STATE["vol_target_scale"] = _vol_scale
+                    except Exception:
+                        pass
+
+                    # VISION §7.5: A/B paper - same signals, two configurations
+                    # (baseline vs vol-targeted) recorded as hypothetical equity.
+                    try:
+                        STATE["ab_base"].append(1.0 + final_signal * actual_return)
+                        STATE["ab_vol"].append(1.0 + final_signal * actual_return * _vol_scale)
+                        for _k in ("ab_base", "ab_vol"):
+                            if len(STATE[_k]) > 2000:
+                                STATE[_k] = STATE[_k][-2000:]
                     except Exception:
                         pass
                 

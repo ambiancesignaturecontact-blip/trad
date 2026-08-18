@@ -7,10 +7,13 @@ class EventDrivenBacktester:
     Accounts for commissions, slippage, and execution latency, offering
     highly accurate, professional-grade walk-forward reports.
     """
-    def __init__(self, initial_capital=100000.0, commission_pct=0.001, slippage_pct=0.0005):
+    def __init__(self, initial_capital=100000.0, commission_pct=0.001, slippage_pct=0.0005,
+                 slippage_bps=None, venue="Binance"):
         self.initial_capital = initial_capital
         self.commission_pct = commission_pct
         self.slippage_pct = slippage_pct
+        self.slippage_bps = slippage_bps   # VISION §3.2: per-venue realized slippage (overrides slippage_pct)
+        self.venue = venue
         
         self.reset()
 
@@ -127,8 +130,9 @@ class EventDrivenBacktester:
             if is_significant:
                 side = "BUY" if trade_qty > 0 else "SELL"
                 
-                # Apply realistic slippage penalty
-                execution_price = current_price * (1.0 + self.slippage_pct) if side == "BUY" else current_price * (1.0 - self.slippage_pct)
+                # Apply realistic slippage penalty (per-venue model when available)
+                _slip = (self.slippage_bps / 1e4) if self.slippage_bps is not None else self.slippage_pct
+                execution_price = current_price * (1.0 + _slip) if side == "BUY" else current_price * (1.0 - _slip)
                 
                 # Check pre-flight risk checks
                 ok, reason = risk_manager.validate_order_safety(
