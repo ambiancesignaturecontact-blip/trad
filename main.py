@@ -24,7 +24,11 @@ from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict
 from core.middleware import (RequestLoggingMiddleware, SecurityHeadersMiddleware,
                              IPRateLimitMiddleware, LoginRateLimitMiddleware, install_cors)
-from core.position_manager import PositionProtection, PositionProtectionStore, evaluate_protection
+from core.position_manager import (PositionProtection, PositionProtectionStore,
+                                     evaluate_protection, evaluate_time_stop,
+                                     apply_breakeven_stop, partial_take_profit,
+                                     can_pyramid, position_age_hours)
+from core.portfolio_allocator import PortfolioAllocator
 from core.volatility_targeting import volatility_scale_factor
 from core.signal_library import SIGNAL_LIBRARY, evaluate_all_signals, evaluate_signal
 from core.execution_router import ExecutionAlpha, SlippageModel, decide_style
@@ -245,6 +249,7 @@ logger.info("✅ LOT 49: Execution Simulator (Slippage + Latency) initialized")
 # === LOT 50: Dynamic Capital Allocator (Kelly + Risk Parity) ===
 from core.dynamic_capital_allocator import DynamicCapitalAllocator
 capital_allocator = DynamicCapitalAllocator(base_exposure=0.68, max_exposure=0.92, min_exposure=0.28)
+portfolio_allocator = PortfolioAllocator()  # LOT 6: allocation top-down en cascade (PDF Pilier L)
 logger.info("✅ LOT 50: Dynamic Capital Allocator initialized")
 
 # === LOT 52: Trade Journal (with Notes + Screenshots) ===
@@ -461,6 +466,9 @@ STATE = {
     "strategy_trade_counts": {},     # LOT 2: nb de trades clôturés par stratégie
     "position_strategies": {},       # LOT 2: stratégie responsable de chaque position ouverte
     "pending_approvals": [],          # §6 consultative mode
+    "portfolio_allocation": {},       # LOT 6: budget top-down (Pilier L)
+    "strategy_diversification": {},   # LOT 6: corrélation entre stratégies
+    "position_pyramids": {},          # LOT 6: nb d'ajouts (pyramiding) par symbole
     "consultative_mode": os.getenv("CONSULTATIVE_MODE", "").lower() == "true",
     "chaos_until": 0.0,               # §5c
     "last_narrative": "",             # §3/§6
@@ -3390,6 +3398,75 @@ async def live_trading_loop():
                                 protection_store.upsert(prot)  # refresh persistence
 
                             action = evaluate_protection(prot, current_price, pos_qty)
+                            # LOT 6 (PDF Pilier M) : CYCLE DE VIE de la position
+                            # 1. BREAKEVEN : dès que le trade est en gain significatif
+                            #    (>= 2%), on remonte le stop au prix d'entrée -> risque zéro
+                            try:
+                                if apply_breakeven_stop(prot, current_price, pos_qty, trigger_pct=0.02):
+                                    logger.info(f"⚖️ BREAKEVEN: stop remonté à l'entrée pour {symbol} "
+                                                f"(gain >= 2%) -> trade à risque zéro")
+                                    protection_store.upsert(prot)
+                            except Exception:
+                                pass
+                            # 2. TIME STOP : l'idée n'a pas produit de mouvement après
+                            #    24h -> sortir (le capital immobilisé a un coût)
+                            try:
+                                if action == "HOLD":
+                                    _ts = evaluate_time_stop(prot, current_price, pos_qty,
+                                                             max_age_hours=24.0, min_profit_pct=0.001)
+                                    if _ts == "TIME_STOP":
+                                        logger.warning(f"⏰ TIME STOP {symbol}: position de {position_age_hours(prot):.1f}h "
+                                                       f"sans mouvement attendu -> sortie")
+                                        action = "TIME_STOP"
+                            except Exception:
+                                pass
+                            # 3. SCALING OUT : au 1er palier de take-profit (50% de la
+                            #    distance), on sécurise la MOITIÉ de la position
+                            _partial = {"action": "HOLD"}
+                            try:
+                                if action == "HOLD":
+                                    _partial = partial_take_profit(prot, current_price, pos_qty,
+                                                                   tp1_fraction=0.5, exit_fraction=0.5)
+                                    if _partial["action"] == "PARTIAL_TP":
+                                        logger.info(f"📤 PARTIAL TP {symbol}: 50% sécurisé à "
+                                                    f"{_partial['price']:.2f} (reste {_partial['remain_qty']:.5f})")
+                                        protection_store.upsert(prot)
+                            except Exception:
+                                pass
+                            if _partial["action"] == "PARTIAL_TP" and action == "HOLD":
+                                # Sortie PARTIELLE (pas une clôture complète)
+                                exit_side = "SELL" if pos_qty > 0 else "BUY"
+                                exit_qty = _partial["exit_qty"]
+                                exit_price = _partial["price"]
+                                if active_mode == "REAL" and client:
+                                    try:
+                                        client.create_order(
+                                            symbol=symbol.replace("USDT", "/USDT"),
+                                            type='market', side=exit_side.lower(), amount=exit_qty,
+                                        )
+                                    except Exception as e:
+                                        logger.error(f"Partial TP REAL exit failed: {e}")
+                                if exit_side == "SELL":
+                                    STATE[active_balance_key] += exit_qty * exit_price * 0.999
+                                else:
+                                    STATE[active_balance_key] -= exit_qty * exit_price * 1.001
+                                db.update_position(symbol, _partial["remain_qty"] * (1.0 if pos_qty > 0 else -1.0),
+                                                   asset_position['avg_price'], active_mode)
+                                db.add_order(
+                                    symbol=symbol, side=exit_side, price=exit_price, qty=exit_qty,
+                                    status="FILLED", mode=active_mode, strategy="PARTIAL_TP",
+                                    order_type="MARKET",
+                                )
+                                db.add_audit_log("PARTIAL_TAKE_PROFIT", "127.0.0.1",
+                                                 f"50% de {symbol} sécurisé à {exit_price:.2f} (reste {_partial['remain_qty']:.5f})")
+                                try:
+                                    asyncio.create_task(telegram_bot.send_push_notification(
+                                        f"📤 *TAKE-PROFIT PARTIEL*\n"
+                                        f"`{symbol}` : 50% sécurisé à *${exit_price:,.2f}*\n"
+                                        f"Position restante : {_partial['remain_qty']:.5f} (stop protégé)"))
+                                except Exception:
+                                    pass
+                                continue
                             if action != "HOLD":
                                 exit_side = "SELL" if pos_qty > 0 else "BUY"
                                 exit_qty = abs(pos_qty)
@@ -3643,6 +3720,25 @@ async def live_trading_loop():
                                         f"(confiance régime {_conf:.2f})")
                     except Exception:
                         pass
+                    # 9ter. CAPACITÉ + RÉSERVE DE CASH (LOT 6, PDF Pilier L) :
+                    # la taille d'un trade ne peut pas dépasser 1 % du volume
+                    # réel 24h (impact de marché, mentalité n°11) et l'exposition
+                    # totale du portefeuille reste sous (1 - réserve cash).
+                    _cap_s = 1.0
+                    _cash_s = 1.0
+                    try:
+                        _vol24 = STATE["assets"].get(symbol, {}).get("volume_24h")
+                        _cap_qty = portfolio_allocator.capacity_cap_qty(symbol, _vol24, current_price)
+                        if _cap_qty is not None and _cap_qty > 0:
+                            _cap_ratio = target_qty / _cap_qty
+                            if _cap_ratio > 1.0:
+                                _cap_s = max(0.1, 1.0 / _cap_ratio)
+                                logger.info(f"CAPACITÉ {symbol}: taille plafonnée à 1% du volume 24h (x{_cap_s:.2f})")
+                        _cash_s = portfolio_allocator.portfolio_exposure_factor(STATE, active_balance_key)
+                        if _cash_s < 1.0:
+                            logger.info(f"RÉSERVE CASH: exposition portfolio proche du max -> x{_cash_s:.2f}")
+                    except Exception:
+                        pass
                     # 10. ORDER FLOW toxique (LOT 3, PDF Pilier H-d) : VPIN/Kyle/delta
                     # extrême -> RÉDUIRE la taille (informed trading), pas seulement journaliser
                     try:
@@ -3700,6 +3796,8 @@ async def live_trading_loop():
                             corr_scale=_corr_s,
                             order_flow_scale=_ofl_s,
                             regime_confidence_scale=_regime_s,
+                            capacity_scale=_cap_s,
+                            cash_reserve_scale=_cash_s,
                             confidence_scale=_conf_s,
                             org_scale=_org_s,
                             rlhf_scale=_rlhf_s,
@@ -3786,6 +3884,41 @@ async def live_trading_loop():
                                 decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
                                                 [_casc_reason], STATE["no_trade_stats"], db)
                                 target_direction = 0.0
+
+                    # LOT 6 (PDF Pilier M) : PYRAMIDING CONTRÔLÉ + NETTING
+                    # Pyramiding : ajouter UNIQUEMENT sur les gagnants, RR
+                    # favorable, max 2 ajouts ; JAMAIS de moyenne à la baisse.
+                    try:
+                        if target_direction != 0.0 and pos_qty != 0.0:
+                            _same_dir = (target_direction > 0 and pos_qty > 0) or \
+                                        (target_direction < 0 and pos_qty < 0)
+                            if _same_dir:
+                                _prot_p = protection_store.get(symbol)
+                                if _prot_p is not None:
+                                    _pyr_n = STATE.setdefault("position_pyramids", {}).get(symbol, 0)
+                                    _pyr_ok, _pyr_reason = can_pyramid(
+                                        _prot_p, current_price, pos_qty,
+                                        reward_risk=REWARD_RISK_RATIO,
+                                        min_rr=1.5, max_additions=2, additions=_pyr_n)
+                                    if not _pyr_ok:
+                                        decide_no_trade(symbol, final_signal,
+                                                        STATE.get("conviction_threshold", 0.15),
+                                                        [_pyr_reason], STATE["no_trade_stats"], db)
+                                        target_direction = 0.0
+                                    else:
+                                        logger.info(f"📈 {_pyr_reason} -> ajout autorisé ({symbol})")
+                            else:
+                                # NETTING : retournement contre la position existante
+                                # (une autre stratégie voudrait trader contre soi-même)
+                                # -> exiger un signal FORT, sinon s'abstenir
+                                if abs(final_signal) < 1.5 * STATE.get("conviction_threshold", 0.15):
+                                    decide_no_trade(symbol, final_signal,
+                                                    STATE.get("conviction_threshold", 0.15),
+                                                    ["netting: retournement sans signal fort (anti auto-contre-trade)"],
+                                                    STATE["no_trade_stats"], db)
+                                    target_direction = 0.0
+                    except Exception as _py:
+                        logger.debug(f"Pyramiding/netting check failed: {_py}")
 
                     desired_qty = target_direction * target_qty
                     trade_qty = desired_qty - pos_qty
@@ -4029,6 +4162,15 @@ async def live_trading_loop():
                                     order_type="MARKET"
                                 )
                                 platform_metrics.ORDERS_TOTAL.labels(mode=active_mode, side=side).inc()
+                                # LOT 6 : compteur de pyramiding (ajout sur position existante)
+                                try:
+                                    if pos_qty != 0.0 and (pos_qty * new_qty) > 0:
+                                        STATE.setdefault("position_pyramids", {})[symbol] = \
+                                            STATE["position_pyramids"].get(symbol, 0) + 1
+                                    elif abs(new_qty) < 1e-12:
+                                        STATE.setdefault("position_pyramids", {})[symbol] = 0  # position fermée
+                                except Exception:
+                                    pass
                                 # LOT 2 : tracking du win rate RÉEL par stratégie
                                 try:
                                     _was_flat = abs(pos_qty) < 1e-12
@@ -4181,6 +4323,29 @@ async def live_trading_loop():
 
         # VISION_FUTUR §5b: supervisor vital-signs check
         supervisor.check()
+
+        # LOT 6 (PDF Pilier L) : REBALANCING périodique du portefeuille
+        # (anti-drift : on revient vers les cibles) + diversification RÉELLE
+        # entre stratégies (pénalise les stratégies redondantes).
+        try:
+            if portfolio_allocator.should_rebalance():
+                portfolio_allocator.rebalance(
+                    STATE, STATE[active_balance_key],
+                    portfolio_cvar_pct=portfolio_cvar_pct,
+                    realized_vol_annual=None)
+            # Corrélation entre STRATÉGIES (Pilier L exigence 2)
+            try:
+                _strat_rets = {}
+                for _sname, _slist in meta_engine.recent_performance.items():
+                    if _slist:
+                        _strat_rets[_sname] = list(_slist)
+                if len(_strat_rets) >= 2:
+                    STATE["strategy_diversification"] = portfolio_allocator.strategy_diversification(
+                        _strat_rets, min_samples=20)
+            except Exception:
+                pass
+        except Exception as _pa:
+            logger.debug(f"Portfolio allocator error: {_pa}")
 
         # LOT 61: refresh Prometheus gauges at the end of each tick
         try:
@@ -4433,6 +4598,9 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "active_models": model_selector.get_status().get("active_models", []),
         "admitted_signals": list(hypothesis_generator.admitted.keys()),
         "capital_exposure": capital_allocator.get_current_exposure(),
+        "portfolio_allocation": STATE.get("portfolio_allocation", {}),
+        "strategy_diversification": STATE.get("strategy_diversification", {}),
+        "position_pyramids": STATE.get("position_pyramids", {}),
         
         "copy_traders": [
             {
