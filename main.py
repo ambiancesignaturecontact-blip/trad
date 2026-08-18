@@ -28,6 +28,7 @@ from core.position_manager import PositionProtection, PositionProtectionStore, e
 from core.volatility_targeting import volatility_scale_factor
 from core.signal_library import SIGNAL_LIBRARY, evaluate_all_signals, evaluate_signal
 from core.execution_router import ExecutionAlpha, SlippageModel, decide_style
+from core.copy_mirror import fetch_trader_positions, build_mirror_orders, mirror_status_text
 from core.reporting import build_daily_report, compute_health_score, build_concierge_message
 
 # Import our quant models
@@ -1412,6 +1413,82 @@ async def webhook_trade(payload: WebhookTradeRequest):
     return {"status": "FILLED", "symbol": symbol, "side": side, "qty": qty, "price": price}
 
 
+async def copy_mirror_scheduler():
+    """
+    REAL copy-trading execution (VISION §5): every 10 min, fetch the followed
+    trader's real positions (Hyperliquid public API), compute the scaled delta
+    vs our portfolio and execute via OMS when COPYTRADE_EXECUTION=auto + keys.
+    Otherwise logs honest SIGNAL_ONLY mirror signals.
+    """
+    while True:
+        await asyncio.sleep(600)
+        try:
+            if not copy_manager.copied_traders:
+                continue
+            exec_mode = os.getenv("COPYTRADE_EXECUTION", "signal_only")
+            for tid, alloc in list(copy_manager.copied_traders.items()):
+                trader = copy_manager.traders.get(tid)
+                acct_value = float(getattr(trader, "account_value", 0.0) or 0.0)
+                positions = fetch_trader_positions(tid)
+                if not positions:
+                    continue
+                my_pos = {p["symbol"]: float(p["qty"]) for p in db.get_positions()}
+                orders = build_mirror_orders(
+                    positions, my_pos,
+                    allocated_capital=float(alloc.get("allocated_capital", 0.0)),
+                    trader_account_value=acct_value,
+                    max_asset_pct=settings.get_float("risk", "max_per_asset_pct", 0.25),
+                )
+                if not orders:
+                    continue
+                if STATE["mode"] == "REAL" and exec_mode == "auto" and get_ccxt_client():
+                    for o in orders:
+                        try:
+                            submit_order_via_oms(o["symbol"], o["side"], o["qty"], STATE["assets"][o["symbol"]]["price"],
+                                                 "REAL", "COPY_MIRROR",
+                                                 exchange="Binance" if o["symbol"] in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit")
+                            db.add_order(symbol=o["symbol"], side=o["side"], price=STATE["assets"][o["symbol"]]["price"],
+                                         qty=o["qty"], status="FILLED", mode="REAL", strategy="COPY_MIRROR", order_type="MARKET")
+                            db.add_audit_log("COPY_MIRROR_EXECUTED", "127.0.0.1",
+                                             f"Mirror {o['side']} {o['qty']:.5f} {o['symbol']} (trader {tid[:10]}…)")
+                            platform_metrics.ORDERS_TOTAL.labels(mode="REAL", side=o["side"]).inc()
+                        except Exception as oe:
+                            logger.warning(f"Mirror order failed {o['symbol']}: {oe}")
+                    logger.info(f"🪞 COPY MIRROR: executed {len(orders)} mirror orders for {tid[:10]}…")
+                else:
+                    for o in orders:
+                        db.add_audit_log("COPY_MIRROR_SIGNAL", "127.0.0.1",
+                                         f"Mirror signal {o['side']} {o['qty']:.5f} {o['symbol']} "
+                                         f"(execution {exec_mode} - keys required for auto)")
+                    logger.info(f"🪞 COPY MIRROR: {len(orders)} mirror signals (mode {exec_mode}) for {tid[:10]}…")
+        except Exception as e:
+            logger.warning(f"Copy mirror scheduler error: {e}")
+
+
+@app.get("/api/v1/copy/mirror-status")
+async def api_copy_mirror_status(_auth: dict = Depends(require_auth)):
+    """Real copy-trading status: followed traders + current mirror signals."""
+    signals = {}
+    for tid, alloc in list(copy_manager.copied_traders.items()):
+        positions = fetch_trader_positions(tid)
+        my_pos = {p["symbol"]: float(p["qty"]) for p in db.get_positions()}
+        trader = copy_manager.traders.get(tid)
+        orders = build_mirror_orders(positions, my_pos,
+                                     allocated_capital=float(alloc.get("allocated_capital", 0.0)),
+                                     trader_account_value=float(getattr(trader, "account_value", 0.0) or 0.0))
+        signals[tid[:12]] = {
+            "mode": alloc.get("mode", "FOLLOW_ONLY"),
+            "trader_positions": [p["coin"] for p in positions[:8]],
+            "mirror_orders": orders[:8],
+        }
+    return {
+        "execution_mode": os.getenv("COPYTRADE_EXECUTION", "signal_only"),
+        "following": copy_manager.copied_traders,
+        "mirror_signals": signals,
+        "summary": mirror_status_text(copy_manager.copied_traders),
+    }
+
+
 async def copy_trading_refresh_scheduler():
     """LOT 67: keeps the real copy-trading leaderboard fresh (every 6h)."""
     while True:
@@ -1641,6 +1718,10 @@ async def startup_event():
     # Start the copy-trading leaderboard refresher
     asyncio.create_task(copy_trading_refresh_scheduler())
     logger.info("✅ LOT 67: Copy Trading leaderboard refresher started")
+
+    # Start the real copy-mirroring scheduler
+    asyncio.create_task(copy_mirror_scheduler())
+    logger.info("✅ LOT 71: Copy mirroring scheduler started (every 10 min)")
 
 
 async def live_trading_loop():

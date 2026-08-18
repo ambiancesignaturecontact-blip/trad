@@ -402,3 +402,35 @@ def test_ab_paper_statistics():
     # lower-vol config should show lower realized vol
     assert s_vol["sharpe"] > s_base["sharpe"] or True  # not flaky; just exercise
     assert isinstance(s_base["return_pct"], float)
+
+
+# ---------------- VISION: copy-trading mirror engine ----------------
+def test_copy_mirror_builds_scaled_delta_orders():
+    from core.copy_mirror import build_mirror_orders
+    trader_pos = [
+        {"symbol": "BTCUSDT", "szi": 4.0, "entry_px": 60000, "notional_usd": 240000},
+        {"symbol": "ETHUSDT", "szi": -10.0, "entry_px": 3000, "notional_usd": 30000},
+    ]
+    # $10k allocation on a $1M trader -> 1% scale
+    orders = build_mirror_orders(trader_pos, {}, 10000.0, 1000000.0)
+    by_sym = {o["symbol"]: o for o in orders}
+    assert by_sym["BTCUSDT"]["side"] == "BUY"
+    assert abs(by_sym["BTCUSDT"]["qty"] - 0.04) < 1e-6
+    assert by_sym["ETHUSDT"]["side"] == "SELL"
+    # existing position reduces the delta
+    orders2 = build_mirror_orders(trader_pos, {"BTCUSDT": 0.01}, 10000.0, 1000000.0)
+    b2 = next(o for o in orders2 if o["symbol"] == "BTCUSDT")
+    assert abs(b2["qty"] - 0.03) < 1e-6
+
+
+def test_copy_mirror_fetch_public_positions():
+    import pytest
+    from core.copy_mirror import fetch_trader_positions
+    try:
+        pos = fetch_trader_positions("0xf5d81a135f756ca16544e53c20fc20643ec3ad53")
+    except Exception:
+        pytest.skip("network unavailable")
+    if not pos:
+        pytest.skip("no positions returned (network/geo)")
+    assert pos[0]["coin"]
+    assert pos[0]["szi"] != 0.0
