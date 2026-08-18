@@ -45,6 +45,13 @@ l'eau (delta entre la cible du trader et ton portefeuille).
 | `TRADING_MODE` | `DEMO` (défaut) → plus tard `REAL` | Bascule de mode |
 | `AUTH_ENABLED` | `true` en production | Sécurité (JWT forcé) |
 | `ADMIN_USER` / `ADMIN_PASSWORD` | **change le mot de passe par défaut !** | Connexion dashboard |
+| `JWT_SECRET_KEY` | ≥ 24 caractères (optionnel) | Si absent, **auto-généré et stocké chiffré en DB** au premier boot (message unique dans les logs) |
+
+> 🔑 **Secrets auto-générés (comportement récent)** : quand `AUTH_ENABLED=true` (ou mode REAL) et que
+> `JWT_SECRET_KEY`/`ADMIN_PASSWORD` ne sont pas définis, le bot **ne crash plus** : il génère une clé JWT
+> forte (48 octets) persistée chiffrée, et un mot de passe admin affiché **une seule fois** dans les logs
+> de démarrage (`username=admin_quant password=…`). **Notez-le immédiatement**, puis définissez
+> `ADMIN_PASSWORD` et `JWT_SECRET_KEY` dans Railway pour reprendre la main définitivement.
 | `JWT_SECRET_KEY` | ≥ 24 caractères aléatoires | Signature des tokens |
 | `FERNET_KEY` | clé Fernet (chiffrement des clés API) | Sécurité des clés stockées |
 | `TELEGRAM_BOT_TOKEN` / `TELEGRAM_CHAT_ID` | ton bot Telegram | Notifications + concierge |

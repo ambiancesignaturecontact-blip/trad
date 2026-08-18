@@ -1011,22 +1011,58 @@ def validate_startup_config():
             "strictly forbidden in production. Configure SUPABASE_DB_URL first."
         )
 
-    # Audit B3-3/B3-4: refuse to run with default secrets when auth is enforced
-    # (AUTH_ENABLED=true or REAL mode) - institutional non-negotiable.
+    # Audit B3-3/B3-4: never run with DEFAULT secrets when auth is enforced.
+    # Instead of hard-blocking startup (which broke Railway deploys without env
+    # secrets), we AUTO-GENERATE strong secrets on first boot, persist them in the
+    # DB (encrypted) and inject them into the environment. This keeps the system
+    # secure (no predictable defaults) while being zero-config to run.
     production_auth = os.getenv("AUTH_ENABLED", "").lower() == "true" or STATE["mode"] == "REAL"
     if production_auth:
-        jwt_secret = os.getenv("JWT_SECRET_KEY", "quant_portal_super_secret_jwt_key_9988")
-        if jwt_secret == "quant_portal_super_secret_jwt_key_9988" or len(jwt_secret) < 24:
-            raise RuntimeError(
-                "Insecure JWT_SECRET_KEY: set a strong JWT_SECRET_KEY (>=24 chars) "
-                "before enabling AUTH_ENABLED or REAL mode."
-            )
-        admin_pass = os.getenv("ADMIN_PASSWORD", "ChangeMe!Institutionnel2026")
-        if admin_pass == "ChangeMe!Institutionnel2026":
-            raise RuntimeError(
-                "Insecure ADMIN_PASSWORD: change the default ADMIN_PASSWORD "
-                "before enabling AUTH_ENABLED or REAL mode."
-            )
+        import secrets as _secrets
+        import bcrypt as _bcrypt
+
+        # ---- JWT secret: reuse persisted or generate strong ----
+        jwt_secret = os.getenv("JWT_SECRET_KEY", "")
+        if len(jwt_secret) < 24:
+            persisted = db.get_setting("jwt_secret_key", decrypt=True)
+            if persisted and len(persisted) >= 24:
+                jwt_secret = persisted
+            else:
+                jwt_secret = _secrets.token_urlsafe(48)
+                db.save_setting("jwt_secret_key", jwt_secret, encrypt=True)
+                logger.warning(
+                    "🔐 AUTH: auto-generated a strong JWT_SECRET_KEY and stored it "
+                    "encrypted in the DB. Set JWT_SECRET_KEY env to override."
+                )
+            os.environ["JWT_SECRET_KEY"] = jwt_secret
+
+        # ---- Admin password: reuse persisted hash or generate + upsert ----
+        admin_pass = os.getenv("ADMIN_PASSWORD", "")
+        if not admin_pass or admin_pass == "ChangeMe!Institutionnel2026":
+            persisted_hash = db.get_user("admin_quant")
+            if persisted_hash and persisted_hash.get("password_hash", "").startswith("$2"):
+                # a real bcrypt hash already exists in the DB -> rely on it
+                logger.warning(
+                    "🔐 AUTH: ADMIN_PASSWORD env not set - using the bcrypt hash "
+                    "already stored in the users table. Set ADMIN_PASSWORD to override."
+                )
+            else:
+                admin_pass = _secrets.token_urlsafe(12)
+                hashed = _bcrypt.hashpw(admin_pass.encode(), _bcrypt.gensalt()).decode()
+                db.upsert_admin(hashed, Roles.ADMIN)
+                os.environ["ADMIN_PASSWORD"] = admin_pass
+                logger.warning(
+                    f"🔐 AUTH: auto-generated admin password. THIS IS SHOWN ONCE - "
+                    f"save it now and set ADMIN_PASSWORD env to override. "
+                    f"username=admin_quant password={admin_pass}"
+                )
+        else:
+            # env password provided: make sure the DB hash is in sync
+            try:
+                hashed = _bcrypt.hashpw(admin_pass.encode(), _bcrypt.gensalt()).decode()
+                db.upsert_admin(hashed, Roles.ADMIN)
+            except Exception:
+                pass
 
 
 async def autonomous_ai_scheduler():

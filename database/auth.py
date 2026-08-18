@@ -13,6 +13,15 @@ SECRET_KEY = os.getenv("JWT_SECRET_KEY", "quant_portal_super_secret_jwt_key_9988
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 60
 
+
+def _get_secret_key() -> str:
+    """
+    Resolves the JWT secret at CALL time so the platform can auto-generate and
+    inject a strong secret (via env) after startup config validation, instead
+    of being stuck with the import-time default. Never exposes the default.
+    """
+    return os.getenv("JWT_SECRET_KEY", SECRET_KEY)
+
 security = HTTPBearer()
 
 class Roles:
@@ -56,12 +65,12 @@ class AuthManager:
             "role": role,
             "exp": time.time() + (ACCESS_TOKEN_EXPIRE_MINUTES * 60)
         }
-        return jwt.encode(payload, SECRET_KEY, algorithm=ALGORITHM)
+        return jwt.encode(payload, _get_secret_key(), algorithm=ALGORITHM)
 
     @staticmethod
     def verify_jwt_token(token: str) -> dict:
         try:
-            payload = jwt.decode(token, SECRET_KEY, algorithms=[ALGORITHM])
+            payload = jwt.decode(token, _get_secret_key(), algorithms=[ALGORITHM])
             return payload
         except jwt.ExpiredSignatureError:
             raise HTTPException(status_code=401, detail="Session expired. Please log in again.")

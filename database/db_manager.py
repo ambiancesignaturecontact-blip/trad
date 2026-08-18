@@ -798,6 +798,32 @@ class DBManager:
             logger.error(f"delete_user failed: {e}")
             return False
 
+    def upsert_admin(self, password_hash: str, role: str = "ADMIN") -> bool:
+        """
+        Upserts the bootstrap admin user (used when a strong password is
+        auto-generated at first startup with AUTH_ENABLED - Phase D).
+        """
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute(
+                        "INSERT INTO users (id, username, password_hash, role) VALUES (1, 'admin_quant', %s, %s) "
+                        "ON CONFLICT (username) DO UPDATE SET password_hash = EXCLUDED.password_hash, role = EXCLUDED.role",
+                        (password_hash, role),
+                    )
+                else:
+                    cur.execute(
+                        "INSERT INTO users (id, username, password_hash, role) VALUES (1, 'admin_quant', ?, ?) "
+                        "ON CONFLICT (username) DO UPDATE SET password_hash = excluded.password_hash, role = excluded.role",
+                        (password_hash, role),
+                    )
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.error(f"upsert_admin failed: {e}")
+            return False
+
     # ==================== EXPERIMENTS REGISTRY (VISION §2.2) ====================
     def ensure_experiments_table(self):
         try:
