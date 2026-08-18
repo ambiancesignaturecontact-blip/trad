@@ -438,6 +438,9 @@ STATE = {
     "ab_base": [],                    # A/B paper: baseline hypothetical equity
     "ab_vol": [],                     # A/B paper: vol-targeted hypothetical equity
     "regime_probs": {},               # VISION §1a: soft HMM probabilities
+    "regime_confidence": {"confidence": 0.5, "regime_id": 2},  # LOT 4: certitude du régime
+    "hmm_validation": {},             # LOT 4: validation HMM multi-actifs
+    "causal_analyzed": False,         # LOT 4: l'analyse causale a-t-elle tourné ?
     "market_state": {},               # VISION §1b: joint market state
     "causal_parents": [],             # VISION §1c: causal parents of returns
     "conviction_threshold": 0.15,     # VISION §4a: adaptive
@@ -536,10 +539,54 @@ def record_closed_trade(symbol: str, exit_price: float, side: str) -> None:
     direction = 1.0 if side == "SELL" else -1.0
     pnl_pct = (exit_price - entry) / entry * direction
     win_tracker.record(strategy, pnl_pct)
+    # LOT 4 (PDF Pilier B) : alpha contrefactuel généralisé à TOUS les trades
+    # clôturés (plus seulement les sorties de protection) + attribution MoE
+    try:
+        _bench = 0.0
+        _sym_price = STATE.get("last_known_prices", {}).get(symbol)
+        if _sym_price and entry > 0:
+            _bench = (_sym_price - entry) / entry  # mouvement du marché depuis l'entrée
+        _alpha = counterfactual_alpha({"side": "SELL" if direction > 0 else "BUY",
+                                       "entry": entry, "exit": exit_price},
+                                      benchmark_return=_bench)
+        try:
+            db.add_event(time.time(), "closed_trade_alpha",
+                         json.dumps({"symbol": symbol, "strategy": strategy,
+                                     "pnl_pct": round(pnl_pct, 6),
+                                     "marginal_alpha": round(_alpha, 6)}, default=str))
+        except Exception:
+            pass
+        # Mixture of Experts : contribution réelle au PnL par expert (Pilier C)
+        mixture_of_experts.record_pnl_contribution("swing", pnl_pct)
+        # MetaAllocationEngine : pondération par contribution RÉELLE au PnL (Pilier D)
+        try:
+            meta_engine.update_pnl_attribution(strategy, pnl_pct)
+        except Exception:
+            pass
+    except Exception as _ae:
+        logger.debug(f"Counterfactual alpha / MoE record failed: {_ae}")
     logger.info(
         f"📊 WIN-RATE RÉEL: {strategy} +1 trade clôturé ({symbol}) pnl={pnl_pct*100:+.2f}% "
         f"-> wr={win_tracker.get(strategy):.2f} (n={win_tracker.samples(strategy)})"
     )
+
+
+def causal_signal_factor(state: dict) -> float:
+    """
+    LOT 4 (PDF Pilier B) : la découverte causale DÉSACTIVE les signaux non
+    causaux (plus seulement journalisés).
+
+    - Analyse causale faite ET parents trouvés  -> 1.0 (signaux actifs)
+    - Analyse faite et AUCUN parent causal       -> 0.5 (les signaux prédictifs
+      sont probablement du bruit -> réduction, mentalité n°13)
+    - Analyse pas encore faite                    -> 1.0 (neutre)
+    """
+    if not state.get("causal_analyzed"):
+        return 1.0
+    parents = state.get("causal_parents") or []
+    if not parents:
+        return 0.5
+    return 1.0
 
 
 def mark_real_price(symbol: str, price: float, volume_24h=None):
@@ -1558,6 +1605,14 @@ async def autonomous_ai_scheduler():
                     STATE["ppo_buffer"] = []
                 except Exception as ppo_err:
                     logger.warning(f"🤖 Autonomous AI: PPO training error: {ppo_err}")
+                # LOT 4 (PDF Pilier C) : mise en sommeil périodique des experts
+                # MoE inutiles (contribution PnL négative sur échantillon suffisant)
+                try:
+                    _sleepy = mixture_of_experts.sleep_useless_experts(min_samples=5, min_contrib_pct=0.0)
+                    if _sleepy:
+                        logger.warning(f"🧟 Experts MoE mis en sommeil: {_sleepy}")
+                except Exception:
+                    pass
             else:
                 logger.info(f"🤖 Autonomous AI: PPO buffer {len(buf)}/50 - collecting more experiences.")
 
@@ -1572,7 +1627,12 @@ async def autonomous_ai_scheduler():
                 if fdf is not None and len(fdf) >= 40:
                     parents = discover_causal_parents(fdf, target="returns")
                     STATE["causal_parents"] = parents
+                    STATE["causal_analyzed"] = True   # LOT 4 : l'analyse causale a tourné
                     db.save_setting("causal_parents", json.dumps(parents))
+                    logger.info(
+                        f"🔗 ANALYSE CAUSALE: {len(parents)} parent(s) causal(aux) "
+                        f"trouvé(s) {parents} -> "
+                        f"{'signaux actifs' if parents else 'AUCUN parent causal -> réduction des signaux (LOT 4)'}")
                     logger.info(f"🧠 Causal parents of returns: {parents}")
             except Exception as ce:
                 logger.warning(f"Causal discovery skipped: {ce}")
@@ -2524,6 +2584,24 @@ async def startup_event():
         train_ai_models(df)
     else:
         logger.warning("Historical data is empty. AI models training skipped until real data arrives.")
+
+    # LOT 4 (PDF Pilier B) : le HMM est VALIDÉ sur les 7 actifs (pas seulement
+    # BTC). Vraisemblance + stabilité par actif -> si un actif est aberrant,
+    # son facteur de régime sera réduit (honnêteté : pas de régime sur du vide).
+    try:
+        _hmm_val = {}
+        for _sym_v in STATE["assets"]:
+            _dfv = db.load_candles(_sym_v, limit=120)
+            if not _dfv.empty:
+                _res_v = regime_detector.validate_on_asset(_dfv, symbol=_sym_v)
+                if _res_v:
+                    _hmm_val[_sym_v] = _res_v
+        STATE["hmm_validation"] = _hmm_val
+        logger.info(f"🔬 HMM validé sur {len(_hmm_val)} actifs: " +
+                    ", ".join(f"{k}(loglik {v['loglik_mean']}, stab {v['stability']})"
+                              for k, v in list(_hmm_val.items())[:4]) + "...")
+    except Exception as _hv:
+        logger.debug(f"HMM validation failed: {_hv}")
     
     # Sync Web3 non-custodial EVM balance details
     STATE["defi_wallet_address"] = defi_wallet.get_wallet_address()
@@ -3131,6 +3209,15 @@ async def live_trading_loop():
                     try:
                         STATE["regime_probs"] = compute_regime_probs(regime_detector, np.array([[ret_mean, vol_mean]]))
                         STATE["market_state"] = compute_market_state(STATE, STATE["regime_probs"], vol_mean)
+                        # LOT 4 (PDF Pilier B) : mesure de la qualité d'inférence
+                        # du régime (confiance + stabilité) — ne trader qu'avec un
+                        # régime suffisamment certain (mentalité n°5 : je ne sais pas)
+                        try:
+                            STATE["regime_confidence"] = regime_detector.regime_confidence(
+                                np.array([[ret_mean, vol_mean]]))
+                        except Exception:
+                            STATE["regime_confidence"] = {
+                                "confidence": 0.5, "regime_id": STATE.get("regime_id", 2)}
                     except Exception:
                         pass
                 
@@ -3447,6 +3534,21 @@ async def live_trading_loop():
                     if corr_df is not None and not corr_df.empty:
                         _corr_s = covariance_engine.evaluate_portfolio_concentration_risk(
                             symbol=symbol, active_positions=positions, corr_matrix=corr_df)
+                    # 9bis. Régime CERTAIN ? (LOT 4, PDF Pilier B) + causal gate
+                    _regime_s = 1.0
+                    try:
+                        _rc = STATE.get("regime_confidence", {})
+                        _conf = float(_rc.get("confidence", 0.5) or 0.5)
+                        if _conf < 0.45:
+                            _regime_s = 0.5     # régime très incertain -> réduire
+                        elif _conf < 0.6:
+                            _regime_s = 0.8     # régime incertain -> léger frein
+                        _regime_s *= causal_signal_factor(STATE)
+                        if _regime_s < 1.0:
+                            logger.info(f"RÉGIME/CAUSAL {symbol}: facteur {_regime_s:.2f} "
+                                        f"(confiance régime {_conf:.2f})")
+                    except Exception:
+                        pass
                     # 10. ORDER FLOW toxique (LOT 3, PDF Pilier H-d) : VPIN/Kyle/delta
                     # extrême -> RÉDUIRE la taille (informed trading), pas seulement journaliser
                     try:
@@ -3466,7 +3568,10 @@ async def live_trading_loop():
                     try:
                         _rlhf_feats = np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], actual_return])
                         _rlhf_score = rlhf_reward_model.predict_reward(_rlhf_feats)
-                        _rlhf_s = max(0.25, 0.5 + 0.5 * _rlhf_score)
+                        if _rlhf_score is None:
+                            _rlhf_s = 1.0  # RLHF indisponible -> NEUTRE (LOT 4)
+                        else:
+                            _rlhf_s = max(0.25, 0.5 + 0.5 * float(_rlhf_score))
                     except Exception:
                         pass
                     # 13. Volatilité cible
@@ -3500,6 +3605,7 @@ async def live_trading_loop():
                             onchain_scale=_onchain_s,
                             corr_scale=_corr_s,
                             order_flow_scale=_ofl_s,
+                            regime_confidence_scale=_regime_s,
                             confidence_scale=_conf_s,
                             org_scale=_org_s,
                             rlhf_scale=_rlhf_s,
@@ -4205,6 +4311,13 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "strategy_win_rates": STATE.get("strategy_win_rates", {}),
         "strategy_trade_counts": STATE.get("strategy_trade_counts", {}),
         "risk_pipeline_steps": STATE.get("risk_pipeline_steps", [])[-12:],
+        "regime_confidence": STATE.get("regime_confidence", {}),
+        "hmm_validation": STATE.get("hmm_validation", {}),
+        "expert_contribution": mixture_of_experts.expert_contribution_report(),
+        "sleeping_experts": list(mixture_of_experts.sleeping),
+        "causal_parents": STATE.get("causal_parents", []),
+        "causal_analyzed": STATE.get("causal_analyzed", False),
+        "research_gate": hypothesis_generator.can_run_research(),
         "order_flow": {s: order_flow.status(s) for s in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]},
         "last_sor_choice": STATE.get("last_sor_choice", {}),
         "sim_divergence": STATE.get("sim_divergence", 0.0),

@@ -191,6 +191,70 @@ class MarketRegimeDetector:
             
         return state_seq
 
+    
+    def regime_confidence(self, X):
+        """
+        LOT 4 (PDF Pilier B) : qualité de l'inférence de régime.
+
+        Confiance = probabilité soft du régime dominant sur la DERNIÈRE
+        observation, pénalisée par l'instabilité (nombre de changements d'état
+        sur la séquence). Retourne (confiance 0..1, regime_id, prob_dominante).
+
+        Principe (mentalité n°5/n°20) : on ne trade un régime que s'il est
+        suffisamment CERTAIN — sinon « je ne sais pas » -> réduire.
+        """
+        proba = self.predict_proba(X)
+        probs_last = proba[-1]
+        regime_id = int(np.argmax(probs_last))
+        conf = float(probs_last[regime_id])
+        # Stabilité : 1 - (changements d'état / N) sur la séquence décodée
+        try:
+            seq = self.predict(X)
+            changes = int(np.sum(np.abs(np.diff(seq)) > 0))
+            stability = max(0.0, 1.0 - changes / max(len(seq) - 1, 1))
+        except Exception:
+            stability = 0.5
+        return {
+            "confidence": round(conf * (0.5 + 0.5 * stability), 4),
+            "regime_id": regime_id,
+            "prob_dominant": round(conf, 4),
+            "stability": round(stability, 4),
+        }
+
+    def validate_on_asset(self, df, symbol: str = "?"):
+        """
+        LOT 4 (PDF Pilier B) : validation du HMM sur UN actif (les 7, pas
+        seulement BTC). Retourne vraisemblance moyenne et stabilité, ou None
+        si l'historique est insuffisant (honnêteté : pas de validation sur du
+        vide).
+        """
+        try:
+            if df is None or len(df) < 30:
+                return None
+            rets = df["close"].pct_change().dropna().values[-100:]
+            if len(rets) < 20:
+                return None
+            vols = np.abs(rets).copy()
+            X = np.column_stack([rets, vols])
+            proba = self.predict_proba(X)
+            # Log-vraisemblance moyenne (évite les underflow via log)
+            eps = 1e-15
+            loglik = float(np.mean(np.log(np.clip(np.max(proba, axis=1), eps, None))))
+            seq = self.predict(X)
+            changes = int(np.sum(np.abs(np.diff(seq)) > 0))
+            stability = max(0.0, 1.0 - changes / max(len(seq) - 1, 1))
+            return {
+                "symbol": symbol,
+                "n_samples": len(rets),
+                "loglik_mean": round(loglik, 4),
+                "stability": round(stability, 4),
+                "regime_mix": [int((seq == s).sum()) for s in range(self.n_states)],
+            }
+        except Exception as e:
+            logger = __import__("logging").getLogger("RegimeDetector")
+            logger.debug(f"validate_on_asset failed for {symbol}: {e}")
+            return None
+
     def get_regime_name(self, state_id):
         mapping = {
             0: "Bull Trend (Low Vol)",

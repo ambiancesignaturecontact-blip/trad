@@ -69,6 +69,7 @@ RISK_PIPELINE_ORDER: List[str] = [
     "macro_tactile",   # 7. Override humain (boutons Telegram)       [mul]
     "onchain",         # 8. Risque on-chain réel                     [mul]
     "correlation",     # 9. Concentration de corrélation             [mul]
+    "regime_confidence",# 9bis. Certitude du régime + causalité        [mul]
     "order_flow",      # 10. Flux toxique (delta/CVD/VPIN/OFI)       [mul]
     "confidence",      # 11. Indice de confiance (méta-cognition)    [mul]
     "organization",    # 12. Facteur desk (organisation)             [mul]
@@ -327,6 +328,7 @@ def apply_risk_pipeline(base_qty: float,
                         conviction: float,
                         risk_state_scale: float,
                         order_flow_scale: float = 1.0,
+                        regime_confidence_scale: float = 1.0,
                         news_scale: float = 1.0,
                         macro_scale: float = 1.0,
                         tactile_scale: float = 1.0,
@@ -358,6 +360,7 @@ def apply_risk_pipeline(base_qty: float,
         "conviction": clamp(float(conviction), 0.0, 1.0),
         "risk_state": max(0.0, float(risk_state_scale)),
         "order_flow": max(0.0, float(order_flow_scale)),
+        "regime_confidence": max(0.0, float(regime_confidence_scale)),
         "news_shock": max(0.0, float(news_scale)),
         "macro_event": max(0.0, float(macro_scale)),
         "macro_tactile": max(0.0, float(tactile_scale)),

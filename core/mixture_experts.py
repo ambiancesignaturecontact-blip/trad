@@ -63,6 +63,53 @@ class MixtureOfExperts:
             "position": HorizonExpert("position", lookback=200, state_dim=state_dim),
         }
         self.gate_weights = np.array([0.4, 0.4, 0.2])
+        # LOT 4 (PDF Pilier C) : contribution RÉELLE au PnL par expert + sommeil
+        self.pnl_contrib = {h: 0.0 for h in HORIZONS}   # somme des PnL attribués
+        self.expert_samples = {h: 0 for h in HORIZONS}  # nb de décisions tracées
+        self.sleeping = set()                           # experts mis en sommeil
+
+    def record_pnl_contribution(self, horizon: str, pnl_pct: float) -> None:
+        """
+        LOT 4 : évaluation RÉELLE des experts par contribution marginale au
+        PnL (pas seulement par bandit sur signaux bruts). Chaque trade clôturé
+        est attribué à l'expert dominant (horizon) du moment.
+        """
+        if horizon not in self.experts:
+            return
+        self.pnl_contrib[horizon] = self.pnl_contrib.get(horizon, 0.0) + float(pnl_pct)
+        self.expert_samples[horizon] = self.expert_samples.get(horizon, 0) + 1
+
+    def sleep_useless_experts(self, min_samples: int = 10, min_contrib_pct: float = 0.0) -> list:
+        """
+        LOT 4 : mise en SOMMEIL des experts inutiles — un expert dont la
+        contribution au PnL est NÉGATIVE sur un échantillon suffisant est
+        retiré du gate (poids 0) jusqu'à preuve du contraire.
+
+        Mentalité n°17 : l'alpha décroît — on abandonne sans attachement ce
+        qui s'érode. Retourne la liste des experts endormis.
+        """
+        newly_sleeping = []
+        for h in HORIZONS:
+            n = self.expert_samples.get(h, 0)
+            contrib = self.pnl_contrib.get(h, 0.0)
+            if n >= min_samples and contrib <= min_contrib_pct and h not in self.sleeping:
+                self.sleeping.add(h)
+                newly_sleeping.append(h)
+                logger.warning(
+                    f"🧟 MIXTURE-OF-EXPERTS: expert '{h}' MIS EN SOMMEIL "
+                    f"(contribution PnL {contrib*100:.2f}% sur {n} trades)")
+        return newly_sleeping
+
+    def expert_contribution_report(self) -> Dict:
+        """Rapport de contribution pour la télémétrie / l'audit."""
+        return {
+            h: {
+                "pnl_contrib_pct": round(self.pnl_contrib.get(h, 0.0) * 100.0, 4),
+                "n_trades": self.expert_samples.get(h, 0),
+                "sleeping": h in self.sleeping,
+            }
+            for h in HORIZONS
+        }
 
     def gate(self, regime_id: int, vol_mean: float) -> Dict[str, float]:
         """
@@ -79,7 +126,14 @@ class MixtureOfExperts:
         if vol_mean < 0.001:
             g[2] += 0.15
         g = np.clip(g, 0.05, 0.8)
-        return {h: float(w) for h, w in zip(HORIZONS, g / g.sum())}
+        # LOT 4 : les experts endormis n'ont PAS le droit de voter (poids 0)
+        for h in self.sleeping:
+            g[HORIZONS.index(h)] = 0.0
+        total = g.sum()
+        if total <= 0:
+            g = np.array([1/3, 1/3, 1/3])  # filet de sécurité (jamais de division par 0)
+            total = g.sum()
+        return {h: float(w) for h, w in zip(HORIZONS, g / total)}
 
     def decide(self, state: np.ndarray, regime_id: int, vol_mean: float) -> dict:
         """Each expert votes; the gate blends their actions (soft, not hard)."""

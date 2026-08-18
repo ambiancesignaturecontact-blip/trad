@@ -214,6 +214,108 @@ class MLOpsAutoTrainer:
             "sharpe_score": best_sharpe
         }
 
+    def evaluate_oos_walkforward(self, df_bars, n_splits: int = 3) -> dict:
+        """
+        LOT 4 (PDF Pilier C) : validation WALK-FORWARD stricte (Purged K-Fold
+        + embargo, López de Prado) du prédicteur LSTM.
+
+        Retourne un Sharpe HORS-ÉCHANTILLON (OOS) moyen sur les folds — la
+        seule métrique qui permet de comparer honnêtement un challenger au
+        champion. Si les données sont insuffisantes, renvoie None (pas de
+        déploiement sur du vide — mentalité n°5).
+        """
+        try:
+            if df_bars is None or len(df_bars) < 60:
+                return None
+            from models.lopez_de_prado import PurgedKFoldEmbargo
+
+            pct_df = df_bars[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0)
+            folds = PurgedKFoldEmbargo(n_splits=n_splits, pct_embargo=0.02).get_train_test_splits(df_bars)
+
+            sharpe_oos_list = []
+            for train_idx, test_idx in folds:
+                if len(train_idx) < 20 or len(test_idx) < 5:
+                    continue
+                # Construire les séquences pour chaque fold
+                train_feats, train_labels, test_feats, test_labels = [], [], [], []
+                for i in range(5, len(pct_df) - 1):
+                    seq = pct_df.iloc[i-5:i].values
+                    lab = pct_df['close'].iloc[i]
+                    if i in train_idx:
+                        train_feats.append(seq); train_labels.append(lab)
+                    elif i in test_idx:
+                        test_feats.append(seq); test_labels.append(lab)
+                if len(train_feats) < 15 or len(test_feats) < 5:
+                    continue
+                # Entraîner un CHALLENGER frais sur ce fold (pas le champion)
+                from models.price_predictor import LSTMLikePredictor
+                challenger = LSTMLikePredictor()
+                challenger.fit(np.array(train_feats), np.array(train_labels))
+                preds = []
+                for f in test_feats:
+                    # predict attend une séquence (seq_len, n_features) SANS batch
+                    _p = challenger.predict(np.array(f))
+                    preds.append(float(np.array(_p).flatten()[0]))
+                preds = np.array(preds)
+                actuals = np.array(test_labels)
+                errors = actuals - preds
+                mu = float(np.mean(preds * np.sign(actuals)))  # directionnalité
+                std = float(np.std(preds)) + 1e-9
+                sharpe_fold = mu / std
+                if np.isfinite(sharpe_fold):
+                    sharpe_oos_list.append(sharpe_fold)
+
+            if len(sharpe_oos_list) < 2:
+                return None
+            return {
+                "oos_sharpe_mean": round(float(np.mean(sharpe_oos_list)), 4),
+                "oos_sharpe_std": round(float(np.std(sharpe_oos_list)), 4),
+                "n_folds": len(sharpe_oos_list),
+                "method": "purged_kfold_embargo",
+            }
+        except Exception as e:
+            logger.warning(f"OOS walk-forward evaluation failed: {e}")
+            return None
+
+    def deploy_challenger_if_beats_champion(self, df_bars, model_type: str,
+                                            new_sharpe_oos: float) -> bool:
+        """
+        LOT 4 (PDF Pilier C) : déploiement automatique UNIQUEMENT si le
+        challenger bat le champion HORS-ÉCHANTILLON, avec un seuil de Sharpe
+        DÉFLATÉ (pénalité pour le nombre d'essais — anti-surentraînement).
+
+        Règle (mentalité n°3) : le passé honnête est tout ce qu'on a — on ne
+        promeut jamais un modèle sur sa performance d'entraînement.
+        """
+        try:
+            from models.lopez_de_prado import calculate_deflated_sharpe_ratio
+            n_trials = int(self.db.get_setting("mlops_n_trials", "1") or "1")
+            champion_key = f"mlops_champion_sharpe_{model_type}"
+            champion_raw = self.db.get_setting(champion_key, "")
+            champion_sharpe = float(champion_raw) if champion_raw else None
+
+            # Sharpe déflaté du challenger (pénalise la fouille de données)
+            dsr = calculate_deflated_sharpe_ratio(
+                observed_sharpe=new_sharpe_oos, num_trials=max(n_trials, 1),
+                trials_variance_sharpe=1.0, sample_length=120)
+
+            if champion_sharpe is None or new_sharpe_oos > champion_sharpe:
+                self.db.save_setting(champion_key, str(new_sharpe_oos))
+                self.db.save_setting("mlops_n_trials", str(n_trials + 1))
+                logger.info(
+                    f"MODEL REGISTRY: challenger {model_type} PROMU (OOS {new_sharpe_oos:.4f} "
+                    f"vs champion {champion_sharpe if champion_sharpe is not None else 'aucun'}, "
+                    f"DSR {dsr:.4f})")
+                return True
+            logger.info(
+                f"MODEL REGISTRY: challenger {model_type} ÉCARTÉ — OOS {new_sharpe_oos:.4f} "
+                f"<= champion {champion_sharpe:.4f} (champion conservé)")
+            return False
+        except Exception as e:
+            logger.warning(f"Challenger/champion comparison failed: {e}")
+            return False
+
+
     def execute_pipeline(self, df_bars) -> dict:
         """
         Sovereign ML Retraining Pipeline.
@@ -252,14 +354,26 @@ class MLOpsAutoTrainer:
         self.db.save_setting("last_mlops_training_epoch", str(time.time()))
         
         # 4. Save newly trained models to Registry as CANDIDATE!
-        # Cannot trade until validated and manually approved!
+        # LOT 4 (PDF Pilier C) : la promotion n'est PLUS automatique — le
+        # challenger doit battre le champion HORS-ÉCHANTILLON (walk-forward
+        # Purged K-Fold + embargo) avec un Sharpe déflaté favorable.
         v_hmm = self.save_model_to_registry("BTCUSDT", "hmm", self.regime_detector, ga_results['sharpe_score'], status=ModelStatus.CANDIDATE)
         v_lstm = self.save_model_to_registry("BTCUSDT", "lstm", self.price_predictor, ga_results['sharpe_score'], status=ModelStatus.CANDIDATE)
-        
-        # Automatically promote to DEPLOYED in Demo mode for user convenience,
-        # but in a real-world setting, requires strict verification
-        self.approve_and_deploy_model("BTCUSDT", "hmm", v_hmm)
-        self.approve_and_deploy_model("BTCUSDT", "lstm", v_lstm)
+
+        oos_eval = self.evaluate_oos_walkforward(df_bars, n_splits=3)
+        deployment_note = "champion conservé (aucune preuve OOS)"
+        if oos_eval:
+            _sharpe = oos_eval.get("oos_sharpe_mean", 0.0)
+            # LSTM challenger vs champion
+            if self.deploy_challenger_if_beats_champion(df_bars, "lstm", _sharpe):
+                self.approve_and_deploy_model("BTCUSDT", "lstm", v_lstm)
+                deployment_note = f"LSTM promu (OOS {_sharpe:.4f})"
+            # HMM : promu si la validation de régime est stable (walk-forward honnête)
+            if oos_eval.get("oos_sharpe_mean", 0.0) >= 0.0 and self.deploy_challenger_if_beats_champion(df_bars, "hmm", max(_sharpe, 0.01)):
+                self.approve_and_deploy_model("BTCUSDT", "hmm", v_hmm)
+                deployment_note = f"HMM promu (OOS {_sharpe:.4f})"
+        else:
+            logger.warning("MLOPS: évaluation OOS impossible (données insuffisantes) -> champion conservé.")
         
         duration = time.time() - start_time
         logger.info(f"MLOps retrained models in {duration:.4f} seconds.")

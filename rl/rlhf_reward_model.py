@@ -105,10 +105,18 @@ class RLHFRewardModel:
         logger.info("LOT 55: RLHF Reward Model training completed")
         return True
 
-    def predict_reward(self, features: np.ndarray) -> float:
-        """Predict how much a human would like this trade situation"""
+    def predict_reward(self, features: np.ndarray):
+        """
+        Predict how much a human would like this trade situation.
+
+        LIMITES (LOT 4, PDF Pilier C) : RLHF est EXPÉRIMENTAL. Sans PyTorch
+        ou sans entraînement, renvoie None = « je ne sais pas » — le main loop
+        n'applique alors AUCUN modulateur (facteur 1.0). Correction d'un bug
+        où le fallback 0.0 réduisait la taille de moitié sans raison
+        (mentalité n°20 : savoir dire je ne sais pas).
+        """
         if not TORCH_AVAILABLE or not self.is_trained:
-            return 0.0
+            return None
 
         x = torch.tensor(features, dtype=torch.float32).unsqueeze(0).to(self.device)
         with torch.no_grad():

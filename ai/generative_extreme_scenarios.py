@@ -2,6 +2,13 @@
 LOT 54: Generative Models for Extreme Market Scenarios
 Lightweight but powerful implementation using PyTorch.
 Supports: Conditional GAN-style generation + Simple Diffusion-like sampling.
+
+LIMITES (LOT 4, PDF Pilier C) : module EXPÉRIMENTAL / ÉDUCATIF.
+- Sans PyTorch, il produit du bruit aléatoire (fallback) — ce bruit ne doit
+  JAMAIS influencer une décision de trading réelle.
+- Usage autorisé UNIQUEMENT : stress tests, scénarios extrêmes, éducation.
+- En production, tout scénario GAN est étiqueté "generated" dans la télémétrie
+  et reste hors du sizing live (mentalité n°13 : le risque de modèle est réel).
 """
 
 import numpy as np

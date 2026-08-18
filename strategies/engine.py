@@ -345,11 +345,42 @@ class MetaAllocationEngine:
                 if len(self.recent_performance[s.name]) > 80:
                     self.recent_performance[s.name].pop(0)
 
+    def update_pnl_attribution(self, strategy: str, pnl_pct: float) -> None:
+        """
+        LOT 4 (PDF Pilier D) : pondère les stratégies par leur contribution
+        RÉELLE au PnL (attribution), pas uniquement par bandit sur signaux
+        bruts. Chaque trade clôturé ajuste le poids via un softmax sur les
+        PnL récents par stratégie (mentalité n°17 : l'alpha décroît — les
+        stratégies qui perdent sont dé-pondérées).
+        """
+        if strategy not in self.recent_performance:
+            self.recent_performance[strategy] = []
+        self.recent_performance[strategy].append(float(pnl_pct))
+        if len(self.recent_performance[strategy]) > 80:
+            self.recent_performance[strategy].pop(0)
+        # Softmax sur les moyennes de PnL récentes (pondération relative)
+        scores = {}
+        for name in self.recent_performance:
+            perf = self.recent_performance[name]
+            if len(perf) >= 3:  # échantillon minimal avant ajustement
+                scores[name] = float(np.mean(perf))
+        if len(scores) >= 2:
+            vals = np.array([max(scores.get(s.name, 0.0), -0.5) for s in self.strategies
+                             if s.name in scores] + [0.0])  # filet de sécurité
+            # softmax stable
+            exp = np.exp(vals - np.max(vals))
+            probs = exp / exp.sum()
+            idx = 0
+            for i, s in enumerate(self.strategies):
+                if s.name in scores:
+                    self.walkforward_weights[i] = float(probs[idx])
+                    idx += 1
+
     def get_strategy_weights(self) -> dict:
         """
         Returns the current live allocation weights per strategy
-        (Thompson Sampling bandit + walk-forward). Used by the mini-app
-        attribution panel and the LOT 46 telemetry.
+        (Thompson Sampling bandit + walk-forward + PnL attribution LOT 4).
+        Used by the mini-app attribution panel and the LOT 46 telemetry.
         """
         weights = {}
         for i, s in enumerate(self.strategies):
