@@ -8,7 +8,13 @@ class SmartOrderSlicer:
     """
     Institutional TWAP / VWAP Execution Slicer.
     Splits large trade quantities (e.g. value > $500) into smaller sequential
-    micro-orders to minimize market impact and achieve 0% slippage.
+    micro-orders to REDUCE market impact and slippage.
+
+    HONNÊTETÉ (LOT 3, PDF Faille 4 / Pilier H) : il n'existe AUCUN slippage
+    nul. Le découpage TWAP réduit l'impact de marché (Almgren-Chriss) mais
+    chaque tranche paie frais + spread + impact résiduel. Le coût total est
+    TOUJOURS mesuré et retranché du PnL (mentalité n°2 : l'edge est net des
+    coûts). Estimation honnête par tranche : spread/2 + impact estimé.
     """
     def __init__(self, time_horizon_seconds=120, num_slices=5):
         self.time_horizon_seconds = time_horizon_seconds

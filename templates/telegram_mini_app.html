@@ -748,6 +748,10 @@
                     <div class="font-bold text-sm">${(() => { const pc = (telemetry.price_consensus || {}).BTCUSDT; if (!pc || !pc.n_sources) return 'Aucune (UNAVAILABLE)'; return pc.n_sources + ' sources · écart ' + pc.divergence_pct + '%' + (pc.status === 'DIVERGENT' ? ' ⚠️ GEL' : ''); })()}</div>
                 </div>
                 <div>
+                    <div class="text-zinc-400">Order Flow (BTC)</div>
+                    <div class="font-bold text-sm">${(() => { const of = (telemetry.order_flow || {}).BTCUSDT; if (!of) return 'N/A'; return 'Δ ' + (of.delta ?? 0) + ' · OFI ' + (of.ofi != null ? of.ofi.toFixed(2) : 'N/A') + (of.liquidation_cascade ? ' ⚠️ CASCADE' : '') + (of.absorption ? ' 🛡️ absorption' : ''); })()}</div>
+                </div>
+                <div>
                     <div class="text-zinc-400">État Risque</div>
                     <div class="font-bold text-sm">${(() => { const rs = telemetry.risk_state || {}; const e = {NORMAL:'🟢', CAUTION:'🟠', HALT:'🔴'}[rs.state] || '⚪'; return e + ' ' + (rs.state || 'NORMAL') + ' · ' + Math.round((rs.scale_factor ?? 1) * 100) + '%' + (rs.reason ? ' (' + rs.reason + ')' : ''); })()}</div>
                 </div>

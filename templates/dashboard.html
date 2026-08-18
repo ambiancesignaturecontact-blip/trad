@@ -294,6 +294,19 @@ window.qpLogin = async function () {
                     </div>
                 </div>
 
+                <!-- Order Flow (LOT 3) -->
+                <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">ORDER FLOW (BTC) — DELTA / CVD / OFI</p>
+                    <div class="flex items-baseline mt-1 space-x-3">
+                        <h3 id="val-delta" class="text-xl font-black text-cyan-400">0</h3>
+                        <span id="val-ofi" class="text-[10px] text-slate-400 font-bold">OFI n/a</span>
+                        <span id="val-cascade" class="text-[10px] text-rose-400 font-bold hidden">⚠️ CASCADE LIQ.</span>
+                    </div>
+                    <div class="w-full bg-slate-950 rounded-full h-1 mt-1 overflow-hidden">
+                        <div id="bar-ofi" class="bg-cyan-500 h-1 rounded-full" style="width: 50%"></div>
+                    </div>
+                </div>
+
                 <!-- Risk State (LOT 2) -->
                 <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
                     <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">ÉTAT RISQUE (NORMAL/CAUTION/HALT)</p>
@@ -802,6 +815,20 @@ window.qpLogin = async function () {
             const barSignal = document.getElementById('bar-signal');
             if (barSignal) barSignal.style.width = `${sentimentPct}%`;
             
+            // Order Flow (LOT 3)
+            const ofl = (data.order_flow && data.order_flow.BTCUSDT) || null;
+            if (ofl) {
+                safeSetText('val-delta', (ofl.delta ?? 0).toFixed(0));
+                safeSetText('val-ofi', `OFI ${ofl.ofi != null ? ofl.ofi.toFixed(2) : 'n/a'} · tox ${((ofl.toxicity_factor ?? 1)*100).toFixed(0)}%`);
+                const cascEl = document.getElementById('val-cascade');
+                if (cascEl) cascEl.classList.toggle('hidden', !ofl.liquidation_cascade);
+                const barOfi = document.getElementById('bar-ofi');
+                if (barOfi) {
+                    const ofiVal = ofl.ofi != null ? ofl.ofi : 0;
+                    barOfi.style.width = `${(ofiVal + 1) / 2 * 100}%`;
+                    barOfi.className = `h-1 rounded-full ${ofl.liquidation_cascade ? 'bg-rose-500' : ofiVal >= 0 ? 'bg-cyan-500' : 'bg-amber-500'}`;
+                }
+            }
             // Risk State (LOT 2)
             const rs = data.risk_state || {};
             const rsEmoji = {NORMAL:'🟢', CAUTION:'🟠', HALT:'🔴'}[rs.state] || '⚪';

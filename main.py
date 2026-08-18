@@ -73,6 +73,7 @@ from models.defi_wallet import NonCustodialDeFiWallet
 from models.mlops_pipeline import MLOpsAutoTrainer
 from models.risk_covariance import RiskCovarianceEngine
 from market_data.multi_source import MultiSourcePriceEngine
+from market_data.order_flow import OrderFlowEngine
 from models.volatility_arbitrage import OptionsVolatilityArbitrageEngine
 from models.telegram_bot import TelegramBotManager
 from models.funding_arbitrage import FundingRateArbitrageEngine
@@ -589,6 +590,13 @@ def update_asset_order_book(symbol: str, bids: list, asks: list, exchange: str =
             STATE["order_book"] = consolidated
     STATE.setdefault("asset_data_status", {})[symbol] = DataQualityStatus.LIVE
     STATE["assets"][symbol]["data_status"] = DataQualityStatus.LIVE
+    # LOT 3 : alimente l'OFI du moteur d'order flow (pression bid vs ask)
+    try:
+        _bd = sum(float(b[1]) for b in bids if b and len(b) > 1)
+        _ad = sum(float(a[1]) for a in asks if a and len(a) > 1)
+        order_flow.update_book(symbol, _bd, _ad)
+    except Exception:
+        pass
 
 
 
@@ -748,6 +756,7 @@ mixture_of_experts = MixtureOfExperts(state_dim=4)
 hypothesis_generator = HypothesisGenerator(db=db)
 risk_committee = RiskCommittee(veto_threshold=0.85)
 price_engine = MultiSourcePriceEngine()  # consensus prix multi-exchange (PDF: redondance 2+ sources)
+order_flow = OrderFlowEngine()          # LOT 3: order flow réel (delta/CVD/OFI/liquidations) (PDF Pilier H)
 risk_state = RiskStateMachine()          # LOT 2: machine à états NORMAL/CAUTION/HALT (PDF Faille 3)
 win_tracker = StrategyWinRateTracker(STATE)  # LOT 2: win rates RÉELS par stratégie (PDF Pilier F)
 risk_pipeline_last = {}                  # dernier tracé du pipeline (télémétrie/audit)
@@ -1050,6 +1059,42 @@ def evaluate_real_safety_gate(symbol: str) -> bool:
     return True
 
 
+async def pick_best_venue_net(symbol: str, side: str) -> dict:
+    """
+    LOT 3 (PDF Pilier H-3) : SOR multi-venue — compare les venues sur le COÛT
+    NET TOTAL (prix + frais + slippage attendu), pas seulement le prix.
+
+    Retourne le meilleur choix avec le détail des coûts (audit). Si aucune
+    venue ne répond, retourne un choix neutre (venue par défaut) — jamais
+    d'invention de prix (mentalité n°5).
+    """
+    try:
+        quotes = await multi_exchange_sor.get_all_quotes(symbol)
+        if not quotes:
+            return {"venue": None, "reason": "Aucune venue disponible (données réelles absentes)", "quotes": []}
+        best = None
+        detail = []
+        for q in quotes:
+            # coût net : prix ajusté du spread + frais + slippage attendu
+            if side == "BUY":
+                gross = q.ask * (1.0 + q.fee_rate)
+                slip = slippage_model.expected_slippage_bps(q.exchange.capitalize(), symbol, fallback=5.0) / 1e4
+                net = gross * (1.0 + slip)
+            else:
+                gross = q.bid * (1.0 - q.fee_rate)
+                slip = slippage_model.expected_slippage_bps(q.exchange.capitalize(), symbol, fallback=5.0) / 1e4
+                net = gross * (1.0 - slip)
+            detail.append({"venue": q.exchange, "net_price": round(net, 6),
+                           "fee_rate": q.fee_rate, "latency_ms": round(q.latency_ms, 1),
+                           "liquidity_usd": round(q.liquidity_usd, 0)})
+            if best is None or (side == "BUY" and net < best[1]) or (side == "SELL" and net > best[1]):
+                best = (q.exchange, net)
+        return {"venue": best[0], "net_price": best[1], "reason": "meilleur coût net (prix+frais+slippage)", "quotes": detail}
+    except Exception as e:
+        logger.warning(f"SOR net eval failed for {symbol}: {e}")
+        return {"venue": None, "reason": "SOR indisponible", "quotes": []}
+
+
 async def trigger_realtime_broadcast():
     """
     Throttles WebSocket broadcasts to a maximum of 5 times per second (once every 200ms)
@@ -1236,6 +1281,112 @@ async def price_consensus_loop():
         except Exception as e:
             logger.warning(f"Price consensus loop error: {e}")
         await asyncio.sleep(20.0)
+
+
+async def order_flow_websocket_listener():
+    """
+    LOT 3 (PDF Pilier H) : flux de TRADES RÉELS + LIQUIDATIONS pour calculer
+    Delta/CVD, OFI, absorption et cascades de liquidation.
+
+    - Bybit spot : publicTrade.{symbole} (trades avec côté agressif)
+    - Binance spot : {symbole}@aggTrade (tick rule appliquée)
+    - Liquidations : Binance futures !forceOrder@arr + Bybit linear liquidation
+    Toutes les données sont 100% réelles ; sans flux -> indicateurs NEUTRES.
+    """
+    bybit_spot_url = "wss://stream.bybit.com/v5/public/spot"
+    binance_spot_url = ("wss://stream.binance.com:9443/stream?streams="
+                        + "/".join(f"{s.lower()}@aggTrade" for s in CRYPTO_SYMBOLS))
+    bybit_linear_url = "wss://stream.bybit.com/v5/public/linear"
+
+    async def listen_bybit_trades():
+        while True:
+            try:
+                async with websockets.connect(bybit_spot_url, ping_interval=20, ping_timeout=20) as ws:
+                    await ws.send(json.dumps({"op": "subscribe", "args": [f"publicTrade.{s}" for s in CRYPTO_SYMBOLS]}))
+                    logger.info("Bybit OrderFlow WS connected (publicTrade BTC/ETH/SOL)")
+                    while True:
+                        msg = json.loads(await ws.recv())
+                        topic = msg.get("topic", "")
+                        if "publicTrade." in topic:
+                            symbol = topic.replace("publicTrade.", "")
+                            for t in msg.get("data", []):
+                                try:
+                                    order_flow.update_trade(
+                                        symbol, float(t["p"]), float(t["v"]),
+                                        "buy" if t.get("side") == "Buy" else "sell")
+                                except Exception:
+                                    continue
+            except Exception as e:
+                logger.warning(f"Bybit OrderFlow WS disconnected: {e}. Reconnect 5s")
+                await asyncio.sleep(5)
+
+    async def listen_binance_trades():
+        while True:
+            try:
+                async with websockets.connect(binance_spot_url, ping_interval=20, ping_timeout=20) as ws:
+                    logger.info("Binance aggTrade WS connected (BTC/ETH/SOL)")
+                    while True:
+                        frame = json.loads(await ws.recv())
+                        stream = frame.get("stream", "")
+                        symbol = next((s for s in CRYPTO_SYMBOLS if stream.startswith(s.lower())), None)
+                        if not symbol:
+                            continue
+                        agg = frame.get("data", {})
+                        try:
+                            price = float(agg.get("p", 0.0))
+                            qty = float(agg.get("q", 0.0))
+                            is_buyer = agg.get("m") is False  # m=False -> acheteur agressif
+                            order_flow.update_trade(symbol, price, qty,
+                                                    "buy" if is_buyer else "sell")
+                        except Exception:
+                            continue
+            except Exception as e:
+                logger.warning(f"Binance aggTrade WS disconnected: {e}. Reconnect 5s")
+                await asyncio.sleep(5)
+
+    async def listen_liquidations():
+        """Liquidations réelles : Binance futures + Bybit linear."""
+        b_url = "wss://fstream.binance.com/ws/!forceOrder@arr"
+        while True:
+            try:
+                async with websockets.connect(b_url, ping_interval=20, ping_timeout=20) as ws:
+                    logger.info("Binance !forceOrder WS connected (liquidations)")
+                    while True:
+                        msg = json.loads(await ws.recv())
+                        o = msg.get("o", {})
+                        sym = o.get("s", "")
+                        if sym and sym in CRYPTO_SYMBOLS:
+                            order_flow.update_liquidation(
+                                sym, "sell" if o.get("S") == "SELL" else "buy",
+                                float(o.get("q", 0.0)), float(o.get("p", 0.0)))
+            except Exception as e:
+                logger.debug(f"Binance liquidation WS down: {e}")
+                break  # pas bloquant ; Bybit en secours
+        # Bybit linear liquidation (secours)
+        while True:
+            try:
+                async with websockets.connect(bybit_linear_url, ping_interval=20, ping_timeout=20) as ws:
+                    await ws.send(json.dumps({"op": "subscribe", "args": [f"liquidation.{s}" for s in CRYPTO_SYMBOLS]}))
+                    logger.info("Bybit liquidation WS connected")
+                    while True:
+                        msg = json.loads(await ws.recv())
+                        topic = msg.get("topic", "")
+                        if "liquidation." in topic:
+                            symbol = topic.replace("liquidation.", "")
+                            for liq in msg.get("data", []):
+                                try:
+                                    order_flow.update_liquidation(
+                                        symbol, "sell" if liq.get("side") == "Sell" else "buy",
+                                        float(liq.get("qty", 0.0)), float(liq.get("price", 0.0)))
+                                except Exception:
+                                    continue
+            except Exception as e:
+                logger.debug(f"Bybit liquidation WS down: {e}")
+                await asyncio.sleep(10)
+
+    asyncio.create_task(listen_bybit_trades())
+    asyncio.create_task(listen_binance_trades())
+    asyncio.create_task(listen_liquidations())
 
 
 def validate_startup_config():
@@ -2383,6 +2534,10 @@ async def startup_event():
     
     # Start the multi-source price consensus engine (PDF: redondance 2+ sources)
     asyncio.create_task(price_consensus_loop())
+
+    # LOT 3: order flow réel (trades + liquidations) pour Delta/CVD/OFI/cascades
+    asyncio.create_task(order_flow_websocket_listener())
+    logger.info("✅ OrderFlow WS listener started (trades réels + liquidations)")
     logger.info("✅ Multi-source price consensus loop started (Binance/Bybit/Coinbase/Kraken/OKX/CoinGecko/CryptoCompare/Yahoo...)")
     
     # Start the official Dual-Exchange WebSockets Stream
@@ -3032,6 +3187,22 @@ async def live_trading_loop():
                                     atr=atr_now if atr_now > 0 else None,
                                     trailing_pct=settings.get_float("risk", "trailing_stop_pct", 0.0),
                                 )
+                                # LOT 3 (PDF Pilier H-c) : ne JAMAIS placer un stop dans
+                                # une zone de stops évidente (stop hunting) — on décale le
+                                # stop hors de la zone (sous le plus bas récent pour un long)
+                                try:
+                                    if df is not None and len(df) > 10 and atr_now > 0:
+                                        _rh = float(df['high'].values[-10:].max())
+                                        _rl = float(df['low'].values[-10:].min())
+                                        _dir = "long" if pos_qty > 0 else "short"
+                                        _new_sl = order_flow.adjust_stop_against_hunting(
+                                            symbol, prot.stop_price, _dir, _rh, _rl, atr_now)
+                                        if abs(_new_sl - prot.stop_price) > 1e-9:
+                                            logger.info(f"🎯 STOP HUNTING: SL {prot.stop_price:.2f} -> {_new_sl:.2f} "
+                                                        f"({symbol}, hors zone de chasse {_rl:.2f}-{_rh:.2f})")
+                                            prot.stop_price = _new_sl
+                                except Exception as _sh:
+                                    logger.debug(f"Stop hunting adjust failed: {_sh}")
                                 protection_store.upsert(prot)
                                 logger.info(f"🛡️ Protection armée pour {symbol}: SL {prot.stop_price:.2f} / TP {prot.take_price:.2f}")
                             else:
@@ -3276,6 +3447,16 @@ async def live_trading_loop():
                     if corr_df is not None and not corr_df.empty:
                         _corr_s = covariance_engine.evaluate_portfolio_concentration_risk(
                             symbol=symbol, active_positions=positions, corr_matrix=corr_df)
+                    # 10. ORDER FLOW toxique (LOT 3, PDF Pilier H-d) : VPIN/Kyle/delta
+                    # extrême -> RÉDUIRE la taille (informed trading), pas seulement journaliser
+                    try:
+                        _vpin_now = float(microstructure_engine.calculate_vpin(df))
+                        _ofl_s = order_flow.toxicity_factor(symbol, vpin=_vpin_now)
+                        if _ofl_s < 1.0:
+                            logger.info(f"ORDER FLOW TOXIQUE {symbol}: facteur {_ofl_s:.2f} "
+                                        f"(delta {order_flow.get_delta(symbol)[0]:.0f}, VPIN {_vpin_now:.2f})")
+                    except Exception:
+                        _ofl_s = 1.0
                     # 10. Indice de confiance (méta-cognition)
                     _conf_s = STATE.get("confidence_factor", 1.0)
                     # 11. Organisation (desks)
@@ -3318,6 +3499,7 @@ async def live_trading_loop():
                             tactile_scale=_tactile_s,
                             onchain_scale=_onchain_s,
                             corr_scale=_corr_s,
+                            order_flow_scale=_ofl_s,
                             confidence_scale=_conf_s,
                             org_scale=_org_s,
                             rlhf_scale=_rlhf_s,
@@ -3386,6 +3568,24 @@ async def live_trading_loop():
                         decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
                                         [f"HALT: {risk_state.reason}"], STATE["no_trade_stats"], db)
                         target_direction = 0.0
+
+                    # ===== GATES ORDER FLOW (LOT 3, PDF Pilier H a/b) =====
+                    if target_direction != 0.0:
+                        _side_tmp = "BUY" if target_direction > 0 else "SELL"
+                        # (a) ne jamais entrer CONTRE un flux agressif dominant
+                        _avoid, _avoid_reason = order_flow.should_avoid_entry(symbol, _side_tmp)
+                        if _avoid:
+                            decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
+                                            [_avoid_reason], STATE["no_trade_stats"], db)
+                            target_direction = 0.0
+                        else:
+                            # (b) cascade de liquidations -> attendre la fin (ne pas
+                            # acheter la panique, mentalité n°1 : survivre d'abord)
+                            _casc, _casc_reason = order_flow.wait_cascade_end(symbol)
+                            if _casc and _side_tmp == "BUY":
+                                decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
+                                                [_casc_reason], STATE["no_trade_stats"], db)
+                                target_direction = 0.0
 
                     desired_qty = target_direction * target_qty
                     trade_qty = desired_qty - pos_qty
@@ -3470,6 +3670,21 @@ async def live_trading_loop():
                                     logger.info(f"DEX Swap signed successfully. Transaction Hash: {signed_dex_res.get('tx_hash')}")
                                 
                                 elif active_mode == "REAL" and client:
+                                    # LOT 3 (PDF Pilier H-3) : SOR — choisir la venue au
+                                    # coût NET (prix + frais + slippage), audité.
+                                    try:
+                                        _sor = await pick_best_venue_net(symbol, side)
+                                        STATE["last_sor_choice"] = _sor
+                                        if _sor.get("venue"):
+                                            logger.info(
+                                                f"SOR {symbol} {side}: venue {_sor['venue']} "
+                                                f"(net {_sor['net_price']:.6f}) | {_sor['reason']}")
+                                            db.add_audit_log(
+                                                "SOR_CHOICE", "127.0.0.1",
+                                                f"{symbol} {side}: venue {_sor['venue']} "
+                                                f"net {_sor['net_price']:.6f} - {json.dumps(_sor.get('quotes', []))[:200]}")
+                                    except Exception as _se:
+                                        logger.debug(f"SOR eval failed: {_se}")
                                     # VISION §3.1: execution style (market/limit/twap) + alpha measurement
                                     _arrival_price = current_price
                                     _spread_bps = 2.0
@@ -3990,6 +4205,8 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "strategy_win_rates": STATE.get("strategy_win_rates", {}),
         "strategy_trade_counts": STATE.get("strategy_trade_counts", {}),
         "risk_pipeline_steps": STATE.get("risk_pipeline_steps", [])[-12:],
+        "order_flow": {s: order_flow.status(s) for s in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]},
+        "last_sor_choice": STATE.get("last_sor_choice", {}),
         "sim_divergence": STATE.get("sim_divergence", 0.0),
         "confidence_index": STATE.get("confidence_index", 100),
         "confidence_factor": STATE.get("confidence_factor", 1.0),
