@@ -468,7 +468,15 @@ class TelegramBotManager:
         if data in cmd_mapping:
             await self.process_command(cmd_mapping[data])
             return
-            
+
+        # VISION_FUTUR §6: consultative-mode approval buttons
+        if data == "approve_pending":
+            await self.process_command("/approve")
+            return
+        if data == "reject_pending":
+            await self.process_command("/reject")
+            return
+        
         if data.startswith("macro_reduce_expo_"):
             event_name = data.replace("macro_reduce_expo_", "")
             self.state["macro_scale_factor_tactile"] = 0.40

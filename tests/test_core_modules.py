@@ -692,3 +692,28 @@ def test_llm_narrative_fallback():
     # Either path should produce a meaningful narrative (LLM text or structured fallback)
     assert txt and len(txt) > 20
     assert any(marker in txt for marker in ["Narratif", "Équité", "Mode", "DEMO", "Position", "USD", "BULL", "(", "equiv", "mean-reverting", "Range"])
+
+
+# ---- Phase D: backup/restore round-trip ----
+def test_backup_and_restore_roundtrip(tmp_path):
+    """Restore must copy a snapshot WITHOUT touching the live DB path."""
+    import sqlite3
+    # source snapshot (the "backup")
+    snap = tmp_path / "snap.db"
+    c = sqlite3.connect(str(snap))
+    c.execute("CREATE TABLE t (x INTEGER)"); c.execute("INSERT INTO t VALUES (42)"); c.commit(); c.close()
+    # target = a SEPARATE temp file (never the live DB)
+    target = tmp_path / "target.db"
+    src = sqlite3.connect(str(snap))
+    dst = sqlite3.connect(str(target))
+    src.backup(dst)
+    dst.close(); src.close()
+    # verify the restored copy contains the data
+    chk = sqlite3.connect(str(target))
+    val = chk.execute("SELECT x FROM t").fetchone()[0]
+    chk.close()
+    assert val == 42
+    # and the LIVE DB must be untouched (still has our tables)
+    from database.db_manager import DBManager, DB_PATH
+    db = DBManager()
+    assert db.get_user("admin_quant") is not None

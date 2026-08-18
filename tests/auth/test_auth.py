@@ -1,6 +1,6 @@
 import pytest
 import time
-from models.auth import AuthManager, Roles
+from database.auth import AuthManager, Roles
 
 def test_password_hashing():
     pwd = "MySecretPassword123"

@@ -104,10 +104,19 @@ class Organization:
             self.desks[d].capital_share = float(w)
         return alloc
 
-    def confidence_factor(self, symbol: str) -> float:
-        """Size multiplier from the desk that owns this symbol's strategy context."""
-        # uses the market-state crisis factor as the portfolio-level scaler
-        return float(self.state.get("desk_crisis_factor", 1.0))
+    def confidence_factor(self, strategy: str = None) -> float:
+        """
+        Size multiplier = crisis factor (portfolio-level) * desk capital share.
+        Each desk's trades are scaled by its allocated share of capital, so the
+        internal capital market genuinely controls position sizing (Phase C).
+        """
+        crisis = float(self.state.get("desk_crisis_factor", 1.0))
+        alloc = self.state.get("desk_allocations", {})
+        desk = self.desk_of(strategy) if strategy else "macro"
+        # fallback if the desk has no allocation yet
+        share = float(alloc.get(desk, 1.0)) if alloc else 1.0
+        # keep shares sane: never more than 1.0 effective
+        return float(max(0.3, min(crisis * share, 1.0)))
 
     def status(self) -> dict:
         return {

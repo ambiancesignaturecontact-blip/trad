@@ -83,7 +83,19 @@ from models.oms_ems import OrderManagementSystem, ReconciliationEngine, OrderSta
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
 logger = logging.getLogger("InstitutionalTradingBot")
 
-app = FastAPI(title="Institutional AI Trading Platform", version="1.0.0", docs_url="/api/docs", redoc_url="/api/redoc")
+from contextlib import asynccontextmanager
+
+
+@asynccontextmanager
+async def lifespan(app):
+    """FastAPI lifespan handler (modern replacement for @app.on_event)."""
+    await startup_event()
+    yield
+    await shutdown_event()
+
+
+app = FastAPI(title="Institutional AI Trading Platform", version="1.0.0", docs_url="/api/docs", redoc_url="/api/redoc",
+              lifespan=lifespan)
 # Institutional middleware (audit B2/B3): request logging, security headers, rate limits, CORS
 app.add_middleware(LoginRateLimitMiddleware)
 app.add_middleware(IPRateLimitMiddleware)
@@ -1302,6 +1314,13 @@ async def concierge_scheduler():
                 next_run += 86400
             await asyncio.sleep(next_run - time.time())
             report = build_daily_report(STATE, db)
+            # VISION_FUTUR §8: proactive health alert when the bot distrusts itself
+            if report.get("health_score", 100) < 60:
+                await telegram_bot.send_push_notification(
+                    f"🚨 *SANTÉ FAIBLE : {report['health_score']}/100*\n"
+                    f"Raisons : {', '.join(report.get('health_reasons', [])[:4])}\n"
+                    f"Le bot réduit automatiquement ses tailles."
+                )
             try:
                 await telegram_bot.send_push_notification(build_concierge_message(report))
                 # VISION_FUTUR §3: LLM narrative appended (OpenRouter or structured)
@@ -1947,7 +1966,6 @@ async def db_backup_scheduler():
             logger.warning(f"DB backup scheduler error: {e}")
 
 
-@app.on_event("startup")
 async def startup_event():
     # LOT 62: institutional configuration checklist
     validate_startup_config()
@@ -2638,6 +2656,14 @@ async def live_trading_loop():
                 
                     consensus = meta_engine.allocate(market_data, STATE["regime_id"], STATE["ml_prediction_pct"], STATE["ppo_action"])
                     final_signal = consensus["final_signal"]
+                    # VISION_FUTUR §1: derive the dominant strategy early (desk capital mapping)
+                    _dom_early = "META_MODEL"
+                    try:
+                        _contribs = consensus.get("contributions", {})
+                        if _contribs:
+                            _dom_early = max(_contribs, key=lambda s: abs(_contribs[s].get("signal", 0.0) * _contribs[s].get("weight", 0.0)))
+                    except Exception:
+                        pass
                     STATE["last_reasoning"] = explain_last_decision(consensus)
                     STATE["last_reasoning_symbol"] = symbol
                 
@@ -2687,7 +2713,7 @@ async def live_trading_loop():
                     target_qty *= STATE.get("confidence_factor", 1.0)
 
                     # VISION_FUTUR §1: organization crisis factor
-                    target_qty *= organization.confidence_factor(symbol)
+                    target_qty *= organization.confidence_factor(_dom_early)
 
                     # VISION_FUTUR §2d: meta-label filter - only trade when the strategy's
                     # recent win rate clears the bar
@@ -2817,7 +2843,15 @@ async def live_trading_loop():
                                     asyncio.create_task(telegram_bot.send_push_notification(
                                         f"🤝 *APPROBATION REQUISE*\n{side} {trade_qty_formatted:.5f} `{symbol}` @ {execution_price:.2f}\n"
                                         f"Stratégie : {dominant_strategy}\n"
-                                        f"Réponds /approve ou /reject"
+                                        f"Réponds /approve ou /reject",
+                                        reply_markup={
+                                            "inline_keyboard": [
+                                                [
+                                                    {"text": "✅ Approuver", "callback_data": "approve_pending"},
+                                                    {"text": "🚫 Rejeter", "callback_data": "reject_pending"}
+                                                ]
+                                            ]
+                                        }
                                     ))
                                 except Exception:
                                     pass
@@ -3412,7 +3446,6 @@ async def websocket_heartbeat_loop():
                 pass
 
 
-@app.on_event("shutdown")
 async def shutdown_event():
     """LOT 65 (roadmap #5): graceful shutdown - close journals, notify, flush state."""
     logger.info("🛑 Graceful shutdown initiated...")
