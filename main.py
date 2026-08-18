@@ -3542,13 +3542,23 @@ async def get_dashboard(request: Request):
 async def get_telegram_mini_app(request: Request):
     """
     Telegram Mini App (mobile-first terminal). Set this URL as the Mini App
-    link in @BotFather for your Telegram bot.
+    link in @**BotFather** for your Telegram bot.
     """
     return templates.TemplateResponse(
         request=request,
         name="telegram_mini_app.html",
         context={"request": request}
     )
+
+
+@app.get("/telegram_mini_app.html", response_class=HTMLResponse)
+async def get_telegram_mini_app_alias(request: Request):
+    """
+    Backward-compatible alias for those who configured the old filename in
+    @BotFather. Redirects to /telegram.
+    """
+    from starlette.responses import RedirectResponse
+    return RedirectResponse(url="/telegram")
 
 
 @app.get("/api/status")
