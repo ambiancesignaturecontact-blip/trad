@@ -135,3 +135,25 @@ le faire passer de *chercheur* à **organisation** — un petit fonds autonome q
 (desks + allocation), se discipline (pré-enregistrement, double validation), se comprend
 (narratif, explications), se répare (event sourcing), se protège (indice de confiance)
 et se met à l'échelle (multi-comptes).
+
+
+---
+
+## ✅ ÉTAT D'APPLICATION (18 août 2026 — LES 8 CHANTIERS IMPLÉMENTÉS)
+
+| § | Élément | Statut |
+|---|---|---|
+| 1 | **Organisation** : desks spécialisés + marché interne du capital (Thompson) + crisis tightening | ✅ `core/organization.py` — attribution PnL par desk, réallocation dans le cycle autonome, `desk_crisis_factor` dans le sizing, `/api/v1/organization` |
+| 2 | **Discipline** : pré-enregistrement, double validation (train+test), p-value vivante, meta-labeling déployé | ✅ `core/research_discipline.py` — pré-enregistrement des expériences, `double_validation` (train/test), `live_p_value` en temps réel, filtre meta-label par win-rate dans la boucle |
+| 3 | **Conscience du contexte** : régimes structurels, cross-asset, narratif quotidien | ✅ `compute_structural_regimes` + `cross_asset_bias` dans le signal + **narratif LLM OpenRouter** (`/api/v1/narrative`) — vérifié live |
+| 4 | **Apprendre des marchés** : features élargies, curriculum GAN | ✅ GAN → épisodes d'entraînement des experts (curriculum), features funding/on-chain/trader positions |
+| 5 | **Robustesse 5 ans** : event sourcing, auto-réparation, chaos, déterminisme | ✅ `core/robustness.py` — snapshot/restauration d'état (vérifié live : `🔄 STATE restored`), `Supervisor` vital signs, `/api/v1/chaos`, mode audit |
+| 6 | **L'associé** : assistant LLM, recommandations, mode consultatif, limites utilisateur, gouvernance | ✅ `core/llm_narrative.py` — **assistant fonctionnel via OpenRouter (vérifié live)**, commandes Telegram `/approve /reject /chat`, mode consultatif (`CONSULTATIVE_MODE`), `/api/v1/approve`, `USER_MAX_EXPOSURE_PCT` indépassable |
+| 7 | **Écosystème** : export packs, partage méta-prior | ✅ `/api/v1/research/export`, `/api/v1/research/packs/{name}` |
+| 8 | **Indice de confiance** : composite + auto-réduction | ✅ `core/confidence_index.py` — index 0-100, facteur de taille, p-value vivante, qualité données ; appliqué au sizing |
+| — | **Mini-app Telegram complète** | ✅ sections Organisation/Confiance/Recherche/Consultatif/Assistant/Narratif + jauge, allocations, veto, régressions, chat |
+
+**Tests : 101 passed.** Endpoints ajoutés : `/api/v1/organization`, `/confidence`, `/supervisor`,
+`/assistant/ask`, `/narrative`, `/chaos`, `/approve`, `/research/export`, `/research/packs/{name}`.
+Clé OpenRouter : via `OPENROUTER_API_KEY` (`.env` gitignoré — jamais commitée).
+Principe conservé : données 100 % réelles + DEMO fidèle au REAL (argent virtuel).

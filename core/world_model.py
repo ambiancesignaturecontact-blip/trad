@@ -130,3 +130,48 @@ def counterfactual_alpha(trade: dict, benchmark_return: float) -> float:
         return float(ret - benchmark_return)
     except Exception:
         return 0.0
+
+
+# ---------------------------------------------------------------------------
+# VISION_FUTUR §3: structural regimes + cross-asset context
+# ---------------------------------------------------------------------------
+def compute_structural_regimes(state: dict, spread_bps: float = 2.0,
+                               avg_correlation: float = 0.0) -> dict:
+    """
+    Structural market regimes beyond volatility:
+    liquidity (spread), sentiment, on-chain, correlation, macro.
+    """
+    try:
+        sentiment = float(state.get("sentiment_index", 0.0))
+        onchain = float(state.get("onchain_risk_score", 0.5))
+        liq_regime = "tight" if spread_bps < 3 else ("wide" if spread_bps > 15 else "normal")
+        sent_regime = "bullish" if sentiment > 0.2 else ("bearish" if sentiment < -0.2 else "neutral")
+        onchain_regime = "risky" if onchain > 0.75 else ("healthy" if onchain < 0.4 else "normal")
+        return {
+            "liquidity": liq_regime,
+            "sentiment": sent_regime,
+            "onchain": onchain_regime,
+            "correlation": round(float(avg_correlation), 3),
+            "spread_bps": round(float(spread_bps), 2),
+        }
+    except Exception as e:
+        logger.warning(f"structural regimes failed: {e}")
+        return {}
+
+
+def cross_asset_bias(current_symbol: str, state: dict) -> float:
+    """
+    VISION_FUTUR §3/§4: cross-asset learning - the BTC regime informs other
+    assets. Returns a bias in [-0.3, +0.3] applied to non-BTC signals.
+    """
+    try:
+        probs = state.get("regime_probs", {}) or {}
+        p_bull = float(probs.get("0", 0.0))
+        p_bear = float(probs.get("1", 0.0))
+        net = p_bull - p_bear
+        if current_symbol == "BTCUSDT":
+            return 0.0
+        # in a strong bull/bear, correlated assets lean the same way (soft)
+        return float(np.clip(net * 0.3, -0.3, 0.3))
+    except Exception:
+        return 0.0

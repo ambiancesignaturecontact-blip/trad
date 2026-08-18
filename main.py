@@ -38,6 +38,13 @@ from core.meta_cognition import (adaptive_conviction_threshold, decide_no_trade,
 from core.execution_agent import ExecutionStyleBandit, tradability_factor, StrategyExecutionAttribution
 from core.risk_committee import RiskCommittee, daily_risk_budget
 from core.self_assessment import simulation_divergence, honesty_factor, meta_attribution, health_honesty_component
+from core.llm_narrative import daily_market_narrative, explain_decision, answer_question
+from core.organization import Organization
+from core.research_discipline import (pre_register_hypothesis, double_validation, live_p_value, meta_label_filter)
+from core.robustness import (save_state_snapshot, restore_state_snapshot, Supervisor, chaos_cut_feed,
+                             audit_deterministic, seed_audit_rng)
+from core.confidence_index import compute_confidence_index
+from core.world_model import compute_structural_regimes, cross_asset_bias
 from core.reporting import build_daily_report, compute_health_score, build_concierge_message
 
 # Import our quant models
@@ -398,6 +405,16 @@ STATE = {
     "last_hedge_ts": 0.0,             # VISION §4c
     "recent_signals": [],             # for meta-cognition (rolling)
     "recent_returns": [],             # for meta-cognition (rolling)
+    "confidence_index": 100,          # VISION_FUTUR §8
+    "confidence_factor": 1.0,
+    "live_p_value": 0.5,              # §2c
+    "structural_regimes": {},         # §3
+    "cross_asset_bias": 0.0,          # §3/§4
+    "strategy_win_rates": {},         # §2d meta-label
+    "pending_approvals": [],          # §6 consultative mode
+    "consultative_mode": os.getenv("CONSULTATIVE_MODE", "").lower() == "true",
+    "chaos_until": 0.0,               # §5c
+    "last_narrative": "",             # §3/§6
     "using_fallback_data": False     # True when synthetic fallback candles are in use
 }
 
@@ -580,6 +597,10 @@ hypothesis_generator = HypothesisGenerator(db=db)
 risk_committee = RiskCommittee(veto_threshold=0.85)
 execution_bandit = ExecutionStyleBandit()
 strategy_exec_attr = StrategyExecutionAttribution()
+
+# VISION_FUTUR instances
+organization = Organization(STATE)
+supervisor = Supervisor(STATE)
 
 # CCXT Exchange Client Cache
 ccxt_client = None
@@ -1117,6 +1138,38 @@ async def autonomous_ai_scheduler():
             except Exception as kce:
                 logger.warning(f"Risk committee skipped: {kce}")
 
+            # 3a3b) VISION_FUTUR §1: organization reallocation (internal capital market)
+            try:
+                _stress_corr2 = float(STATE.get("market_state", {}).get("correlation", 0.5) or 0.5)
+                organization.reallocate(stress_correlation=_stress_corr2)
+                logger.info(f"🏛️ ORGANIZATION: allocations={organization.status()['allocations']}")
+            except Exception as oe:
+                logger.warning(f"Organization reallocate skipped: {oe}")
+
+            # 3a3c) VISION_FUTUR §5a: state snapshot (event-sourcing lite)
+            try:
+                save_state_snapshot(db, STATE)
+            except Exception:
+                pass
+
+            # 3a3d) VISION_FUTUR §4: global curriculum - GAN scenarios become
+            # training episodes for the experts (labeled scenarios, not live trades)
+            try:
+                _scen = generative_engine.generate_extreme_scenarios(n_scenarios=50, stress_factor=2.0)
+                for i in range(min(20, len(_scen))):
+                    _s = _scen[i]
+                    mixture_of_experts.collect_experience(
+                        state=np.array([_s[0], abs(_s[1]), _s[2], 0.0]),
+                        action=float(np.clip(_s[3], -1, 1)) if len(_s) > 3 else 0.0,
+                        logp=0.0,
+                        reward=-abs(_s[0]) * 0.1,  # scenarios are stress episodes
+                        next_state=np.array([_s[0], abs(_s[1]), _s[2], 0.0]),
+                        horizon="position",
+                    )
+                logger.info("🎓 CURRICULUM: GAN stress episodes added to position expert buffer")
+            except Exception as ce:
+                logger.warning(f"GAN curriculum skipped: {ce}")
+
             # 3a4) VISION §7: self-assessment (meta-attribution of reasons + divergence)
             try:
                 from core.reporting import build_daily_report
@@ -1250,6 +1303,14 @@ async def concierge_scheduler():
             report = build_daily_report(STATE, db)
             try:
                 await telegram_bot.send_push_notification(build_concierge_message(report))
+                # VISION_FUTUR §3: LLM narrative appended (OpenRouter or structured)
+                try:
+                    _narr = daily_market_narrative(report, STATE)
+                    if _narr:
+                        STATE["last_narrative"] = _narr
+                        await telegram_bot.send_push_notification(_narr)
+                except Exception as ne:
+                    logger.warning(f"Narrative skipped: {ne}")
                 logger.info("✅ Concierge quotidien envoyé")
             except Exception as e:
                 logger.warning(f"Concierge Telegram envoi échoué: {e}")
@@ -1543,6 +1604,96 @@ async def api_self(_auth: dict = Depends(require_auth)):
     }
 
 
+# ===== VISION_FUTUR endpoints =====
+@app.get("/api/v1/organization")
+async def api_organization(_auth: dict = Depends(require_auth)):
+    """VISION_FUTUR §1: desks + internal capital market allocations."""
+    return organization.status()
+
+
+@app.get("/api/v1/confidence")
+async def api_confidence(_auth: dict = Depends(require_auth)):
+    """VISION_FUTUR §8: composite confidence index + size factor."""
+    return {"index": STATE.get("confidence_index", 100), "factor": STATE.get("confidence_factor", 1.0),
+            "live_p_value": STATE.get("live_p_value", 0.5)}
+
+
+@app.get("/api/v1/supervisor")
+async def api_supervisor(_auth: dict = Depends(require_auth)):
+    """VISION_FUTUR §5b: vital signs."""
+    return {"issues": supervisor.check(force=True), "last_tick_ts": STATE.get("last_tick_ts", 0.0)}
+
+
+class AskRequest(BaseModel):
+    question: str = Field(min_length=2, max_length=500)
+
+
+@app.post("/api/v1/assistant/ask")
+async def api_assistant(payload: AskRequest, _auth: dict = Depends(require_auth)):
+    """VISION_FUTUR §6: the operator talks to the bot (answers grounded in real data)."""
+    context = {
+        "last_price": STATE.get("last_price", 0.0),
+        "current_equity": STATE.get("current_equity", 0.0),
+        "regime_name": STATE.get("regime_name", "?"),
+        "regime_probs": STATE.get("regime_probs", {}),
+        "confidence_index": STATE.get("confidence_index", 100),
+        "positions": [p.get("symbol") for p in db.get_positions()],
+        "desk_allocations": STATE.get("desk_allocations", {}),
+        "admitted_signals": list(hypothesis_generator.admitted.keys()),
+    }
+    return {"answer": answer_question(payload.question, context)}
+
+
+@app.post("/api/v1/narrative")
+async def api_narrative(_auth: dict = Depends(require_auth)):
+    """VISION_FUTUR §3/§6: daily market narrative (LLM via OpenRouter, structured fallback)."""
+    from core.reporting import build_daily_report
+    report = build_daily_report(STATE, db)
+    narrative = daily_market_narrative(report, STATE)
+    STATE["last_narrative"] = narrative
+    return {"narrative": narrative}
+
+
+@app.post("/api/v1/chaos")
+async def api_chaos(_auth: dict = Depends(require_auth)):
+    """VISION_FUTUR §5c: chaos self-test - simulate a feed outage, verify safe HALT."""
+    res = chaos_cut_feed(STATE, db, duration_seconds=15.0)
+    return res
+
+
+@app.post("/api/v1/approve")
+async def api_approve(_auth: dict = Depends(require_auth)):
+    """VISION_FUTUR §6: approve all pending consultative-mode proposals."""
+    pending = list(STATE.get("pending_approvals", []))
+    STATE["pending_approvals"] = []
+    approved = 0
+    for p in pending:
+        try:
+            submit_order_via_oms(p["symbol"], p["side"], p["qty"], p["price"], p["mode"], p["strategy"],
+                                 exchange="Binance" if p["symbol"] in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit")
+            db.add_audit_log("APPROVED_ORDER", "127.0.0.1",
+                             f"Operator approved {p['side']} {p['qty']} {p['symbol']} ({p['strategy']})")
+            approved += 1
+        except Exception as e:
+            logger.warning(f"Approved order failed: {e}")
+    return {"approved": approved, "pending_left": len(STATE["pending_approvals"])}
+
+
+@app.get("/api/v1/research/export")
+async def api_research_export(_auth: dict = Depends(require_auth)):
+    """VISION_FUTUR §7: export meta-prior + admitted signals (knowledge sharing)."""
+    return hypothesis_generator.get_status()
+
+
+@app.get("/api/v1/research/packs/{name}")
+async def api_research_pack(name: str, _auth: dict = Depends(require_auth)):
+    """VISION_FUTUR §7: strategy pack export for the marketplace."""
+    cand = hypothesis_generator.admitted.get(name)
+    if not cand:
+        raise HTTPException(status_code=404, detail="Signal pack not found.")
+    return {"pack": cand, "format": "quant-portal-signal-pack-v1"}
+
+
 @app.post("/api/v1/webhook/trade")
 async def webhook_trade(payload: WebhookTradeRequest):
     """
@@ -1813,6 +1964,10 @@ async def startup_event():
     # Load default copytrade allocations
     global STATE
     
+    # VISION_FUTUR §5a: rebuild state from the last snapshot (event-sourcing lite)
+    restore_state_snapshot(db, STATE, max_age_seconds=7200)
+    logger.info(f"🩺 Supervisor: {supervisor.check(force=True) or 'all vital signs OK'}")
+
     # Load persisted demo balance if exists to ensure complete state survival across restarts!
     persisted_bal = db.get_setting("balance_demo")
     if persisted_bal:
@@ -2450,8 +2605,21 @@ async def live_trading_loop():
                     kyles_lambda_val = microstructure_engine.calculate_kyles_lambda(df)
                     logger.info(f"MICROSTRUCTURE ({symbol}) | VPIN: {vpin_val:.3f} | Kyle's Lambda: {kyles_lambda_val:.3e}")
                 
+                    # VISION_FUTUR §3/§4: market-average return + cross-asset bias
+                    try:
+                        _mkt_rets = [a.get("price") for a in STATE.get("assets", {}).values()
+                                     if isinstance(a.get("price"), (int, float)) and a.get("price", 0) > 0]
+                        _avg = float(np.mean(np.diff(_mkt_rets)) / np.mean(_mkt_rets[:-1])) if len(_mkt_rets) > 2 and np.mean(_mkt_rets[:-1]) > 0 else 0.0
+                    except Exception:
+                        _avg = 0.0
+                    try:
+                        STATE["structural_regimes"] = compute_structural_regimes(STATE)
+                    except Exception:
+                        pass
+
                     market_data = {
                         'df': df,
+                        'symbol': symbol,
                         'price_primary': current_price,
                         'price_secondary': bybit_p if bybit_p is not None else current_price, # Real Bybit price from CEX (No random.uniform secondary price fallback!)
                         'bids': ob_bids,
@@ -2462,6 +2630,9 @@ async def live_trading_loop():
                         'kyle_lambda': float(kyles_lambda_val),
                         'onchain_risk': float(STATE.get("onchain_risk_score", 0.0)),
                         'sentiment': float(STATE.get("sentiment_index", 0.0)),
+                        'funding_rate_8h': float(STATE.get("funding_rates", {}).get(symbol, 0.0)),
+                        'market_avg_return': float(_avg),
+                        'cross_asset_bias': cross_asset_bias(symbol, STATE),
                     }
                 
                     consensus = meta_engine.allocate(market_data, STATE["regime_id"], STATE["ml_prediction_pct"], STATE["ppo_action"])
@@ -2474,6 +2645,8 @@ async def live_trading_loop():
                 
                     # Incorporate sentiment index
                     final_signal = (0.80 * final_signal) + (0.20 * STATE["sentiment_index"])
+                    # VISION_FUTUR §3/§4: cross-asset bias (BTC regime informs others, soft)
+                    final_signal = float(np.clip(final_signal + cross_asset_bias(symbol, STATE), -1.0, 1.0))
                     final_signal = max(-1.0, min(1.0, final_signal))
                 
                     # Risk Sizing
@@ -2499,8 +2672,32 @@ async def live_trading_loop():
 
                     # MAX PER-ASSET CAP (audit B10-1): hard limit on concentration
                     max_asset_pct = settings.get_float("risk", "max_per_asset_pct", 0.25)
+                    # VISION_FUTUR §6: USER-IMPOSED hard limit the bot cannot override
+                    try:
+                        _user_max = float(os.getenv("USER_MAX_EXPOSURE_PCT", "0"))
+                        if 0 < _user_max < 1:
+                            max_asset_pct = min(max_asset_pct, _user_max)
+                    except Exception:
+                        pass
                     max_asset_qty = (STATE[active_balance_key] * max_asset_pct) / current_price
                     target_qty = min(target_qty, max_asset_qty)
+
+                    # VISION_FUTUR §8: confidence index scales sizes when the bot distrusts itself
+                    target_qty *= STATE.get("confidence_factor", 1.0)
+
+                    # VISION_FUTUR §1: organization crisis factor
+                    target_qty *= organization.confidence_factor(symbol)
+
+                    # VISION_FUTUR §2d: meta-label filter - only trade when the strategy's
+                    # recent win rate clears the bar
+                    try:
+                        if not meta_label_filter(dominant_strategy, STATE.get("strategy_win_rates", {})):
+                            decide_no_trade(symbol, final_signal, 0.999,
+                                            [f"meta-label: win rate {STATE.get('strategy_win_rates', {}).get(dominant_strategy, 0.0):.2f}"],
+                                            STATE["no_trade_stats"], db)
+                            continue
+                    except Exception:
+                        pass
                 
                     # Apply preventative risk scale downs from news shocks & macro events!
                     target_qty *= news_scale_factor
@@ -2607,6 +2804,23 @@ async def live_trading_loop():
                         )
                     
                         if ok:
+                            # VISION_FUTUR §6: consultative mode - the bot proposes, the human approves
+                            if STATE.get("consultative_mode", False):
+                                _proposal = {"symbol": symbol, "side": side, "qty": trade_qty_formatted,
+                                             "price": execution_price, "mode": active_mode,
+                                             "strategy": dominant_strategy, "ts": time.time()}
+                                STATE["pending_approvals"].append(_proposal)
+                                db.add_audit_log("PENDING_APPROVAL", "127.0.0.1",
+                                                 f"Proposal {side} {trade_qty_formatted} {symbol} awaits operator approval")
+                                try:
+                                    asyncio.create_task(telegram_bot.send_push_notification(
+                                        f"🤝 *APPROBATION REQUISE*\n{side} {trade_qty_formatted:.5f} `{symbol}` @ {execution_price:.2f}\n"
+                                        f"Stratégie : {dominant_strategy}\n"
+                                        f"Réponds /approve ou /reject"
+                                    ))
+                                except Exception:
+                                    pass
+                                continue
                             # Enforce strict real safety gate in production before placing any real trade!
                             if active_mode == "REAL" and not evaluate_real_safety_gate(symbol):
                                 logger.critical(f"REAL SAFETY GATE REJECTED: Real order blocked for {symbol} due to safety gate checks.")
@@ -2796,6 +3010,13 @@ async def live_trading_loop():
                                     "127.0.0.1", 
                                     f"Executed {side} order of {trade_qty_formatted:.5f} {symbol} at {execution_price:.2f} USD."
                                 )
+                                # VISION_FUTUR §1: attribute PnL to the responsible desk
+                                try:
+                                    _notional = execution_price * trade_qty_formatted
+                                    _pnl_est = _notional * float(actual_return) if "actual_return" in dir() else 0.0
+                                    organization.record_trade(dominant_strategy, _pnl_est, _notional)
+                                except Exception:
+                                    pass
                                 try:
                                     db.add_event(time.time(), "order", json.dumps({
                                         "symbol": symbol, "side": side, "qty": trade_qty_formatted,
@@ -2884,6 +3105,24 @@ async def live_trading_loop():
             STATE[active_equity_history_key].pop(0)
 
         STATE["last_tick_ts"] = time.time()  # health-score heartbeat
+
+        # VISION_FUTUR §8: live confidence index (self-distrust) - computed periodically
+        if int(time.time()) % 30 == 0:
+            try:
+                _pval = live_p_value(STATE["recent_signals"], STATE["recent_returns"])
+                STATE["live_p_value"] = _pval
+                _ci = compute_confidence_index(
+                    sim_divergence=STATE.get("sim_divergence", 0.0),
+                    p_value=_pval,
+                    data_quality=STATE.get("data_quality_status", "UNAVAILABLE"),
+                )
+                STATE["confidence_index"] = _ci["index"]
+                STATE["confidence_factor"] = _ci["factor"]
+            except Exception:
+                pass
+
+        # VISION_FUTUR §5b: supervisor vital-signs check
+        supervisor.check()
 
         # LOT 61: refresh Prometheus gauges at the end of each tick
         try:
@@ -3085,9 +3324,19 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "moe_gate": STATE.get("moe_gate", {}),
         "risk_budget": STATE.get("risk_budget", {}),
         "sim_divergence": STATE.get("sim_divergence", 0.0),
+        "confidence_index": STATE.get("confidence_index", 100),
+        "confidence_factor": STATE.get("confidence_factor", 1.0),
+        "live_p_value": STATE.get("live_p_value", 0.5),
+        "structural_regimes": STATE.get("structural_regimes", {}),
+        "cross_asset_bias": STATE.get("cross_asset_bias", 0.0),
+        "desk_allocations": STATE.get("desk_allocations", {}),
+        "pending_approvals": len(STATE.get("pending_approvals", [])),
+        "consultative_mode": STATE.get("consultative_mode", False),
+        "last_narrative": STATE.get("last_narrative", ""),
         "ppo_buffer_size": len(STATE.get("ppo_buffer", [])),
         "strategy_weights": meta_engine.get_strategy_weights(),
         "active_models": model_selector.get_status().get("active_models", []),
+        "admitted_signals": list(hypothesis_generator.admitted.keys()),
         "capital_exposure": capital_allocator.get_current_exposure(),
         
         "copy_traders": [

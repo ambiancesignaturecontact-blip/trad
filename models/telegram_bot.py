@@ -181,6 +181,49 @@ class TelegramBotManager:
 
     async def process_command(self, command: str):
         cmd_lower = command.lower()
+
+        # VISION_FUTUR §6: consultative-mode approvals
+        if cmd_lower == "/approve":
+            try:
+                from main import STATE as _S, submit_order_via_oms as _submit, db as _db
+                pending = list(_S.get("pending_approvals", []))
+                _S["pending_approvals"] = []
+                approved = 0
+                for p in pending:
+                    try:
+                        _submit(p["symbol"], p["side"], p["qty"], p["price"], p["mode"], p["strategy"])
+                        _db.add_audit_log("APPROVED_ORDER", "127.0.0.1",
+                                          f"Telegram approved {p['side']} {p['qty']} {p['symbol']} ({p['strategy']})")
+                        approved += 1
+                    except Exception as e:
+                        logger.error(f"Telegram approval failed: {e}")
+                await self.send_push_notification(
+                    f"✅ *APPROBATION*\n{approved} ordre(s) approuvé(s) et exécuté(s).\n"
+                    f"Restants en attente : {len(_S.get('pending_approvals', []))}"
+                )
+            except Exception as e:
+                await self.send_push_notification(f"❌ Approbation impossible : {e}")
+            return
+        if cmd_lower == "/reject":
+            try:
+                from main import STATE as _S
+                n = len(_S.get("pending_approvals", []))
+                _S["pending_approvals"] = []
+                await self.send_push_notification(f"🚫 {n} proposition(s) rejetée(s). Aucun ordre passé.")
+            except Exception:
+                pass
+            return
+        if cmd_lower.startswith("/chat "):
+            try:
+                from main import STATE as _S, answer_question, db as _db
+                question = command[6:].strip()
+                ctx = {"last_price": _S.get("last_price"), "current_equity": _S.get("current_equity"),
+                       "regime_name": _S.get("regime_name"), "confidence_index": _S.get("confidence_index", 100)}
+                reply = answer_question(question, ctx)
+                await self.send_push_notification(f"🤖 *Assistant*\n{reply[:3500]}")
+            except Exception as e:
+                await self.send_push_notification(f"❌ Assistant indisponible : {e}")
+            return
         
         # Standard buttons layout (Like a Telegram Web App)
         keyboard = {

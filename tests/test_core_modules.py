@@ -600,3 +600,92 @@ def test_self_assessment():
     attr = meta_attribution([{"reasons": ["Momentum"], "pnl": 5}, {"reasons": ["Momentum"], "pnl": -1}])
     assert attr["Momentum"]["win_rate"] == 0.5
     assert health_honesty_component(1.0, 80) < 80
+
+
+# ================= VISION_FUTUR tests =================
+
+# ---- §1 ORGANIZATION ----
+def test_organization_desks_and_capital_market():
+    from core.organization import Organization
+    org = Organization({})
+    org.record_trade("Momentum", 0.01, 1000)
+    org.record_trade("Trend Following", -0.02, 2000)
+    assert org.desk_of("Momentum") == "crypto_momentum"
+    assert org.desk_of("Carry") == "carry"
+    alloc = org.reallocate(stress_correlation=0.3)
+    assert abs(sum(alloc.values()) - 1.0) < 0.01  # 4-decimal rounding
+    assert org.status()["crisis_factor"] <= 1.0
+    alloc_crisis = org.reallocate(stress_correlation=0.9)
+    assert org.status()["crisis_factor"] < 0.9  # crisis tightening (18% at corr 0.9)
+
+
+# ---- §2 DISCIPLINE ----
+def test_research_discipline():
+    from core.research_discipline import live_p_value, meta_label_filter, double_validation
+    import numpy as np
+    # a perfect directional record -> tiny p-value
+    pv = live_p_value([1.0] * 50, [0.01] * 50)
+    assert pv < 0.05
+    # random record -> high p-value
+    rng = np.random.default_rng(0)
+    pv2 = live_p_value(list(rng.choice([-1, 1], 50)), list(rng.normal(0, 0.01, 50)))
+    assert pv2 > 0.05
+    assert meta_label_filter("A", {"A": 0.60}) is True
+    assert meta_label_filter("A", {"A": 0.45}) is False
+    # double validation on a synthetic series
+    import pandas as pd
+    close = 100 * np.cumprod(1 + rng.normal(0, 0.01, 400))
+    df = pd.DataFrame({"close": close, "high": close * 1.005, "low": close * 0.995,
+                       "volume": rng.uniform(500, 2000, 400)})
+    def fn(d, md):
+        from core.signal_library import evaluate_signal, SIGNAL_LIBRARY
+        return evaluate_signal(d, SIGNAL_LIBRARY["momentum_roc"], md)
+    res = double_validation(fn, df, {"vpin": 0.5}, promotion_threshold=0.0)
+    assert "train_dsr" in res and "test_dsr" in res
+    assert 0.0 <= res["train_dsr"] <= 1.0
+
+
+# ---- §5 ROBUSTNESS ----
+def test_robustness_snapshot_and_supervisor():
+    from core.robustness import save_state_snapshot, restore_state_snapshot, Supervisor
+    from database.db_manager import DBManager
+    db = DBManager()
+    state = {"balance_demo": 12345.0, "mode": "DEMO", "last_tick_ts": 1e9}
+    assert save_state_snapshot(db, state) is True
+    state2 = {"balance_demo": 0.0}
+    assert restore_state_snapshot(db, state2, max_age_seconds=1e9) is True
+    assert state2["balance_demo"] == 12345.0
+    sup = Supervisor({"last_tick_ts": 0.0, "last_price": 0.0, "data_quality_status": "UNAVAILABLE"})
+    issues = sup.check(now=1e12, force=True)
+    assert len(issues) >= 2  # stale loop + no price
+
+
+# ---- §8 CONFIDENCE INDEX ----
+def test_confidence_index():
+    from core.confidence_index import compute_confidence_index
+    good = compute_confidence_index(sim_divergence=0.1, p_value=0.05, data_quality="LIVE")
+    bad = compute_confidence_index(sim_divergence=2.0, p_value=0.8, data_quality="UNAVAILABLE")
+    assert good["index"] > bad["index"]
+    assert good["factor"] == 1.0
+    assert bad["factor"] < 0.5  # shrinks hard when it should distrust itself
+
+
+# ---- §3 WORLD MODEL: structural + cross-asset ----
+def test_structural_regimes_and_cross_asset():
+    from core.world_model import compute_structural_regimes, cross_asset_bias
+    sr = compute_structural_regimes({"sentiment_index": 0.4, "onchain_risk_score": 0.8}, spread_bps=2.0)
+    assert sr["liquidity"] == "tight"
+    assert sr["sentiment"] == "bullish"
+    assert sr["onchain"] == "risky"
+    bias = cross_asset_bias("ETHUSDT", {"regime_probs": {"0": 0.8, "1": 0.1}})
+    assert 0 < bias <= 0.3  # BTC bull regime leans other assets long (soft)
+    assert cross_asset_bias("BTCUSDT", {"regime_probs": {}}) == 0.0
+
+
+# ---- §3/§6 LLM narrative: structured fallback without key ----
+def test_llm_narrative_fallback():
+    from core.llm_narrative import daily_market_narrative
+    report = {"mode": "DEMO", "equity": 100000.0, "pnl_usd": 500.0, "pnl_pct": 0.5,
+              "health_score": 80, "risk": {"regime": "Bull"}, "orders_today": 3, "positions": []}
+    txt = daily_market_narrative(report, {})
+    assert "Narratif" in txt or "Équité" in txt  # structured fallback works

@@ -189,6 +189,67 @@
                 <div id="position-count" class="text-xs px-3 py-1 bg-zinc-800 text-zinc-400 rounded-2xl">3 actifs</div>
             </div>
             
+            <!-- ===== VISION FUTUR : ORGANISATION + CONFIANCE + RECHERCHE ===== -->
+            <div class="px-5 pt-4 pb-1">
+                <div class="section-header text-cyan-400">🏛️ ORGANISATION (desks)</div>
+            </div>
+            <div class="px-5 pb-2">
+                <div class="glass rounded-3xl p-4">
+                    <div class="flex justify-between items-center mb-2">
+                        <div class="text-xs text-zinc-400">Indice de confiance</div>
+                        <div id="confidence-badge" class="px-2 py-0.5 rounded-xl text-xs font-bold bg-emerald-500/10 text-emerald-400">--</div>
+                    </div>
+                    <div class="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                        <div id="confidence-bar" class="h-full bg-gradient-to-r from-red-500 via-amber-400 to-emerald-400" style="width:0%"></div>
+                    </div>
+                    <div class="flex justify-between text-[10px] text-zinc-500 mt-1">
+                        <span id="confidence-reason">--</span><span id="confidence-factor">×1.0</span>
+                    </div>
+                </div>
+            </div>
+            <div class="px-5 pb-3">
+                <div id="desk-allocations" class="space-y-1.5"></div>
+            </div>
+            <div class="px-5 pb-3">
+                <div class="section-header text-cyan-400">🔬 RECHERCHE AUTONOME</div>
+                <div class="glass rounded-3xl p-3 mt-2">
+                    <div class="text-[10px] text-zinc-500 mb-1">Signaux admis (inventés & promus par le bot)</div>
+                    <div id="admitted-signals" class="flex flex-wrap gap-1.5"></div>
+                </div>
+                <div class="grid grid-cols-2 gap-2 mt-2">
+                    <div class="glass rounded-3xl p-3">
+                        <div class="text-[10px] text-zinc-500">Régimes (proba)</div>
+                        <div id="regime-probs" class="text-xs font-bold mt-1">--</div>
+                    </div>
+                    <div class="glass rounded-3xl p-3">
+                        <div class="text-[10px] text-zinc-500">Veto risque</div>
+                        <div id="risk-vetoes" class="text-xs font-bold mt-1">0</div>
+                    </div>
+                </div>
+            </div>
+            <div class="px-5 pb-3">
+                <div class="section-header text-cyan-400">🤝 MODE CONSULTATIF</div>
+                <div id="consultative-panel" class="glass rounded-3xl p-3 mt-2">
+                    <div class="text-[10px] text-zinc-500">Propositions en attente d'approbation</div>
+                    <div id="pending-count" class="font-bold text-lg">0</div>
+                    <button onclick="approvePending()" class="w-full mt-2 py-2 rounded-xl bg-emerald-500/15 text-emerald-400 font-bold text-sm">✅ Tout approuver</button>
+                </div>
+            </div>
+            <div class="px-5 pb-3">
+                <div class="section-header text-cyan-400">🗣️ ASSISTANT</div>
+                <div class="glass rounded-3xl p-3 mt-2">
+                    <div id="assistant-answer" class="text-xs text-zinc-300 mb-2 min-h-[40px]">Demande-moi : « pourquoi tu n'as pas acheté hier ? »</div>
+                    <div class="flex gap-2">
+                        <input id="assistant-input" type="text" placeholder="Ta question…" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-2 text-sm">
+                        <button onclick="askAssistant()" class="px-3 py-2 rounded-xl bg-cyan-500/20 text-cyan-300 font-bold text-sm">➤</button>
+                    </div>
+                </div>
+            </div>
+            <div class="px-5 pb-3">
+                <button onclick="loadNarrative()" class="w-full py-2 rounded-xl bg-cyan-500/10 text-cyan-400 font-bold text-sm">📜 Générer le narratif du jour</button>
+                <div id="narrative-box" class="text-[11px] text-zinc-400 mt-2 leading-relaxed"></div>
+            </div>
+
             <div id="positions-table" class="space-y-2">
                 <!-- Rempli dynamiquement par JS -->
             </div>
@@ -426,6 +487,83 @@
             if (!telemetry) await loadTelemetry();
         }
         
+        function renderVisionFutur(t) {
+            // Confidence index
+            var ci = t.confidence_index;
+            if (document.getElementById('confidence-badge')) {
+                var badge = document.getElementById('confidence-badge');
+                badge.textContent = (ci === undefined ? '--' : ci + '/100');
+                badge.className = 'px-2 py-0.5 rounded-xl text-xs font-bold ' + (ci >= 70 ? 'bg-emerald-500/10 text-emerald-400' : (ci >= 40 ? 'bg-amber-500/10 text-amber-400' : 'bg-red-500/10 text-red-400'));
+                document.getElementById('confidence-bar').style.width = (ci || 0) + '%';
+                document.getElementById('confidence-factor').textContent = '×' + (t.confidence_factor || 1.0);
+                document.getElementById('confidence-reason').textContent = 'p=' + (t.live_p_value !== undefined ? t.live_p_value : '--');
+            }
+            // Desk allocations
+            var desk = document.getElementById('desk-allocations');
+            if (desk && t.desk_allocations) {
+                desk.innerHTML = '';
+                var max = Math.max.apply(null, Object.values(t.desk_allocations).map(Number));
+                Object.entries(t.desk_allocations).forEach(function (e) {
+                    var pct = Math.round(e[1] * 100);
+                    var el = document.createElement('div');
+                    el.className = 'flex items-center gap-2 text-[11px]';
+                    el.innerHTML = '<div class="w-24 text-zinc-400 truncate">' + e[0] + '</div>' +
+                        '<div class="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden"><div class="h-full bg-cyan-500" style="width:' + (e[1] / max * 100) + '%"></div></div>' +
+                        '<div class="w-8 text-right font-mono">' + pct + '%</div>';
+                    desk.appendChild(el);
+                });
+            }
+            // Regime probabilities
+            var rp = document.getElementById('regime-probs');
+            if (rp && t.regime_probs) {
+                rp.textContent = Object.entries(t.regime_probs).map(function (e) { return 'R' + e[0] + ':' + Math.round(e[1] * 100) + '%'; }).join(' ');
+            }
+            // Pending approvals + consultative
+            var pc = document.getElementById('pending-count');
+            if (pc) pc.textContent = t.pending_approvals || 0;
+            // admitted signals
+            var as = document.getElementById('admitted-signals');
+            if (as && t.admitted_signals && t.admitted_signals.length) {
+                as.innerHTML = '';
+                t.admitted_signals.forEach(function (n) {
+                    var el = document.createElement('span');
+                    el.className = 'px-2 py-0.5 bg-cyan-500/10 text-cyan-400 rounded-lg text-[10px]';
+                    el.textContent = n;
+                    as.appendChild(el);
+                });
+            }
+        }
+
+        function approvePending() {
+            fetch('/api/v1/approve', { method: 'POST' }).then(function (r) { return r.json(); })
+                .then(function (d) { alert('✅ ' + d.approved + ' approuvé(s)'); loadTelemetry(); })
+                .catch(function () { alert('❌ Erreur'); });
+        }
+
+        async function askAssistant() {
+            var q = document.getElementById('assistant-input').value;
+            if (!q) return;
+            var box = document.getElementById('assistant-answer');
+            box.textContent = '🤔 Réflexion…';
+            try {
+                var r = await fetch('/api/v1/assistant/ask', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ question: q })
+                });
+                var d = await r.json();
+                box.textContent = '🤖 ' + (d.answer || 'Pas de réponse');
+            } catch (e) { box.textContent = '❌ Erreur réseau'; }
+        }
+
+        async function loadNarrative() {
+            var box = document.getElementById('narrative-box');
+            box.textContent = '📜 Génération…';
+            try {
+                var r = await fetch('/api/v1/narrative', { method: 'POST' });
+                var d = await r.json();
+                box.textContent = d.narrative || 'Pas de narratif';
+            } catch (e) { box.textContent = '❌ Erreur'; }
+        }
+
         function renderPositions() {
             const container = document.getElementById('positions-table');
             container.innerHTML = '';
@@ -579,6 +717,7 @@
                 updateUI();
                 renderRiskFromTelemetry();
                 renderWeightsFromTelemetry();
+                renderVisionFutur(telemetry);
             } catch (e) {
                 console.log('Telemetry fetch failed', e);
             }
