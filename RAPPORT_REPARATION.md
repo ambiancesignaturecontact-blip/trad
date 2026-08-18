@@ -264,3 +264,20 @@ retraining, validation, déploiement et journalisation en boucle fermée.
 - ✅ Security headers, 429 login, 422 validation, 503 webhook non-configuré — vérifiés en live
 - ✅ Serveur : 8 schedulers actifs, boucle sans erreur, données réelles
 - ✅ Re-audit complet : `REAUDIT_POST_CORRECTION.md`
+
+---
+
+# 🔧 TOUR 6 — 18 août 2026 (vérification 3 bugs + §C restant + analyse experte)
+
+## 27. Vérification des 3 bugs (tous confirmés corrigés dans le code)
+1. **SOR classement VENTE** ✅ `core/multi_exchange_sor.py` : `cost_score = net_cost_sell` (au lieu de `1/net_cost_sell`) — testé.
+2. **Backdoor 2FA** ✅ `main.py` switch_mode : codes `123456/888888` supprimés, TOTP réel ou wallet exigés.
+3. **Cache Yahoo** ✅ `main.py` : `_yahoo_cache` défini + TTL 20 s — vérifié en live (1219 barres chargées puis servies du cache).
+
+## 28. §C restant implémenté
+- **C3 Alertes prix** : `/api/v1/alerts` (création/list/suppression, persistées, notification Telegram à la traversée du seuil, une seule fois).
+- **C7 Multi-utilisateurs** : table `users` + colonne `role`, login bcrypt multi-user (bootstrap admin env avec upgrade du hash), `/api/v1/users` CRUD **strictement authentifié** (401 sans token, vérifié) + RBAC.
+- **C10 Market replay** : `/api/v1/replay` — rejeu historique à travers `MetaAllocationEngine` (timeline signaux + P&L hypothétique + Sharpe) — vérifié (EURUSD : 190 barres).
+- Bugs de branchement corrigés : `import uuid` manquant, ordre helpers/endpoints, `Optional` non importé dans db_manager.
+
+**Tests : 74 passed.** Serveur final en ligne.

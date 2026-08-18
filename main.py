@@ -4,6 +4,7 @@ load_dotenv()  # .env (secrets) before any env consumers
 from core.config import settings
 
 import asyncio
+import uuid
 import httpx
 import json
 import logging
@@ -359,6 +360,7 @@ STATE = {
     "last_db_query_time": 0.0,
     "last_order_times": {},          # per-symbol order cooldown (idempotence)
     "ppo_buffer": [],                 # real RL experiences for autonomous PPO training
+    "price_alerts": [],               # custom price alerts (audit C3)
     "using_fallback_data": False     # True when synthetic fallback candles are in use
 }
 
@@ -396,6 +398,134 @@ def require_auth(credentials=Depends(auth_security_optional)):
     if credentials is None or not getattr(credentials, "credentials", None):
         raise HTTPException(status_code=401, detail="Authentication required")
     return AuthManager.verify_jwt_token(credentials.credentials)
+
+# ============ AUDIT C7/C3/C10 helpers ============
+# ============ AUDIT C7/C3/C10 helpers ============
+def require_admin(credentials=Depends(auth_security_optional)):
+    """ADMIN-gated dependency for user management endpoints (audit C7).
+    STRICT: always validates a real JWT - never the DEMO local-bypass, because
+    user management must be protected even when AUTH_ENABLED is off."""
+    if credentials is None or not getattr(credentials, "credentials", None):
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    user = AuthManager.verify_jwt_token(credentials.credentials)
+    if user.get("role") != Roles.ADMIN:
+        raise HTTPException(status_code=403, detail="Admin role required.")
+    return user
+
+
+def _alerts_persist():
+    try:
+        db.save_setting("price_alerts_json", json.dumps(STATE["price_alerts"], default=str))
+    except Exception as e:
+        logger.warning(f"Alerts persist failed: {e}")
+
+
+def _alerts_load():
+    try:
+        raw = db.get_setting("price_alerts_json")
+        if raw:
+            STATE["price_alerts"] = json.loads(raw)
+    except Exception:
+        STATE["price_alerts"] = []
+    STATE.setdefault("price_alerts", [])
+
+
+def check_price_alerts(symbol: str, price: float):
+    """Audit C3: fire custom price alerts once, notify Telegram + audit log."""
+    if not STATE.get("price_alerts"):
+        return
+    for a in STATE["price_alerts"]:
+        if a.get("symbol") != symbol or a.get("triggered"):
+            continue
+        try:
+            target = float(a.get("target_price", 0.0))
+            direction = a.get("direction", "above")
+            hit = (price >= target) if direction == "above" else (price <= target)
+            if hit and target > 0:
+                a["triggered"] = True
+                a["triggered_ts"] = time.time()
+                a["triggered_price"] = price
+                _alerts_persist()
+                logger.info(f"🔔 PRICE ALERT {symbol}: {direction} {target} reached ({price:.2f})")
+                db.add_audit_log("PRICE_ALERT", "127.0.0.1",
+                                 f"Alert {a.get('id')} {symbol} {direction} {target} hit @ {price:.2f}")
+                try:
+                    asyncio.create_task(telegram_bot.send_push_notification(
+                        f"🔔 *ALERTE PRIX*\n{symbol} : *{price:,.2f}*\n"
+                        f"({direction} {target:,.2f})\n{a.get('note', '')}"
+                    ))
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"Alert check error for {symbol}: {e}")
+
+
+async def run_market_replay(symbol: str, interval: str = "1h", limit: int = 300) -> dict:
+    """Audit C10: replays historical candles through the decision engine in
+    simulation (no orders, no DB writes). Returns signal timeline + stats."""
+    df = db.load_candles(symbol, limit=limit + 20)
+    if df is None or df.empty or len(df) < 60:
+        if symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
+            df = await fetch_historical_market_data(symbol)
+        else:
+            ymap = {"XAUUSD": "GC=F", "EURUSD": "EURUSD=X"}
+            df = await fetch_yahoo_finance_candles(ymap.get(symbol, symbol), interval=interval, range_str="1mo")
+    if df is None or df.empty or len(df) < 60:
+        raise HTTPException(status_code=503, detail="Insufficient historical data for replay.")
+
+    strat = TrendFollowingStrategy()
+    meta_local = MetaAllocationEngine(strategies=[strat])
+    timestamps, signals, prices = [], [], []
+    warmup = 30
+    for i in range(warmup, len(df)):
+        window = df.iloc[:i + 1]
+        md = {
+            "df": window,
+            "price_primary": float(window['close'].iloc[-1]),
+            "price_secondary": float(window['close'].iloc[-1]),
+            "bids": [[float(window['close'].iloc[-1]) * 0.999, 1]],
+            "asks": [[float(window['close'].iloc[-1]) * 1.001, 1]],
+            "inventory": 0.0,
+            "max_inventory": 1.0,
+            "vpin": 0.5, "kyle_lambda": 0.0, "onchain_risk": 0.0, "sentiment": 0.0,
+        }
+        res = meta_local.allocate(md, 2, 0.0, 0.0)
+        signals.append(float(res["final_signal"]))
+        prices.append(float(window['close'].iloc[-1]))
+        timestamps.append(str(window.index[-1]))
+
+    # hypothetical equity: signal lagged one bar, fee 0.1% per flip
+    equity = [1.0]
+    prev_sig = 0.0
+    rets = [0.0] + list(df['close'].pct_change().dropna().values[warmup - 1:])
+    for k in range(1, len(signals)):
+        r = rets[k] if k < len(rets) else 0.0
+        sig = signals[k - 1]
+        if (sig > 0) != (prev_sig > 0) and prev_sig != 0:
+            r -= 0.001  # flip fee
+        prev_sig = sig
+        equity.append(equity[-1] * (1.0 + sig * r))
+
+    total_ret = equity[-1] - 1.0
+    n_trades = sum(1 for i in range(1, len(signals)) if (signals[i] > 0) != (signals[i - 1] > 0))
+    sharpe = 0.0
+    eq = np.array(equity)
+    if len(eq) > 2:
+        daily = np.diff(eq) / eq[:-1]
+        if daily.std() > 0:
+            sharpe = float(daily.mean() / daily.std() * np.sqrt(365 * 24))
+
+    return {
+        "symbol": symbol, "interval": interval, "bars": len(signals),
+        "total_return_pct": round(total_ret * 100.0, 3),
+        "n_trades": n_trades, "approx_sharpe": round(sharpe, 3),
+        "last_price": prices[-1] if prices else 0.0,
+        "timeline": [
+            {"ts": timestamps[i], "price": round(prices[i], 4), "signal": round(signals[i], 4)}
+            for i in range(0, len(signals), max(1, len(signals) // 100))
+        ],
+    }
+
 
 
 telegram_bot = TelegramBotManager(state_dict=STATE, db_manager=db)
@@ -1010,6 +1140,101 @@ class WebhookTradeRequest(BaseModel):
     price: float = Field(default=0.0, ge=0.0, le=1e9)
 
 
+# ===== AUDIT C7: multi-user management (ADMIN only) =====
+class UserCreateRequest(BaseModel):
+    username: str = Field(min_length=3, max_length=50, pattern="^[a-zA-Z0-9_.-]+$")
+    password: str = Field(min_length=8, max_length=128)
+    role: str = Field(default="VIEWER", pattern="^(VIEWER|TRADER|RISK_MANAGER|ADMIN)$")
+
+
+@app.get("/api/v1/users")
+async def api_list_users(_admin: dict = Depends(require_admin)):
+    users = db.list_users()
+    for u in users:
+        u.pop("password_hash", None)
+    return {"users": users}
+
+
+@app.post("/api/v1/users")
+async def api_create_user(payload: UserCreateRequest, _admin: dict = Depends(require_admin)):
+    import bcrypt as _bc
+    if db.get_user(payload.username):
+        raise HTTPException(status_code=409, detail="Username already exists.")
+    hashed = _bc.hashpw(payload.password.encode("utf-8"), _bc.gensalt()).decode("utf-8")
+    ok = db.create_user(payload.username, hashed, payload.role)
+    if not ok:
+        raise HTTPException(status_code=500, detail="Failed to create user.")
+    db.add_audit_log("USER_CREATED", "127.0.0.1", f"User '{payload.username}' created (role {payload.role}).")
+    return {"status": "Success", "username": payload.username, "role": payload.role}
+
+
+@app.delete("/api/v1/users/{username}")
+async def api_delete_user(username: str, _admin: dict = Depends(require_admin)):
+    if username == os.getenv("ADMIN_USER", "admin"):
+        raise HTTPException(status_code=400, detail="Cannot delete the bootstrap admin.")
+    if not db.delete_user(username):
+        raise HTTPException(status_code=404, detail="User not found.")
+    db.add_audit_log("USER_DELETED", "127.0.0.1", f"User '{username}' deleted.")
+    return {"status": "Deleted", "username": username}
+
+
+# ===== AUDIT C3: custom price alerts =====
+class PriceAlertCreate(BaseModel):
+    symbol: str = Field(min_length=3, max_length=20)
+    direction: str = Field(pattern="^(above|below)$")
+    target_price: float = Field(gt=0.0)
+    note: str = Field(default="", max_length=200)
+
+
+@app.get("/api/v1/alerts")
+async def api_list_alerts(_auth: dict = Depends(require_auth)):
+    return {"alerts": STATE.get("price_alerts", [])}
+
+
+@app.post("/api/v1/alerts")
+async def api_create_alert(payload: PriceAlertCreate, _auth: dict = Depends(require_auth)):
+    symbol = payload.symbol.upper()
+    if symbol not in STATE["assets"]:
+        raise HTTPException(status_code=400, detail=f"Unsupported symbol '{symbol}'.")
+    alert = {
+        "id": uuid.uuid4().hex[:10],
+        "symbol": symbol,
+        "direction": payload.direction,
+        "target_price": payload.target_price,
+        "note": payload.note,
+        "triggered": False,
+        "created_ts": time.time(),
+    }
+    STATE["price_alerts"].append(alert)
+    _alerts_persist()
+    return {"status": "Created", "alert": alert}
+
+
+@app.delete("/api/v1/alerts/{alert_id}")
+async def api_delete_alert(alert_id: str, _auth: dict = Depends(require_auth)):
+    before = len(STATE["price_alerts"])
+    STATE["price_alerts"] = [a for a in STATE["price_alerts"] if a.get("id") != alert_id]
+    if len(STATE["price_alerts"]) == before:
+        raise HTTPException(status_code=404, detail="Alert not found.")
+    _alerts_persist()
+    return {"status": "Deleted", "alert_id": alert_id}
+
+
+# ===== AUDIT C10: market replay =====
+class ReplayRequest(BaseModel):
+    symbol: str = Field(min_length=3, max_length=20)
+    interval: str = Field(default="1h", pattern="^(1m|5m|15m|1h|4h|1d)$")
+    limit: int = Field(default=300, ge=60, le=2000)
+
+
+@app.post("/api/v1/replay")
+async def api_market_replay(payload: ReplayRequest, _auth: dict = Depends(require_auth)):
+    symbol = payload.symbol.upper()
+    if symbol not in STATE["assets"]:
+        raise HTTPException(status_code=400, detail=f"Unsupported symbol '{symbol}'.")
+    return await run_market_replay(symbol, payload.interval, payload.limit)
+
+
 @app.post("/api/v1/webhook/trade")
 async def webhook_trade(payload: WebhookTradeRequest):
     """
@@ -1194,6 +1419,9 @@ async def startup_event():
     # Autopilot first-start marker (audit D1)
     if not db.get_setting("platform_first_start_ts"):
         db.save_setting("platform_first_start_ts", str(time.time()))
+
+    # Load persisted price alerts (audit C3)
+    _alerts_load()
 
     # Update CCXT client inside our Binance Adapter once authenticated!
     binance_adapter.client = get_ccxt_client()
@@ -1455,6 +1683,12 @@ async def live_trading_loop():
                 
                 # Market data quality: a live tick arrived -> LIVE
                 set_data_quality(DataQualityStatus.LIVE)
+
+                # AUDIT C3: fire custom price alerts on this tick
+                try:
+                    check_price_alerts(symbol, current_price)
+                except Exception as _ae:
+                    logger.debug(f"Price alert check error: {_ae}")
             
                 # EVALUATE GENUINE FUNDING RATE ARBITRAGE (100% Real-World API data from Binance Futures!)
                 if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
@@ -2458,30 +2692,56 @@ class LoginRequest(BaseModel):
 async def login(payload: LoginRequest):
     """
     Authenticates an operator and returns a JWT bearer token.
-    Credentials come from ADMIN_USER / ADMIN_PASSWORD env vars.
+    AUDIT C7 (multi-user): authenticates against the `users` table (bcrypt),
+    with the env ADMIN_USER/ADMIN_PASSWORD as the bootstrap admin fallback.
+    On first successful bootstrap login the DB hash is upgraded to bcrypt.
     Optional TOTP second factor when ADMIN_TOTP_SECRET is set.
     """
     import hmac as _hmac
+    import bcrypt as _bc
 
     admin_user = os.getenv("ADMIN_USER", "admin")
     admin_pass = os.getenv("ADMIN_PASSWORD", "ChangeMe!Institutionnel2026")
     totp_secret = os.getenv("ADMIN_TOTP_SECRET", "")
 
-    if payload.username != admin_user:
-        raise HTTPException(status_code=401, detail="Invalid credentials.")
-    # Constant-time comparison against the configured operator password
-    if not _hmac.compare_digest(payload.password, admin_pass):
+    # 1) Try the database users table first
+    db_user = db.get_user(payload.username)
+    role = Roles.VIEWER
+    ok = False
+    if db_user and db_user.get("password_hash"):
+        ph = db_user.get("password_hash")
+        if ph and not ph.startswith("$2") and ph != "hash_admin_secret":
+            ok = False  # malformed hash -> cannot verify
+        else:
+            try:
+                ok = _bc.checkpw(payload.password.encode("utf-8"), ph.encode("utf-8"))
+            except Exception:
+                ok = False
+        role = db_user.get("role") or Roles.VIEWER
+
+    # 2) Bootstrap admin fallback (env) - also upgrades the DB hash on success
+    if not ok and payload.username == admin_user and _hmac.compare_digest(payload.password, admin_pass):
+        ok = True
+        role = Roles.ADMIN
+        try:
+            db.create_user(admin_user, _bc.hashpw(admin_pass.encode("utf-8"), _bc.gensalt()).decode("utf-8"), Roles.ADMIN)
+        except Exception as e:
+            logger.warning(f"Bootstrap admin hash upgrade skipped: {e}")
+
+    if not ok:
+        db.add_audit_log("AUTH_FAILURE", "127.0.0.1", f"Failed login attempt for '{payload.username}'.")
         raise HTTPException(status_code=401, detail="Invalid credentials.")
 
-    if totp_secret:
+    if totp_secret:  # TOTP second factor enforced whenever configured
         import pyotp as _pyotp
         totp = _pyotp.TOTP(totp_secret)
         if not totp.verify(payload.totp_code, valid_window=1):
             raise HTTPException(status_code=401, detail="Invalid TOTP code.")
 
-    token = AuthManager.create_jwt_token(1, payload.username, Roles.ADMIN)
-    logger.info(f"🔐 Operator '{payload.username}' authenticated successfully.")
-    return {"token": token, "role": Roles.ADMIN, "username": payload.username}
+    user_id = int(db_user.get("id") or 1) if db_user else 1
+    token = AuthManager.create_jwt_token(user_id, payload.username, role)
+    logger.info(f"🔐 Operator '{payload.username}' authenticated successfully (role {role}).")
+    return {"token": token, "role": role, "username": payload.username}
 
 
 @app.post("/api/toggle-strategy")

@@ -155,14 +155,14 @@
 |---|---|---|
 | 1 | SL/TP/trailing | ✅ |
 | 2 | Rapport P&L quotidien | ✅ `/api/v1/report/daily` + concierge Telegram quotidien (LOT 70) |
-| 3 | Alertes configurables | 🟡 seuils internes (SL/TP, liquidation, drawdown, macro) — alertes prix personnalisées = évolution |
+| 3 | Alertes configurables | ✅ **/api/v1/alerts** (création/list/suppression, notification Telegram, persistées) + seuils internes |
 | 4 | Paper-trading réconcilié | ✅ réconciliation DEMO interne + REAL complète |
 | 5 | Historique décisions | ✅ `/api/v1/orders` + audit logs + strategy par ordre (reasoning partiel) |
 | 6 | Dashboard santé | ✅ carte flottante + `/api/v1/health` |
-| 7 | Multi-utilisateurs/rôles | 🟡 rôles dans le JWT (`Roles`) ; multi-utilisateurs complet = évolution |
+| 7 | Multi-utilisateurs/rôles | ✅ **/api/v1/users** (CRUD ADMIN strict, login bcrypt multi-user, bootstrap admin) |
 | 8 | Webhooks | ✅ `/api/v1/webhook/trade` (secret partagé, TradingView-ready) |
 | 9 | Backtest multi-actifs | ✅ walk-forward BTC/ETH/SOL/XAU |
-| 10 | Market replay | 🟡 non implémenté (documenté) |
+| 10 | Market replay | ✅ **/api/v1/replay** (rejeu des bougies à travers le méta-moteur, timeline de signaux + stats) |
 
 ## 17. MES IDÉES (audit §D) — statut
 

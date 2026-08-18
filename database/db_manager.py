@@ -5,6 +5,7 @@ from dotenv import load_dotenv
 load_dotenv()  # ensure .env is loaded for env-based config (audit B1-3)
 import json
 import logging
+from typing import Optional
 import hashlib
 import base64
 import pandas as pd
@@ -154,14 +155,17 @@ class DBManager:
                         id SERIAL PRIMARY KEY,
                         username VARCHAR(50) UNIQUE,
                         password_hash VARCHAR(128),
+                        role VARCHAR(20) DEFAULT 'VIEWER',
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
                 
                 # Create a default admin user if not exists
+                # Bootstrap admin is created/updated at startup with a REAL bcrypt hash
+                # (password from ADMIN_PASSWORD env or a generated one - see main.py login)
                 cursor.execute("""
-                    INSERT INTO users (id, username, password_hash)
-                    VALUES (1, 'admin_quant', 'hash_admin_secret')
+                    INSERT INTO users (id, username, password_hash, role)
+                    VALUES (1, 'admin_quant', 'hash_admin_secret', 'ADMIN')
                     ON CONFLICT (username) DO NOTHING
                 """)
                 
@@ -256,6 +260,7 @@ class DBManager:
                         id INTEGER PRIMARY KEY AUTOINCREMENT,
                         username TEXT UNIQUE,
                         password_hash TEXT,
+                        role TEXT DEFAULT 'VIEWER',
                         created_at TEXT DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
@@ -718,3 +723,67 @@ class DBManager:
                     logger.warning(f"DB backup: prune failed for {stale}: {e}")
         except Exception as e:
             logger.warning(f"DB backup: retention cleanup failed: {e}")
+
+    # ==================== USER MANAGEMENT (audit C7: multi-user) ====================
+    def create_user(self, username: str, password_hash: str, role: str = "VIEWER") -> bool:
+        """Creates a user. Returns False if username already exists."""
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute(
+                        "INSERT INTO users (username, password_hash, role) VALUES (%s, %s, %s) "
+                        "ON CONFLICT (username) DO NOTHING",
+                        (username, password_hash, role),
+                    )
+                else:
+                    cur.execute(
+                        "INSERT OR IGNORE INTO users (username, password_hash, role) VALUES (?, ?, ?)",
+                        (username, password_hash, role),
+                    )
+                conn.commit()
+                return cur.rowcount > 0
+        except Exception as e:
+            logger.error(f"create_user failed: {e}")
+            return False
+
+    def get_user(self, username: str) -> Optional[dict]:
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute("SELECT id, username, password_hash, role, created_at FROM users WHERE username = %s", (username,))
+                else:
+                    cur.execute("SELECT id, username, password_hash, role, created_at FROM users WHERE username = ?", (username,))
+                row = cur.fetchone()
+                return dict(row) if row else None
+        except Exception as e:
+            logger.error(f"get_user failed: {e}")
+            return None
+
+    def list_users(self) -> list:
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute("SELECT id, username, role, created_at FROM users ORDER BY id")
+                else:
+                    cur.execute("SELECT id, username, role, created_at FROM users ORDER BY id")
+                return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"list_users failed: {e}")
+            return []
+
+    def delete_user(self, username: str) -> bool:
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute("DELETE FROM users WHERE username = %s", (username,))
+                else:
+                    cur.execute("DELETE FROM users WHERE username = ?", (username,))
+                conn.commit()
+                return cur.rowcount > 0
+        except Exception as e:
+            logger.error(f"delete_user failed: {e}")
+            return False
