@@ -412,6 +412,7 @@ STATE = {
     "defi_wallet_address": "Not Connected",
     "covariance_matrix": {},
     "options_strategy": {"strategy": "UNAVAILABLE", "details": "Aucune IV réelle reçue.", "legs": [], "estimated_yield_pct": 0.0},
+    "real_iv": {},                      # IV RÉELLE par symbole (Deribit DVOL)
     "data_quality_status": DataQualityStatus.UNAVAILABLE,
     "asset_data_status": {},          # Qualité de données PAR ACTIF (LIVE/DELAYED/STALE/UNAVAILABLE)
     "macro_scale_factor_tactile": 1.0,  # Controlled by interactive Telegram mobile buttons!
@@ -2432,6 +2433,7 @@ async def live_trading_loop():
             # (faille 1 corrigée : plus d'iv_map codé en dur — mentalité n°5)
             try:
                 real_iv = await volatility_arb_engine.fetch_real_iv("BTCUSDT")
+                STATE.setdefault("real_iv", {})["BTCUSDT"] = real_iv
                 if real_iv is None:
                     STATE["options_strategy"] = {
                         "strategy": "UNAVAILABLE",
@@ -3684,6 +3686,7 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "order_books": {k: {kk: vv for kk, vv in v.items() if kk != "_ts"} for k, v in STATE.get("order_books", {}).items()},
         "macro_calendar": macro_calendar.get_calendar(limit=5),
         "options_strategy": STATE["options_strategy"],
+        "real_iv": STATE.get("real_iv", {}),
         
         "using_fallback_data": STATE.get("using_fallback_data", False),
         "data_quality_status": STATE["data_quality_status"],
