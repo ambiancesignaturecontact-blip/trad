@@ -31,6 +31,7 @@ from core.position_manager import (PositionProtection, PositionProtectionStore,
 from core.portfolio_allocator import PortfolioAllocator
 from core.counterparty_risk import CounterpartyRiskManager
 from core.cost_accounting import CostAccounting
+from core.module_honesty import get_module_status, status_summary
 from core.attribution import PerformanceAttribution, quality_metrics
 from models.scenario_stress import ScenarioStressTester, CRISIS_SCENARIOS
 from backtester.bias_audit import audit_backtest
@@ -4851,6 +4852,11 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "quality_metrics": STATE.get("quality_metrics", {}),
         "stress_test_report": STATE.get("stress_test_report", {}),
         "bootstrap_sharpe": STATE.get("bootstrap_sharpe", {}),
+        "module_honesty": {
+            "registry": get_module_status(),
+            "summary": status_summary(),
+            "note": "Un module ÉDUCATIF n'influence JAMAIS le sizing réel (Faille 7 PDF).",
+        },
         "watchdog": {
             "tasks_monitored": list(_BG_TASKS.keys()),
             "tasks_alive": sum(1 for t in _BG_TASKS.values() if t and not t.done()),
@@ -5380,6 +5386,20 @@ async def manage_copytrade(payload: CopyTradeRequest, _auth: dict = Depends(requ
             db.add_audit_log("COPY_STOP", audit_ip(), f"Stopped copytrading {payload.trader_id}.")
             return {"status": "Success", "message": msg}
         raise HTTPException(status_code=400, detail=msg)
+
+
+@app.get("/api/v1/honesty")
+async def api_v1_honesty(_auth: dict = Depends(require_auth)):
+    """
+    LOT 9 (PDF Faille 7) : étiquetage honnête des modules.
+    PRODUCTION / EXPÉRIMENTAL / ÉDUCATIF + gardes associées + note.
+    """
+    return {
+        "modules": get_module_status(),
+        "summary": status_summary(),
+        "rule": "Un module ÉDUCATIF ne doit JAMAIS influencer une décision de trading.",
+        "ts": time.time(),
+    }
 
 
 @app.get("/api/v1/attribution")

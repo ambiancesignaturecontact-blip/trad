@@ -764,6 +764,10 @@
                     <div class="font-bold text-sm">${(() => { const q = telemetry.quality_metrics || {}; return (q.sharpe ?? 'n/a') + ' / ' + (q.sortino ?? 'n/a'); })()}</div>
                 </div>
                 <div>
+                    <div class="text-zinc-400">Honnêteté modules</div>
+                    <div class="font-bold text-sm">${(() => { const s = telemetry.module_honesty?.summary || {}; const t = (s.PRODUCTION||0)+(s.EXPÉRIMENTAL||0)+(s['EXPÉRIMENTAL']||0)+(s.ÉDUCATIF||0)+(s['ÉDUCATIF']||0); return (s.PRODUCTION||0) + ' prod · ' + (s.EXPÉRIMENTAL||s['EXPÉRIMENTAL']||0) + ' exp · ' + (s.ÉDUCATIF||s['ÉDUCATIF']||0) + ' éduc'; })()}</div>
+                </div>
+                <div>
                     <div class="text-zinc-400">Stress crises</div>
                     <div class="font-bold text-sm">${(() => { const s = telemetry.stress_test_report || {}; return s.status ? s.status + ' (pire: ' + s.worst_loss_pct + '%)' : 'n/a'; })()}</div>
                 </div>

@@ -303,7 +303,9 @@ class TelegramBotManager:
                 "🛡️ `/risk` - Afficher mes règles de protection de capital actuelles.\n"
                 "⏸️ `/pause` - Mettre en pause le trading automatique (sécurité).\n"
                 "🟢 `/resume` - Relancer le trading automatique.\n"
-                "🚨 `/kill` - URGENCE : Vendre immédiatement tous mes actifs et geler le robot."
+                "🚨 `/kill` - URGENCE : Vendre immédiatement tous mes actifs et geler le robot.\n"
+                "🔍 `/honesty` - Honnêteté : quels modules sont PRODUCTION / EXPÉRIMENTAL / ÉDUCATIF.\n"
+                "🤖 `/chat <question>` - Poser une question à mon assistant."
             )
             await self.send_push_notification(welcome_msg, reply_markup=keyboard)
             
@@ -412,6 +414,30 @@ class TelegramBotManager:
             )
             await self.send_push_notification(risk_msg, reply_markup=keyboard)
             
+        elif cmd_lower == "/honesty":
+            # LOT 9 (PDF Faille 7) : honnêteté brute — étiquetage des modules
+            try:
+                from main import get_module_status, status_summary
+                s = status_summary()
+                mods = get_module_status()
+                prod = [m for m, i in mods.items() if i["status"] == "PRODUCTION"]
+                exp = [m for m, i in mods.items() if i["status"] == "EXPÉRIMENTAL"]
+                edu = [m for m, i in mods.items() if i["status"] == "ÉDUCATIF"]
+                msg = (
+                    f"🔍 *HONNÊTETÉ DES MODULES (Faille 7 PDF)*\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"🟢 *PRODUCTION* ({len(prod)})\n"
+                    f"{', '.join(prod[:8])}{'...' if len(prod)>8 else ''}\n\n"
+                    f"🟠 *EXPÉRIMENTAL* ({len(exp)})\n"
+                    f"{', '.join(exp) if exp else 'aucun'}\n\n"
+                    f"🔴 *ÉDUCATIF* ({len(edu)})\n"
+                    f"{', '.join(edu) if edu else 'aucun'}\n\n"
+                    f"*Règle : un module ÉDUCATIF n'influence JAMAIS le sizing réel.*"
+                )
+            except Exception:
+                msg = "🔍 Honnêteté : registre indisponible."
+            await self.send_push_notification(msg, reply_markup=keyboard)
+
         elif cmd_lower == "/pause":
             self.state["is_running"] = False
             await self.send_push_notification("⏸️ *TRADING MIS EN PAUSE !* J'ai arrêté toute prise de position automatique. Vos fonds actuels sont conservés au chaud.", reply_markup=keyboard)

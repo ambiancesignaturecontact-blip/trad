@@ -307,6 +307,17 @@ window.qpLogin = async function () {
                     </div>
                 </div>
 
+                <!-- Honnêteté des modules (LOT 9) -->
+                <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">HONNÊTETÉ DES MODULES (Faille 7 PDF)</p>
+                    <div class="flex items-center space-x-2 mt-1 text-[10px] font-bold">
+                        <span class="text-emerald-400" id="val-honesty-prod">0 PROD</span>
+                        <span class="text-amber-400" id="val-honesty-exp">0 EXP</span>
+                        <span class="text-rose-400" id="val-honesty-educ">0 ÉDUC</span>
+                    </div>
+                    <p class="text-[9px] text-slate-500 font-bold mt-1">Un module ÉDUCATIF n'influence JAMAIS le sizing réel</p>
+                </div>
+
                 <!-- Attribution & Coûts (LOT 8) -->
                 <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
                     <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">ATTRIBUTION — FACTEURS (PnL %)</p>
@@ -839,6 +850,11 @@ window.qpLogin = async function () {
                     barOfi.className = `h-1 rounded-full ${ofl.liquidation_cascade ? 'bg-rose-500' : ofiVal >= 0 ? 'bg-cyan-500' : 'bg-amber-500'}`;
                 }
             }
+            // Honnêteté des modules (LOT 9)
+            const hSum = (data.module_honesty && data.module_honesty.summary) || {};
+            safeSetText('val-honesty-prod', `${hSum.PRODUCTION || 0} PROD`);
+            safeSetText('val-honesty-exp', `${hSum.EXPÉRIMENTAL || hSum['EXPÉRIMENTAL'] || 0} EXP`);
+            safeSetText('val-honesty-educ', `${hSum.ÉDUCATIF || hSum['ÉDUCATIF'] || 0} ÉDUC`);
             // Attribution & coûts (LOT 8)
             const attr = data.attribution_report || {};
             const byFactor = attr.by_factor || {};
