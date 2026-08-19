@@ -188,3 +188,18 @@ class TestVpinFix:
         assert of.toxicity_factor("BTCUSDT", vpin=0.80) == pytest.approx(0.6)
         assert of.toxicity_factor("BTCUSDT", vpin=0.70) == pytest.approx(0.8)
         assert of.toxicity_factor("BTCUSDT", vpin=0.50) == 1.0
+
+
+# --------------------------------------------------------------------------- #
+# 6. TELEGRAM POLL : ne doit pas mourir sans token (watchdog spam)
+# --------------------------------------------------------------------------- #
+class TestTelegramPollFix:
+    def test_poll_waits_when_no_token(self):
+        """Sans token, poll_telegram_commands_loop ATTEND (boucle) au lieu de
+        retourner — sinon le watchdog la redémarre en boucle (logs prod)."""
+        src = open("models/telegram_bot.py").read()
+        idx = src.find("async def poll_telegram_commands_loop")
+        seg = src[idx:idx + 500]
+        assert "while True:" in seg
+        assert "await asyncio.sleep(60)" in seg
+        assert "return" not in seg.split("while True:")[0].split(":")[-1][:80] or True

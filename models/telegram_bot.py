@@ -139,7 +139,11 @@ class TelegramBotManager:
 
     async def poll_telegram_commands_loop(self):
         if not self.api_url:
-            return
+            # FIX (logs prod) : sans token, on ATTEND en boucle au lieu de
+            # retourner immédiatement — sinon le watchdog redémarre la tâche
+            # toutes les 20s (spam de logs) alors que ce n'est pas un crash.
+            while True:
+                await asyncio.sleep(60)
             
         logger.info("Starting Telegram Remote Control polling worker...")
         url = f"{self.api_url}/getUpdates"
