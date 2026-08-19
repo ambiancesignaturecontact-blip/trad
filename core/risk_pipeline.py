@@ -49,6 +49,12 @@ ATR_MULT_SL: float = settings.get_float("risk", "atr_mult_sl", 2.0)
 
 # Machine à états (Pilier G : cool-down + redémarrage progressif)
 HALT_COOLDOWN_MINUTES: float = settings.get_float("risk", "halt_cooldown_minutes", 15.0)
+
+# P0-4 (audit §2.1) : plancher de réduction CUMULATIVE des overlays. 17 facteurs
+# « prudents » en chaîne s'auto-amplifient (0.8^15 ≈ 3,5 %) sans information
+# nouvelle ; on borne la réduction combinée à 15 %. Les blocages durs (facteur
+# = 0.0 : HALT, choc extrême...) restent intégralement respectés.
+FINAL_SCALE_FLOOR: float = settings.get_float("risk", "final_scale_floor", 0.15)
 # Étapes de redémarrage : (facteur de taille, minutes depuis le début du restart)
 RESTART_STAGES: List[Tuple[float, float]] = [
     (0.25, 0.0),    # 25 % immédiatement après le cool-down
@@ -387,6 +393,18 @@ def apply_risk_pipeline(base_qty: float,
         steps.append({"step": name, "op": "mul", "value": f, "qty_after": qty})
 
     final_scale = qty / base_qty if base_qty > 0 else 0.0
+    # P0-4 (audit indépendant §2.1) : PLANCHE R de réduction cumulative.
+    # L'empilement de N facteurs « prudents » s'auto-amplifie (0.8^15 ≈ 3,5 %)
+    # sans information nouvelle. On borne la réduction combinée à
+    # FINAL_SCALE_FLOOR (15 %) — SAUF blocage dur (un facteur à 0.0 : HALT,
+    # choc, cash_reserve=0...) qui reste intégralement respecté.
+    if 0.0 < final_scale < FINAL_SCALE_FLOOR:
+        final_scale = FINAL_SCALE_FLOOR
+        qty = base_qty * FINAL_SCALE_FLOOR
+        steps.append({"step": "cumulative_floor", "op": "mul", "value": FINAL_SCALE_FLOOR,
+                      "qty_after": qty,
+                      "note": "plancher anti-empilement (audit §2.1)"})
+
     return {
         "qty": max(0.0, qty),
         "final_scale": final_scale,

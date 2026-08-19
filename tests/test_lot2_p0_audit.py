@@ -141,8 +141,11 @@ def test_final_scale_stats_percentiles():
     assert stats["span_hours"] == pytest.approx(9.0, abs=0.01)
 
 
-def test_final_scale_report_logs_distribution(caplog):
+def test_final_scale_report_logs_distribution(caplog, monkeypatch):
     import logging
+    # NE JAMAIS écrire dans la vraie DB (les données de test pollueraient la
+    # collecte réelle — leçon apprise : c'est ce qui a faussé le p50 au boot)
+    monkeypatch.setattr(main, "db", _StoreDB())
     t0 = main.time.time()
     for i in range(60):
         # 60 échantillons étalés sur ~46h (dans la fenêtre 48h) : tous conservés
@@ -157,9 +160,10 @@ def test_final_scale_report_logs_distribution(caplog):
     assert main.STATE["final_scale_stats"] == stats
 
 
-def test_final_scale_p50_below_threshold_warns(caplog):
+def test_final_scale_p50_below_threshold_warns(caplog, monkeypatch):
     """p50 < 20% -> warning explicite (diagnostic audit §2.1)."""
     import logging
+    monkeypatch.setattr(main, "db", _StoreDB())
     t0 = main.time.time()
     for i in range(30):
         main.STATE["final_scale_samples"].append(
@@ -378,7 +382,8 @@ def test_paper_validation_streak_and_validation(monkeypatch):
     stats = main._paper_validation_stats()
     assert stats["active_days"] == 4
     assert stats["latest_streak_days"] == 4
-    assert stats["required_days"] == 7
+    # P0-6 : l'exigence par défaut est passée de 7 à 28 jours (audit : 4-8 semaines)
+    assert stats["required_days"] == 28
     assert stats["validated"] is False
 
 
@@ -401,3 +406,69 @@ def test_api_v1_paper_validation_endpoint():
     body = resp.json()
     assert "active_days" in body and "latest_streak_days" in body
     assert "required_days" in body and "validated" in body
+
+
+# ----------------- facteur limitant (idée n°1 audit) + plancher ------------
+
+def test_record_final_scale_tracks_limiting_factor(monkeypatch):
+    """L'échantillon mémorise le facteur le PLUS réducteur (contrainte
+    dominante) à partir des steps du pipeline."""
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr(main.time, "time", lambda: clock["t"])
+    steps = [
+        {"step": "cvar_cap", "op": "min", "value": 100.0, "qty_after": 50.0},
+        {"step": "max_asset_cap", "op": "min", "value": 100.0, "qty_after": 50.0},
+        {"step": "conviction", "op": "mul", "value": 0.9, "qty_after": 45.0},
+        {"step": "cash_reserve", "op": "mul", "value": 0.4, "qty_after": 18.0},
+        {"step": "capacity", "op": "mul", "value": 0.7, "qty_after": 12.6},
+        {"step": "tradability", "op": "mul", "value": 0.9, "qty_after": 11.34},
+    ]
+    main._record_final_scale("BTCUSDT", 0.2268, 6, steps=steps)
+    s = main.STATE["final_scale_samples"][-1]
+    assert s["limit_factor"] == "cash_reserve"   # 0.4 = le plus réducteur
+    assert s["limit_value"] == pytest.approx(0.4)
+
+
+def test_limiting_factor_stats_aggregation(monkeypatch):
+    """Agrégation : le facteur le plus souvent limitant + sa valeur médiane."""
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr(main.time, "time", lambda: clock["t"])
+    for i in range(6):
+        main.STATE.setdefault("final_scale_last_ts", {})
+        main._record_final_scale(
+            "BTCUSDT", 0.3, 17,
+            steps=[{"step": "conviction", "op": "mul", "value": 0.9, "qty_after": 1.0},
+                   {"step": "cash_reserve", "op": "mul", "value": 0.4, "qty_after": 1.0},
+                   {"step": "capacity", "op": "mul", "value": 0.8, "qty_after": 1.0}])
+        clock["t"] += 61.0
+    for _ in range(4):
+        main.STATE.setdefault("final_scale_last_ts", {})
+        main._record_final_scale(
+            "BTCUSDT", 0.5, 17,
+            steps=[{"step": "conviction", "op": "mul", "value": 0.9, "qty_after": 1.0},
+                   {"step": "cash_reserve", "op": "mul", "value": 0.7, "qty_after": 1.0},
+                   {"step": "capacity", "op": "mul", "value": 0.5, "qty_after": 1.0}])
+        clock["t"] += 61.0
+    lim = main._limiting_factor_stats()
+    assert lim["n"] == 10
+    assert lim["top"][0]["factor"] == "cash_reserve"
+    assert lim["top"][0]["count"] == 6
+    assert lim["top"][0]["pct_of_samples"] == 60.0
+    assert lim["top"][0]["median_value"] == pytest.approx(0.4)
+    assert lim["top"][1]["factor"] == "capacity"
+
+
+def test_floor_prevents_cumulative_self_strangulation():
+    """P0-4 : le produit de 17 facteurs prudents est plafonné à 15 % — le
+    correctif de la chaîne identifié par l'audit (0.8^15 ≈ 3,5 %)."""
+    from core.risk_pipeline import apply_risk_pipeline, FINAL_SCALE_FLOOR
+    res = apply_risk_pipeline(
+        base_qty=1000.0, cvar_qty=1e9, max_asset_qty=1e9, conviction=0.8,
+        risk_state_scale=0.8, news_scale=0.8, macro_scale=0.8, onchain_scale=0.8,
+        corr_scale=0.8, confidence_scale=0.8, org_scale=0.8, rlhf_scale=0.8,
+        vol_scale=0.8, tradability_scale=0.8, capacity_scale=0.8,
+        cash_reserve_scale=0.8, order_flow_scale=0.8, regime_confidence_scale=0.8)
+    # 16 facteurs à 0.8 => 0.8^16 ≈ 2.8% -> clampé au plancher 15%
+    assert res["final_scale"] == pytest.approx(FINAL_SCALE_FLOOR)
+    assert res["qty"] == pytest.approx(1000.0 * FINAL_SCALE_FLOOR)
+    assert res["steps"][-1]["step"] == "cumulative_floor"

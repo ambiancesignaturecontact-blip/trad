@@ -45,6 +45,9 @@ _DEFAULTS: Dict[str, Any] = {
         "stop_loss_pct": 0.03,
         "atr_mult_sl": 2.0,
         "halt_cooldown_minutes": 15.0,
+        # P0-4 (audit §2.1) : plancher anti-empilement de la réduction
+        # cumulative des overlays (0.8^15 ≈ 3,5 % sans plancher).
+        "final_scale_floor": 0.15,
     },
     "data": {
         "use_real_data_only": True,
@@ -59,7 +62,9 @@ _DEFAULTS: Dict[str, Any] = {
         "enable_scalping": True,
     },
     "autopilot": {
-        "min_paper_validation_days": 7,   # gates before REAL (audit D1)
+        # P0-6 (audit §5-P0-6) : l'audit exige 4-8 semaines de paper-trading
+        # daté et CONTINU avant REAL. 28 jours = 4 semaines.
+        "min_paper_validation_days": 28,
         "paper_validation_required": True,
     },
     "alerts": {

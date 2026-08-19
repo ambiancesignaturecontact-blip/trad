@@ -21,7 +21,7 @@ from core.risk_pipeline import (
     ROUND_TRIP_COST_PCT, WIN_RATE_FLOOR, WIN_RATE_CEIL,
     kelly_dynamic, smoothed_win_rate, rr_requirement, rr_net_positive,
     entry_rr_filter, RiskStateMachine, StrategyWinRateTracker,
-    apply_risk_pipeline, RISK_PIPELINE_ORDER,
+    apply_risk_pipeline, RISK_PIPELINE_ORDER, FINAL_SCALE_FLOOR,
 )
 
 
@@ -207,8 +207,37 @@ class TestRiskPipeline:
             onchain_scale=0.5, corr_scale=0.7, confidence_scale=0.9,
             org_scale=0.85, rlhf_scale=0.8, vol_scale=0.75, tradability_scale=0.9)
         expected = 100.0 * 0.8 * 0.5 * 0.2 * 0.4 * 0.5 * 0.7 * 0.9 * 0.85 * 0.8 * 0.75 * 0.9
-        assert res["qty"] == pytest.approx(expected)
-        assert len(res["steps"]) == len(RISK_PIPELINE_ORDER)
+        # P0-4 (audit §2.1) : le produit brut (~0.46% ici) est CLAQUÉ au plancher
+        # anti-empilement FINAL_SCALE_FLOOR — c'est le correctif de la chaîne.
+        assert res["qty"] == pytest.approx(max(expected, 100.0 * FINAL_SCALE_FLOOR))
+        assert res["final_scale"] == pytest.approx(max(expected / 100.0, FINAL_SCALE_FLOOR))
+        # l'étape cumulative_floor est tracée (steps = ORDER + 1)
+        assert len(res["steps"]) == len(RISK_PIPELINE_ORDER) + 1
+        assert res["steps"][-1]["step"] == "cumulative_floor"
+
+    def test_floor_does_not_apply_when_hard_block(self):
+        """Un facteur à 0.0 (HALT, choc, cash_reserve=0) reste BLOQUANT :
+        le plancher ne s'applique jamais à un blocage dur."""
+        # HALT (risk_state=0) -> 0, pas de plancher
+        res = apply_risk_pipeline(
+            base_qty=100.0, cvar_qty=1000.0, max_asset_qty=1000.0,
+            conviction=0.5, risk_state_scale=0.0, news_scale=0.2)
+        assert res["qty"] == 0.0
+        assert res["final_scale"] == 0.0
+        # cash_reserve=0 -> 0, pas de plancher
+        res2 = apply_risk_pipeline(
+            base_qty=100.0, cvar_qty=1000.0, max_asset_qty=1000.0,
+            conviction=0.5, risk_state_scale=1.0, cash_reserve_scale=0.0)
+        assert res2["qty"] == 0.0
+
+    def test_floor_not_applied_above_threshold(self):
+        """Un produit supérieur au plancher (ex. 0.5) reste inchangé."""
+        res = apply_risk_pipeline(
+            base_qty=100.0, cvar_qty=1000.0, max_asset_qty=1000.0,
+            conviction=1.0, risk_state_scale=1.0, capacity_scale=0.5)
+        assert res["qty"] == pytest.approx(50.0)
+        assert res["final_scale"] == pytest.approx(0.5)
+        assert res["steps"][-1]["step"] != "cumulative_floor"
 
     def test_steps_traced(self):
         res = apply_risk_pipeline(

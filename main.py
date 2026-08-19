@@ -928,17 +928,33 @@ FINAL_SCALE_WINDOW_HOURS = 48.0     # fenêtre glissante de référence
 FINAL_SCALE_MAX_SAMPLES = 25000     # borne dure mémoire
 
 
-def _record_final_scale(symbol: str, final_scale: float, n_steps: int) -> None:
-    """Accumule un échantillon (downsamplé à 1/min/symbole) de final_scale."""
+def _record_final_scale(symbol: str, final_scale: float, n_steps: int,
+                        steps: list = None) -> None:
+    """Accumule un échantillon (downsamplé à 1/min/symbole) de final_scale.
+    Si les steps du pipeline sont fournis, le facteur LE PLUS RÉDUCTEUR
+    (contrainte dominante — idée n°1 de l'audit) est mémorisé pour agréger
+    « quel facteur bloque le trading » sur 24-48h."""
     try:
         now = time.time()
         last_ts = STATE.setdefault("final_scale_last_ts", {})
         if now - last_ts.get(symbol, 0.0) < FINAL_SCALE_DOWNSAMPLE_SEC:
             return
         last_ts[symbol] = now
+        limiting = None
+        if steps:
+            best_name, best_val = None, 1.0
+            for s in steps:
+                if s.get("op") == "mul" and s.get("step") != "cumulative_floor":
+                    v = float(s.get("value", 1.0))
+                    if v < best_val:
+                        best_name, best_val = s.get("step"), v
+            if best_name is not None:
+                limiting = {"factor": best_name, "value": best_val}
         samples = STATE.setdefault("final_scale_samples", [])
         samples.append({"ts": now, "symbol": symbol,
-                        "final_scale": float(final_scale), "n_steps": int(n_steps)})
+                        "final_scale": float(final_scale), "n_steps": int(n_steps),
+                        "limit_factor": limiting["factor"] if limiting else None,
+                        "limit_value": limiting["value"] if limiting else None})
         if len(samples) > FINAL_SCALE_MAX_SAMPLES:
             del samples[: len(samples) - FINAL_SCALE_MAX_SAMPLES]
     except Exception:
@@ -953,6 +969,29 @@ def _purge_final_scale_samples(max_age_sec: float) -> None:
     # purge amortie : les échantillons sont horodatés de façon croissante
     while samples and samples[0]["ts"] < cutoff:
         samples.pop(0)
+
+
+def _limiting_factor_stats() -> dict:
+    """Agrège, sur l'échantillon accumulé, le facteur le plus souvent
+    limitant (contrainte dominante) + sa réduction médiane — idée n°1 de
+    l'audit : « c'est cash_reserve qui bloque 80 % du temps »."""
+    samples = STATE.get("final_scale_samples", [])
+    by_factor: dict = {}
+    for s in samples:
+        f = s.get("limit_factor")
+        if not f:
+            continue
+        e = by_factor.setdefault(f, [])
+        e.append(float(s.get("limit_value", 1.0)))
+    if not by_factor:
+        return {"n": 0, "top": []}
+    rows = []
+    for f, vals in by_factor.items():
+        rows.append({"factor": f, "count": len(vals),
+                     "pct_of_samples": round(100.0 * len(vals) / max(len(samples), 1), 1),
+                     "median_value": round(float(np.median(vals)), 4)})
+    rows.sort(key=lambda r: -r["count"])
+    return {"n": len(samples), "top": rows[:5]}
 
 
 def _final_scale_stats() -> dict:
@@ -1031,6 +1070,19 @@ def _final_scale_report() -> dict:
     else:
         logger.info(f"📊 FINAL_SCALE : échantillon insuffisant (n={stats['n'] if stats else 0}) — collecte en cours.")
     STATE["final_scale_stats"] = stats
+    # idée n°1 audit : le facteur qui bloque le plus souvent le trading
+    lim = _limiting_factor_stats()
+    STATE["limiting_factor_stats"] = lim
+    if lim and lim["top"]:
+        t = lim["top"][0]
+        top_str = ", ".join(
+            "{} ({:.0f}%)".format(r["factor"], r["pct_of_samples"]) for r in lim["top"]
+        )
+        logger.info(
+            "📊 FACTEUR LIMITANT (n={}) : '{}' contraint {:.1f}% des échantillons "
+            "(valeur médiane {:.2f}). Top: {}".format(
+                lim["n"], t["factor"], t["pct_of_samples"], t["median_value"], top_str)
+        )
     _persist_final_scale_samples()
     return stats
 
@@ -4388,7 +4440,9 @@ async def live_trading_loop():
                         risk_pipeline_last.update({"symbol": symbol, "final_scale": _pipe["final_scale"],
                                                    "n_steps": len(_pipe["steps"])})
                         # P0-4 (audit §2.1) : accumulation de la distribution réelle
-                        _record_final_scale(symbol, _pipe["final_scale"], len(_pipe["steps"]))
+                        # + facteur limitant (idée n°1) à partir des steps du pipeline
+                        _record_final_scale(symbol, _pipe["final_scale"], len(_pipe["steps"]),
+                                            steps=_pipe.get("steps"))
                     except Exception as _pe:
                         logger.error(f"Risk pipeline failed ({_pe}) — using conservative path")
                         target_qty = min(target_qty, cvar_qty, max_asset_qty) * abs(final_signal)
@@ -5801,6 +5855,8 @@ async def api_v1_final_scale(_auth: dict = Depends(require_auth)):
     samples = STATE.get("final_scale_samples", [])
     return {
         "stats": stats,
+        # recalcul à la volée : le rapport ne tourne que toutes les 60 min
+        "limiting_factor": _limiting_factor_stats(),
         "samples_count": len(samples),
         "window_hours": FINAL_SCALE_WINDOW_HOURS,
         "collected_since": samples[0]["ts"] if samples else None,

@@ -24,6 +24,14 @@ risk:
   daily_drawdown_micro: 0.18
   daily_drawdown_normal: 0.025
   max_per_asset_pct: 0.25          # plafond dur 25% du capital sur un actif
+  # P0-4 (audit §2.1) : plancher anti-empilement de la réduction cumulative
+  # des overlays (0.8^15 ≈ 3,5% sans plancher — les blocages durs à 0 restent)
+  final_scale_floor: 0.15
+
+autopilot:
+  # P0-6 (audit §5-P0-6) : 4-8 semaines de paper-trading DATÉ et CONTINU avant REAL
+  min_paper_validation_days: 28
+  paper_validation_required: true
 
 data:
   use_real_data_only: true         # Toujours utiliser données réelles
