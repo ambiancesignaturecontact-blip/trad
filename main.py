@@ -3957,7 +3957,7 @@ async def live_trading_loop():
                                 _cap_s = max(0.1, 1.0 / _cap_ratio)
                                 logger.info(f"CAPACITÉ {symbol}: taille plafonnée à 1% du volume 24h (x{_cap_s:.2f})")
                         _cash_s = portfolio_allocator.portfolio_exposure_factor(STATE, active_balance_key)
-                        if _cash_s < 1.0:
+                        if _cash_s < 0.99:
                             logger.info(f"RÉSERVE CASH: exposition portfolio proche du max -> x{_cash_s:.2f}")
                     except Exception:
                         pass

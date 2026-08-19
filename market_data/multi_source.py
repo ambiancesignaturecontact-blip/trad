@@ -37,7 +37,10 @@ DIVERGENCE_THRESHOLDS = {
     "ETHUSDT": 0.50,
     "SOLUSDT": 0.75,
     "XAUUSD": 1.50,
-    "EURUSD": 0.50,
+    # EURUSD : er-api (open.er-api.com) est une source à MAJ QUOTIDIENNE vs
+    # Yahoo temps réel -> écart > 0.5% en séance = normal (pas une anomalie).
+    # Seuil élargi à 1.0% documenté (même logique que futures vs spot XAU).
+    "EURUSD": 1.00,
     "AAPL": 1.00,
     "TSLA": 1.00,
 }
