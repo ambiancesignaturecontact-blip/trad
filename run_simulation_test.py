@@ -9,37 +9,19 @@ from strategies.engine import MetaAllocationEngine, TrendFollowingStrategy, Mean
 from risk.risk_manager import RiskManager
 from backtester.engine import EventDrivenBacktester
 from backtester.bias_audit import audit_backtest
+from backtester.live_candles import fetch_real_candles
 
 def run_quant_test():
     print("=========================================================================")
     print("📈 INSTITUTIONAL AI TRADING PLATFORM - SIMULATION PERFORMANCE TEST")
     print("=========================================================================")
     
-    # Generate high-fidelity price history representing a real market cycle
-    # (1000 bars: Uptrend, then crash, then range consolidation)
-    np.random.seed(123)
-    prices = [60000.0]
-    
-    # Phase 1: Bull Trend (300 bars)
-    for _ in range(300):
-        prices.append(prices[-1] * (1.0 + np.random.normal(0.0003, 0.004)))
-        
-    # Phase 2: Bear Crash (200 bars)
-    for _ in range(200):
-        prices.append(prices[-1] * (1.0 + np.random.normal(-0.0008, 0.008)))
-        
-    # Phase 3: Range Consolidation (500 bars)
-    for _ in range(500):
-        prices.append(prices[-1] * (1.0 + np.random.normal(0.0, 0.003)))
-        
-    timestamps = pd.date_range(start="2026-01-01", periods=1001, freq="H")
-    df = pd.DataFrame({
-        "close": prices,
-        "high": [p * 1.002 for p in prices],
-        "low": [p * 0.998 for p in prices],
-        "open": [p * np.random.uniform(0.999, 1.001) for p in prices],
-        "volume": [np.random.uniform(10.0, 100.0) for _ in prices]
-    }, index=timestamps)
+    # Données RÉELLES uniquement (OKX -> Coinbase -> Kraken -> Binance).
+    # Plus AUCUNE donnée synthétique : sans données réelles, pas de preuve
+    # (P0-5, audit §4.9 — un backtest sur données fabriquées ne prouve rien).
+    df, _src = fetch_real_candles("BTCUSDT", limit=500)
+    if df is None:
+        return
     
     # Initialize Models
     detector = MarketRegimeDetector()

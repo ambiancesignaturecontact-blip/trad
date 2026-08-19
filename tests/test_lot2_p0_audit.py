@@ -190,3 +190,86 @@ def test_telemetry_exposes_final_scale_stats():
     body = resp.json()
     assert "final_scale_stats" in body
     assert "final_scale_samples_count" in body
+
+
+# ---------------------- durcissement : persistance + accès ------------------
+
+class _StoreDB:
+    def __init__(self):
+        self.s = {}
+
+    def save_setting(self, k, v, user_id=1, encrypt=False):
+        self.s[k] = v
+
+    def get_setting(self, k, user_id=1, decrypt=False):
+        return self.s.get(k, "")
+
+
+def test_final_scale_persistence_survives_restart(monkeypatch):
+    """L'observation 24-48h ne doit PAS repartir de zéro à chaque redémarrage."""
+    sdb = _StoreDB()
+    monkeypatch.setattr(main, "db", sdb)
+    t0 = main.time.time()
+    main.STATE["final_scale_samples"] = [
+        {"ts": t0 - 3600, "symbol": "BTCUSDT", "final_scale": 0.30, "n_steps": 17},
+        {"ts": t0, "symbol": "ETHUSDT", "final_scale": 0.55, "n_steps": 17},
+    ]
+    main._persist_final_scale_samples()
+    assert "final_scale_samples_json" in sdb.s
+    # redémarrage simulé : état vide, puis rechargement depuis la DB
+    main.STATE["final_scale_samples"] = []
+    main._load_final_scale_samples()
+    assert len(main.STATE["final_scale_samples"]) == 2
+    assert main.STATE["final_scale_samples"][1]["symbol"] == "ETHUSDT"
+    assert main.STATE["final_scale_samples"][1]["final_scale"] == 0.55
+
+
+def test_final_scale_load_ignores_corrupted_data(monkeypatch):
+    sdb = _StoreDB()
+    sdb.s["final_scale_samples_json"] = "not json at all {{{"
+    monkeypatch.setattr(main, "db", sdb)
+    main.STATE["final_scale_samples"] = []
+    main._load_final_scale_samples()  # ne doit pas lever
+    assert main.STATE["final_scale_samples"] == []
+
+
+def test_api_v1_final_scale_endpoint():
+    client = TestClient(main.app)
+    resp = client.get("/api/v1/final-scale")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "stats" in body and "samples_count" in body
+    assert "window_hours" in body and body["window_hours"] == main.FINAL_SCALE_WINDOW_HOURS
+    assert "alert_p50_below_20pct" in body
+
+
+# ---------------------- données réelles (plus de synthétique) ----------------
+
+def test_cli_scripts_no_synthetic_data():
+    """Aucun script CLI ne génère plus de données synthétiques (np.random)."""
+    root = Path(main.__file__).parent
+    for script in CLI_SCRIPTS:
+        src = (root / script).read_text(encoding="utf-8")
+        assert "np.random" not in src, f"{script} : génération synthétique restante"
+        assert "fetch_real_candles" in src, f"{script} : module données réelles manquant"
+
+
+def test_live_candles_module_has_no_synthetic_fallback():
+    import backtester.live_candles as lc
+    src = Path(lc.__file__).read_text(encoding="utf-8")
+    assert "np.random" not in src, "live_candles ne doit jamais générer de données"
+
+
+def test_live_candles_returns_none_when_all_sources_fail(monkeypatch):
+    """Si aucune source réelle ne répond -> (None, "") : jamais de données
+    fabriquées, les scripts CLI s'arrêtent proprement."""
+    import backtester.live_candles as lc
+
+    def boom(symbol, limit):
+        raise RuntimeError("offline")
+
+    for src in ("okx", "coinbase", "kraken", "binance"):
+        monkeypatch.setitem(lc._FETCHERS, src, boom)
+    df, source = lc.fetch_real_candles("BTCUSDT", verbose=False)
+    assert df is None
+    assert source == ""

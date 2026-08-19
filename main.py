@@ -973,6 +973,45 @@ def _final_scale_stats() -> dict:
     }
 
 
+def _persist_final_scale_samples() -> None:
+    """Persiste l'échantillon final_scale en DB pour survivre aux redémarrages
+    (l'observation 24-48h de l'audit §2.1 ne doit pas repartir de zéro à chaque
+    déploiement). Appelé à chaque rapport (toutes les 60 min) : perte max 60 min."""
+    try:
+        samples = STATE.get("final_scale_samples", [])
+        db.save_setting("final_scale_samples_json", json.dumps(samples))
+    except Exception:
+        pass  # jamais bloquant
+
+
+def _load_final_scale_samples() -> None:
+    """Recharge l'échantillon persisté au démarrage (fenêtre 48h appliquée)."""
+    try:
+        raw = db.get_setting("final_scale_samples_json")
+        if not raw:
+            return
+        parsed = json.loads(raw)
+        if not isinstance(parsed, list):
+            return
+        samples = []
+        for s in parsed:
+            try:
+                samples.append({"ts": float(s["ts"]), "symbol": str(s["symbol"]),
+                                "final_scale": float(s["final_scale"]),
+                                "n_steps": int(s.get("n_steps", 0))})
+            except Exception:
+                continue
+        if samples:
+            STATE["final_scale_samples"] = samples
+            _purge_final_scale_samples(FINAL_SCALE_WINDOW_HOURS * 3600.0)
+            logger.info(
+                f"📊 FINAL_SCALE : {len(STATE['final_scale_samples'])} échantillons "
+                f"chargés depuis la DB (observation persistée)."
+            )
+    except Exception as e:
+        logger.warning(f"FINAL_SCALE : rechargement impossible ({e})")
+
+
 def _final_scale_report() -> dict:
     """Purge + calcul + log périodique de la distribution de final_scale."""
     _purge_final_scale_samples(FINAL_SCALE_WINDOW_HOURS * 3600.0)
@@ -992,12 +1031,19 @@ def _final_scale_report() -> dict:
     else:
         logger.info(f"📊 FINAL_SCALE : échantillon insuffisant (n={stats['n'] if stats else 0}) — collecte en cours.")
     STATE["final_scale_stats"] = stats
+    _persist_final_scale_samples()
     return stats
 
 
 async def final_scale_stats_loop():
-    """P0-4 : loggue la distribution réelle de final_scale (p10/p50/p90)
-    toutes les 60 min sur la fenêtre glissante de 48h."""
+    """P0-4 : loggue la distribution réelle de final_scale (p10/p50/p90).
+    Au démarrage : rechargement de l'échantillon persisté + premier rapport
+    immédiat, puis rapport toutes les 60 min (fenêtre glissante de 48h)."""
+    try:
+        _load_final_scale_samples()
+        _final_scale_report()   # premier diagnostic dès le boot
+    except Exception as e:
+        logger.warning(f"final_scale stats boot report error: {e}")
     while True:
         await asyncio.sleep(3600)
         try:
@@ -5656,6 +5702,26 @@ async def api_walkforward_stats(_auth: dict = Depends(require_auth)):
         return {"weights": weights, "ts": time.time()}
     except Exception as e:
         return {"weights": {}, "error": str(e)}
+
+
+@app.get("/api/v1/final-scale")
+async def api_v1_final_scale(_auth: dict = Depends(require_auth)):
+    """
+    P0-4 (audit §2.1) : état de l'observation empirique de final_scale —
+    distribution p10/p50/p90 sur la fenêtre glissante de 48h + alerte si
+    p50 < 20 % (chaîne de facteurs auto-amplifiée, pas un seuil de signal).
+    """
+    stats = STATE.get("final_scale_stats") or _final_scale_stats()
+    samples = STATE.get("final_scale_samples", [])
+    return {
+        "stats": stats,
+        "samples_count": len(samples),
+        "window_hours": FINAL_SCALE_WINDOW_HOURS,
+        "collected_since": samples[0]["ts"] if samples else None,
+        "alert_p50_below_20pct": bool(stats and stats["p50"] < 0.20),
+        "note": "Observation empirique à poursuivre 24-48h de trading continu avant diagnostic.",
+        "ts": time.time(),
+    }
 
 
 @app.get("/api/v1/honesty")

@@ -11,30 +11,19 @@ from strategies.engine import (
 from risk.risk_manager import RiskManager
 from backtester.engine import EventDrivenBacktester
 from backtester.bias_audit import audit_backtest
+from backtester.live_candles import fetch_real_candles
 
 def prove_trend_profit():
     print("=========================================================================")
     print("📈 PROUVER LA RENTABILITÉ DE L'IA DANS UN MARCHÉ DIRECTIONNEL")
     print("=========================================================================")
     
-    # 1. Create a beautiful, steady, real-world bullish trend (500 bars)
-    # Price rises steadily from 50,000 to 100,000 with realistic micro-pullbacks (noise)
-    np.random.seed(88)
-    prices = [50000.0]
-    for i in range(500):
-        drift = 100.0  # Steady daily positive drift
-        cycle = 50.0 * np.sin(i * 2 * np.pi / 50.0) # minor pullbacks
-        noise = np.random.normal(0, 80.0)
-        prices.append(prices[-1] + drift + cycle + noise)
-        
-    timestamps = pd.date_range(start="2026-01-01", periods=501, freq="h")
-    df = pd.DataFrame({
-        "close": prices,
-        "high": [p * 1.001 for p in prices],
-        "low": [p * 0.999 for p in prices],
-        "open": [p * np.random.uniform(0.9995, 1.0005) for p in prices],
-        "volume": [np.random.uniform(10.0, 50.0) for _ in prices]
-    }, index=timestamps)
+    # 1. Données RÉELLES uniquement (OKX -> Coinbase -> Kraken -> Binance).
+    #    Plus AUCUNE donnée synthétique : sans données réelles, pas de preuve
+    #    (P0-5, audit §4.9 — un backtest sur données fabriquées ne prouve rien).
+    df, _src = fetch_real_candles("BTCUSDT", limit=500)
+    if df is None:
+        return
     
     # 2. Setup models
     detector = MarketRegimeDetector()

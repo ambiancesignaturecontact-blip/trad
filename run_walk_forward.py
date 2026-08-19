@@ -9,6 +9,7 @@ from strategies.engine import MetaAllocationEngine, TrendFollowingStrategy, Mean
 from risk.risk_manager import RiskManager
 from backtester.engine import EventDrivenBacktester
 from backtester.bias_audit import audit_backtest
+from backtester.live_candles import fetch_real_candles
 from models.mlops_pipeline import MLOpsAutoTrainer
 from db_manager import DBManager
 
@@ -17,23 +18,12 @@ def execute_walk_forward_analysis():
     print("📈 PIPELINE D'ANALYSE GLISSANTE (WALK-FORWARD ANALYSIS - WFA)")
     print("=========================================================================")
     
-    # Generate an extended 1000-hour multi-cycle market dataset
-    np.random.seed(99)
-    prices = [60000.0]
-    for i in range(1000):
-        # Cyclical trends representing market cycles (bull run, FTX-like correction, consolidation)
-        trend = 40.0 * np.sin(i * 2 * np.pi / 200.0)
-        noise = np.random.normal(0, 120.0)
-        prices.append(prices[-1] + trend + noise)
-        
-    timestamps = pd.date_range(start="2026-01-01", periods=1001, freq="h")
-    df = pd.DataFrame({
-        "close": prices,
-        "high": [p * 1.0015 for p in prices],
-        "low": [p * 0.9985 for p in prices],
-        "open": [p * np.random.uniform(0.9995, 1.0005) for p in prices],
-        "volume": [np.random.uniform(10.0, 100.0) for _ in prices]
-    }, index=timestamps)
+    # Données RÉELLES uniquement (OKX -> Coinbase -> Kraken -> Binance).
+    # Plus AUCUNE donnée synthétique : sans données réelles, pas de preuve
+    # (P0-5, audit §4.9 — un backtest sur données fabriquées ne prouve rien).
+    df, _src = fetch_real_candles("BTCUSDT", limit=500)
+    if df is None:
+        return
     
     db = DBManager()
     detector = MarketRegimeDetector()
@@ -57,10 +47,11 @@ def execute_walk_forward_analysis():
     print(f"✅ Audit des biais passé (score {_bias['score']})")
     
     # Configure walk-forward glissant partitions:
-    # 5 windows: each has 150 bars training/warm-up and 50 bars out-of-sample test
+    # fenêtres de 150 barres d'entraînement + 50 barres OOS, adapté au nombre
+    # de barres réelles disponibles (OKX plafonne à 300 barres par requête).
     window_train_size = 150
     window_test_size = 50
-    num_windows = 4
+    num_windows = max(1, min(4, (len(df) - window_train_size) // window_test_size - 1))
     
     oos_sharpe_scores = []
     is_sharpe_scores = []

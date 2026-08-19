@@ -8,30 +8,19 @@ from strategies.engine import MetaAllocationEngine, TrendFollowingStrategy
 from risk.risk_manager import RiskManager
 from backtester.engine import EventDrivenBacktester
 from backtester.bias_audit import audit_backtest
+from backtester.live_candles import fetch_real_candles
 
 def run_micro_budget_simulation():
     print("=========================================================================")
     print("💶 SIMULATION DE BUDGET MICRO : DÉPART À 50 EUROS ($50 USD)")
     print("=========================================================================")
     
-    # 1. Create a beautiful, steady macro bull trend (500 bars)
-    # Price rises steadily from $2500 (representing ETH) to $5200 with realistic pullbacks
-    np.random.seed(42)
-    prices = [2500.0]
-    for i in range(500):
-        drift = 5.4  # Steady positive drift
-        cycle = 12.0 * np.sin(i * 2 * np.pi / 40.0) # pullbacks
-        noise = np.random.normal(0, 15.0)
-        prices.append(prices[-1] + drift + cycle + noise)
-        
-    timestamps = pd.date_range(start="2026-01-01", periods=501, freq="h")
-    df = pd.DataFrame({
-        "close": prices,
-        "high": [p * 1.001 for p in prices],
-        "low": [p * 0.999 for p in prices],
-        "open": [p * np.random.uniform(0.9995, 1.0005) for p in prices],
-        "volume": [np.random.uniform(10.0, 50.0) for _ in prices]
-    }, index=timestamps)
+    # 1. Données RÉELLES uniquement (ETHUSDT, OKX -> Coinbase -> Kraken).
+    #    Plus AUCUNE donnée synthétique : sans données réelles, pas de preuve
+    #    (P0-5, audit §4.9 — un backtest sur données fabriquées ne prouve rien).
+    df, _src = fetch_real_candles("ETHUSDT", limit=500)
+    if df is None:
+        return
     
     # 2. Setup Models
     detector = MarketRegimeDetector()
