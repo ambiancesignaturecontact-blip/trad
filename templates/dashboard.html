@@ -284,6 +284,25 @@ window.qpLogin = async function () {
                     </div>
                 </div>
 
+                <!-- Régler le capital DEMO (parité mini-app) -->
+                <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">RÉGLER LE CAPITAL (DEMO)</p>
+                    <div class="flex gap-1.5 mt-2">
+                        <input id="dash-set-balance-input" type="number" min="1" step="50" placeholder="$"
+                               class="flex-1 min-w-0 px-2 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-sm font-semibold focus:outline-none focus:border-cyan-500" />
+                        <button onclick="dashSetBalance()"
+                                class="px-3 py-1.5 rounded-lg bg-cyan-500/90 hover:bg-cyan-500 text-black text-xs font-bold active:scale-[0.98] transition-all">APPLIQUER</button>
+                    </div>
+                    <div class="flex gap-1 mt-2">
+                        <button onclick="dashSetBalanceQuick(50)" class="flex-1 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-bold text-slate-300">$50</button>
+                        <button onclick="dashSetBalanceQuick(500)" class="flex-1 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-bold text-slate-300">$500</button>
+                        <button onclick="dashSetBalanceQuick(1000)" class="flex-1 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-bold text-slate-300">$1k</button>
+                        <button onclick="dashSetBalanceQuick(10000)" class="flex-1 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-bold text-slate-300">$10k</button>
+                        <button onclick="dashSetBalanceQuick(100000)" class="flex-1 py-1 rounded-lg bg-slate-800 hover:bg-slate-700 text-[10px] font-bold text-slate-300">$100k</button>
+                    </div>
+                    <p id="dash-set-balance-status" class="text-[9px] text-emerald-400 font-bold mt-1"></p>
+                </div>
+
                 <!-- AI Market Regime -->
                 <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
                     <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">REGIME DE MARCHE HMM</p>
@@ -867,6 +886,37 @@ window.qpLogin = async function () {
             const barCosts = document.getElementById('bar-costs');
             if (barCosts && costs.total_costs_usd) {
                 barCosts.style.width = `${Math.min(100, costs.total_costs_usd / 100)}%`;
+            }
+            // Régler le capital DEMO (parité mini-app)
+            async function dashSetBalance() {
+                const input = document.getElementById('dash-set-balance-input');
+                const amount = parseFloat(input ? input.value : 0);
+                if (!amount || amount <= 0) { alert('❌ Montant invalide'); return; }
+                await dashDoSetBalance(amount);
+            }
+            function dashSetBalanceQuick(amount) {
+                const input = document.getElementById('dash-set-balance-input');
+                if (input) input.value = amount;
+                dashDoSetBalance(amount);
+            }
+            async function dashDoSetBalance(amount) {
+                const status = document.getElementById('dash-set-balance-status');
+                if (status) status.textContent = '…';
+                try {
+                    const resp = await fetch('/api/set-demo-balance', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({balance: amount})
+                    });
+                    if (!resp.ok) { const err = await resp.json().catch(() => ({})); if (status) status.textContent = '❌ ' + (err.detail || 'refusé'); alert('❌ ' + (err.detail || 'refusé')); return; }
+                    if (status) status.textContent = '✅ Balance = ' + amount.toLocaleString() + '$';
+                    // Rafraîchir l'UI via le pipeline standard du dashboard
+                    try {
+                        const resp2 = await fetch('/api/telemetry');
+                        if (resp2.status === 200) processPayload(await resp2.json());
+                    } catch (e2) { console.warn('refresh after set-balance failed', e2); }
+                    setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+                } catch (e) { if (status) status.textContent = '❌ ' + e.message; }
             }
             // Risk State (LOT 2)
             const rs = data.risk_state || {};
