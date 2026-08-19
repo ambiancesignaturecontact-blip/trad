@@ -10,6 +10,7 @@ from risk.risk_manager import RiskManager
 from backtester.engine import EventDrivenBacktester
 from backtester.bias_audit import audit_backtest
 from backtester.live_candles import fetch_real_candles
+from backtester.honest_verdict import print_honest_result
 
 def run_quant_test():
     print("=========================================================================")
@@ -90,11 +91,10 @@ def run_quant_test():
     print(f"Win Rate        : {results['win_rate_pct']:.2f}%")
     print(f"Profit Factor   : {results['profit_factor']:.2f}")
     print("=========================================================================")
-    
-    if results['final_equity'] > results['initial_capital']:
-        print("✅ SUCCESS: The bot generated positive net returns under realistic slippages & fees!")
-    else:
-        print("❌ FAILURE: The bot ended with a net loss.")
+    print_honest_result(
+        results['initial_capital'], results['final_equity'],
+        label="7 stratégies (simulation)", bars=len(test_df),
+        source=_src, start=test_df.index[0], end=test_df.index[-1])
 
 if __name__ == "__main__":
     run_quant_test()

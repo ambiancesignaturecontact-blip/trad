@@ -273,3 +273,131 @@ def test_live_candles_returns_none_when_all_sources_fail(monkeypatch):
     df, source = lc.fetch_real_candles("BTCUSDT", verbose=False)
     assert df is None
     assert source == ""
+
+
+# ---------------------- pagination : > 300 barres réelles -------------------
+
+class _FakeResp:
+    def __init__(self, payload):
+        self._payload = payload
+    def json(self):
+        return self._payload
+
+
+class _PagedHTTPX:
+    """Simule l'API OKX paginée (2 pages de 300 barres, ordre DESC)."""
+    def __init__(self):
+        self.calls = 0
+
+    def get(self, url, timeout=10.0):
+        self.calls += 1
+        page = self.calls
+        rows = []
+        base = 1_780_000_000_000
+        for i in range(300):
+            ts = base - (page - 1) * 300 * 3600_000 - i * 3600_000
+            rows.append([str(ts), "100", "101", "99", "100.5", "10", "0", "0", "0"])
+        return _FakeResp({"data": rows})
+
+
+def test_okx_pagination_exceeds_300_bars(monkeypatch):
+    """La pagination OKX doit fournir > 300 barres (fenêtres walk-forward)."""
+    import backtester.live_candles as lc
+    fake = _PagedHTTPX()
+    monkeypatch.setattr(lc.httpx, "get", fake.get)
+    df, src = lc.fetch_real_candles("BTCUSDT", limit=600, verbose=False)
+    assert src == "okx"
+    assert df is not None and len(df) == 600
+    assert fake.calls >= 2, "la pagination doit faire plusieurs requêtes"
+    assert df.index.is_monotonic_increasing
+    assert list(df.columns) == ["open", "high", "low", "close", "volume"]
+
+
+# ---------------------------- verdicts honnêtes -----------------------------
+
+def test_honest_verdict_categories(capsys):
+    from backtester.honest_verdict import print_honest_result
+    assert print_honest_result(100000, 101500) == "profit"
+    assert print_honest_result(100000, 100020) == "marginal"     # +0.02% : PAS « massif »
+    assert print_honest_result(100000, 99000) == "loss"
+    assert print_honest_result(100000, 100000) == "breakeven"
+    out = capsys.readouterr().out
+    assert "PERTE NETTE" in out
+
+
+def test_cli_scripts_no_boastful_success_messages():
+    """Les messages trompeurs de fin de backtest ont disparu des scripts."""
+    root = Path(main.__file__).parent
+    forbidden = ["massive net profits", "excellent compound profits",
+                 "survived and achieved profits", "ZERO OVERFITTING",
+                 "Zero overfitting detected"]
+    for script in CLI_SCRIPTS:
+        src = (root / script).read_text(encoding="utf-8")
+        for phrase in forbidden:
+            assert phrase.lower() not in src.lower(), \
+                f"{script} : message trompeur restant -> {phrase}"
+
+
+# -------------------- P0-6 : paper-trading daté et continu ------------------
+
+class _PaperDB:
+    def __init__(self):
+        self.s = {}
+
+    def save_setting(self, k, v, user_id=1, encrypt=False):
+        self.s[k] = v
+
+    def get_setting(self, k, user_id=1, decrypt=False):
+        return self.s.get(k, "")
+
+
+def _make_days(days):
+    from datetime import datetime, timedelta
+    base = datetime(2026, 8, 10)
+    return [(base + timedelta(days=d)).strftime("%Y-%m-%d") for d in days]
+
+
+def test_paper_validation_marks_only_real_runtime(monkeypatch):
+    """Un jour n'est compté que si le bot tourne réellement ce jour-là."""
+    pdb = _PaperDB()
+    monkeypatch.setattr(main, "db", pdb)
+    main._mark_paper_validation_day()
+    stats = main._paper_validation_stats()
+    assert stats["active_days"] == 1
+    # le jour marqué est bien le jour UTC courant
+    from datetime import datetime, timezone
+    assert stats["days"][0] == datetime.now(timezone.utc).strftime("%Y-%m-%d")
+
+
+def test_paper_validation_streak_and_validation(monkeypatch):
+    """Série consécutive calculée ; validated uniquement si streak >= requis."""
+    pdb = _PaperDB()
+    monkeypatch.setattr(main, "db", pdb)
+    pdb.s["paper_validation_days"] = __import__("json").dumps(_make_days([0, 1, 2, 3]))
+    pdb.s["paper_validation_start_ts"] = "1000.0"
+    stats = main._paper_validation_stats()
+    assert stats["active_days"] == 4
+    assert stats["latest_streak_days"] == 4
+    assert stats["required_days"] == 7
+    assert stats["validated"] is False
+
+
+def test_paper_validation_interruption_breaks_streak(monkeypatch):
+    """Un jour manquant (bot arrêté) casse la série continue."""
+    pdb = _PaperDB()
+    monkeypatch.setattr(main, "db", pdb)
+    # jours 0,1,2 puis trou (3), puis 4,5,6,7
+    pdb.s["paper_validation_days"] = __import__("json").dumps(_make_days([0, 1, 2, 4, 5, 6, 7]))
+    stats = main._paper_validation_stats()
+    assert stats["active_days"] == 7
+    assert stats["latest_streak_days"] == 4   # seule la série la plus récente compte
+    assert stats["validated"] is False        # pas de 7 jours CONTINUS
+
+
+def test_api_v1_paper_validation_endpoint():
+    client = TestClient(main.app)
+    resp = client.get("/api/v1/paper-validation")
+    assert resp.status_code == 200
+    body = resp.json()
+    assert "active_days" in body and "latest_streak_days" in body
+    assert "required_days" in body and "validated" in body

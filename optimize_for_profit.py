@@ -12,6 +12,7 @@ from risk.risk_manager import RiskManager
 from backtester.engine import EventDrivenBacktester
 from backtester.bias_audit import audit_backtest
 from backtester.live_candles import fetch_real_candles
+from backtester.honest_verdict import print_honest_result
 
 def run_profitability_calibration():
     print("=========================================================================")
@@ -89,11 +90,12 @@ def run_profitability_calibration():
     print(f"Taux de réussite      : {results['win_rate_pct']:.2f}%")
     print(f"Facteur de profit     : {results['profit_factor']:.2f}")
     print("-------------------------------------------------------------------------")
-    
-    if results['final_equity'] > results['initial_capital']:
-        print("🎉 SUCCÈS : L'optimisation sur de véritables données de marché s'est avérée profitable !")
-    else:
-        print("⚠️ L'évaluation s'est terminée avec une perte. Calibrez les hyperparamètres ou ajustez l'exposition.")
+    print_honest_result(
+        results['initial_capital'], results['final_equity'],
+        label="optimisation 3 stratégies", bars=len(df),
+        source=_src, start=df.index[0], end=df.index[-1])
+    print("(Un résultat positif sur la période d'optimisation ne prouve pas la "
+          "généralisation : seule une validation hors-échantillon le ferait.)")
 
 if __name__ == "__main__":
     run_profitability_calibration()

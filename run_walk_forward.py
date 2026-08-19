@@ -100,9 +100,12 @@ def execute_walk_forward_analysis():
     print("=========================================================================")
     
     if wfe_index >= 50.0:
-        print("✅ SYSTEM STABILITY CONFIRMED: WFE exceeds the 50% institutional threshold! Zero overfitting detected.")
+        print("✅ WFE >= 50% : le modèle généralise sur données réelles hors-échantillon.")
+    elif wfe_index >= 0.0:
+        print("⚠️ WFE faible : risque d'overfitting sur le bruit passé. Calibrer ou élargir les fenêtres.")
     else:
-        print("⚠️ WARNING: WFE is low. Potential over-fitting on past noise. Calibrate parameters or expand training windows.")
+        print("❌ WFE NÉGATIF : overfitting hors-échantillon — AUCUNE preuve de "
+              "généralisation sur données réelles.")
 
 if __name__ == "__main__":
     execute_walk_forward_analysis()

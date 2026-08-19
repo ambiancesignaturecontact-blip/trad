@@ -9,6 +9,7 @@ from risk.risk_manager import RiskManager
 from backtester.engine import EventDrivenBacktester
 from backtester.bias_audit import audit_backtest
 from backtester.live_candles import fetch_real_candles
+from backtester.honest_verdict import print_honest_result
 
 def run_micro_budget_simulation():
     print("=========================================================================")
@@ -92,11 +93,10 @@ def run_micro_budget_simulation():
     print(f"Taux de réussite          : {results['win_rate_pct']:.2f}%")
     print(f"Facteur de profit         : {results['profit_factor']:.2f}")
     print("=========================================================================")
-    
-    if results['final_equity'] > 50.0:
-        print("✅ SUCCESS: The bot generated excellent compound profits starting with only 50 Euros!")
-    else:
-        print("❌ L'évaluation de micro-budget a échoué.")
+    print_honest_result(
+        50.0, results['final_equity'],
+        label="micro-budget 50$", bars=len(df),
+        source=_src, start=df.index[0], end=df.index[-1])
 
 if __name__ == "__main__":
     run_micro_budget_simulation()

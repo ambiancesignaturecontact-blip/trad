@@ -1051,6 +1051,72 @@ async def final_scale_stats_loop():
         except Exception as e:
             logger.warning(f"final_scale stats loop error: {e}")
 
+
+# ============ P0-6 (audit §5-P0-6) : suivi du paper-trading DATÉ ============
+# L'historique de paper-trading validé avant REAL doit être réel, daté et
+# CONTINU (4-8 semaines). Ce tracker marque chaque jour où le bot tourne
+# (persisté en DB) et expose la série + le statut de validation — un chiffre
+# de vérité que le code ne peut pas truquer : si le bot ne tourne pas, le
+# jour n'est pas compté.
+
+def _mark_paper_validation_day() -> None:
+    """Marque le jour UTC courant comme jour de paper-trading actif (le bot
+    tourne réellement). Persisté en DB : la série survit aux redémarrages."""
+    try:
+        from datetime import datetime, timezone
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        days = json.loads(db.get_setting("paper_validation_days") or "[]")
+        if not isinstance(days, list):
+            days = []
+        days = sorted(set(d for d in days if isinstance(d, str) and len(d) == 10))
+        if today not in days:
+            days.append(today)
+            days.sort()
+            db.save_setting("paper_validation_days", json.dumps(days))
+        if not db.get_setting("paper_validation_start_ts"):
+            db.save_setting("paper_validation_start_ts", str(time.time()))
+    except Exception as e:
+        logger.warning(f"paper validation mark failed: {e}")
+
+
+def _paper_validation_stats() -> dict:
+    """Jours actifs, série consécutive la plus récente, exigence, statut."""
+    try:
+        days = json.loads(db.get_setting("paper_validation_days") or "[]")
+        start_ts = float(db.get_setting("paper_validation_start_ts") or 0.0)
+    except Exception:
+        days, start_ts = [], 0.0
+    try:
+        required = int(settings.get("autopilot", "min_paper_validation_days", 7))
+    except Exception:
+        required = 7
+    days = sorted(set(d for d in days if isinstance(d, str) and len(d) == 10))
+
+    # série consécutive la plus récente (fin = dernier jour enregistré)
+    streak = 0
+    if days:
+        from datetime import datetime, timedelta
+        try:
+            cur = datetime.strptime(days[-1], "%Y-%m-%d").date()
+            day_set = set(days)
+            streak = 1
+            while (cur - timedelta(days=1)).strftime("%Y-%m-%d") in day_set:
+                streak += 1
+                cur = cur - timedelta(days=1)
+        except Exception:
+            streak = 0
+
+    return {
+        "start_ts": start_ts,
+        "active_days": len(days),
+        "days": days,
+        "latest_streak_days": streak,
+        "required_days": required,
+        "validated": streak >= required,
+        "rule": "Le mode REAL exige une série CONTINUE de paper-trading daté "
+                "(les jours où le bot n'a pas tourné ne comptent pas).",
+    }
+
 execution_bandit = ExecutionStyleBandit()
 strategy_exec_attr = StrategyExecutionAttribution()
 
@@ -2917,6 +2983,8 @@ async def reconciliation_scheduler():
     while True:
         await asyncio.sleep(300)  # every 5 minutes
         try:
+            # P0-6 : marque le jour courant comme jour de paper-trading actif
+            _mark_paper_validation_day()
             active_mode = STATE["mode"]
             client = get_ccxt_client() if active_mode == "REAL" else None
 
@@ -3043,6 +3111,12 @@ async def db_backup_scheduler():
 async def startup_event():
     # LOT 62: institutional configuration checklist
     validate_startup_config()
+
+    # P0-6 : premier marquage du jour de paper-trading (le bot démarre)
+    try:
+        _mark_paper_validation_day()
+    except Exception:
+        pass
 
     # Autopilot first-start marker (audit D1)
     if not db.get_setting("platform_first_start_ts"):
@@ -5120,6 +5194,8 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         # P0-4 (audit §2.1) : distribution observée de final_scale (p10/p50/p90)
         "final_scale_stats": STATE.get("final_scale_stats"),
         "final_scale_samples_count": len(STATE.get("final_scale_samples", [])),
+        # P0-6 (audit §5) : paper-trading daté et continu avant REAL
+        "paper_validation": _paper_validation_stats(),
         "regime_confidence": STATE.get("regime_confidence", {}),
         "hmm_validation": STATE.get("hmm_validation", {}),
         "expert_contribution": mixture_of_experts.expert_contribution_report(),
@@ -5702,6 +5778,16 @@ async def api_walkforward_stats(_auth: dict = Depends(require_auth)):
         return {"weights": weights, "ts": time.time()}
     except Exception as e:
         return {"weights": {}, "error": str(e)}
+
+
+@app.get("/api/v1/paper-validation")
+async def api_v1_paper_validation(_auth: dict = Depends(require_auth)):
+    """
+    P0-6 (audit §5-P0-6) : suivi du paper-trading DATÉ et CONTINU exigé avant
+    le mode REAL. Jours actifs, série consécutive, seuil requis, statut.
+    Un jour ne compte que si le bot a réellement tourné ce jour-là.
+    """
+    return _paper_validation_stats()
 
 
 @app.get("/api/v1/final-scale")

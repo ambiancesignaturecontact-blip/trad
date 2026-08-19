@@ -10,6 +10,7 @@ from risk.risk_manager import RiskManager
 from backtester.engine import EventDrivenBacktester
 from backtester.bias_audit import audit_backtest
 from backtester.live_candles import fetch_real_candles
+from backtester.honest_verdict import print_honest_result
 
 def run_extended_cycles_backtest():
     print("=========================================================================")
@@ -69,11 +70,10 @@ def run_extended_cycles_backtest():
     print(f"Taux de réussite  : {results['win_rate_pct']:.2f}%")
     print(f"Profit Factor     : {results['profit_factor']:.2f}")
     print("=========================================================================")
-    
-    if results['final_equity'] > results['initial_capital']:
-        print("✅ SUCCESS: The bot survived and achieved profits across real-world market cycles!")
-    else:
-        print("❌ L'évaluation réelle s'est terminée avec une perte nette.")
+    print_honest_result(
+        results['initial_capital'], results['final_equity'],
+        label="cycles réels multi-sources", bars=len(df),
+        source=_src, start=df.index[0], end=df.index[-1])
 
 if __name__ == "__main__":
     run_extended_cycles_backtest()
