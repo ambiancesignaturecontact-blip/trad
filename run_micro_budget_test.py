@@ -7,6 +7,7 @@ from models.price_predictor import LSTMLikePredictor, PPOTRAgent
 from strategies.engine import MetaAllocationEngine, TrendFollowingStrategy
 from risk.risk_manager import RiskManager
 from backtester.engine import EventDrivenBacktester
+from backtester.bias_audit import audit_backtest
 
 def run_micro_budget_simulation():
     print("=========================================================================")
@@ -34,7 +35,7 @@ def run_micro_budget_simulation():
     
     # 2. Setup Models
     detector = MarketRegimeDetector()
-    predictor = LSTMLikePredictor(5, 8)
+    predictor = LSTMLikePredictor(5, 24)  # P0-5 : même archi que le live (audit §4.9)
     ppo = PPOTRAgent(4, 1)
     
     # Train
@@ -71,7 +72,20 @@ def run_micro_budget_simulation():
     # - Gas Fee: $0.005 per transaction (Arbitrum / Base standard native gas!)
     # We modify the EventDrivenBacktester connection parameters to model the gas fee as well
     backtester = EventDrivenBacktester(initial_capital=50.0, commission_pct=0.0005, slippage_pct=0.0001)
-    
+
+    # P0-5 (audit §4.9) : garde-fou anti-biais identique au live — REJET si échec.
+    _bias = audit_backtest(
+        df,
+        assets_universe=["BTCUSDT"],
+        assets_tested=["BTCUSDT"],
+        slippage_bps=1.0,          # 0.0001 * 10000 (coûts réalistes, jamais 0)
+        commission_pct=0.0005,
+    )
+    if _bias["status"] == "REJECTED":
+        print(f"❌ BACKTEST REJETÉ par l'audit des biais : {_bias['issues']}")
+        return
+    print(f"✅ Audit des biais passé (score {_bias['score']})")
+
     results = backtester.run(df, meta_engine, risk, detector, predictor, ppo)
     
     # Subtract gas fees: say we made 10 trades, costing 10 * 0.005 = 0.05 USD total

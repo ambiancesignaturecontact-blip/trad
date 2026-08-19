@@ -247,9 +247,11 @@ class MLOpsAutoTrainer:
                         test_feats.append(seq); test_labels.append(lab)
                 if len(train_feats) < 15 or len(test_feats) < 5:
                     continue
-                # Entraîner un CHALLENGER frais sur ce fold (pas le champion)
+                # Entraîner un CHALLENGER frais sur ce fold (pas le champion).
+                # P0-5 (audit §4.9) : même archi que le live (hidden_dim=24),
+                # sinon la comparaison champion/challenger est invalide.
                 from models.price_predictor import LSTMLikePredictor
-                challenger = LSTMLikePredictor()
+                challenger = LSTMLikePredictor(hidden_dim=24)
                 challenger.fit(np.array(train_feats), np.array(train_labels))
                 preds = []
                 for f in test_feats:

@@ -10,6 +10,7 @@ from strategies.engine import (
 )
 from risk.risk_manager import RiskManager
 from backtester.engine import EventDrivenBacktester
+from backtester.bias_audit import audit_backtest
 
 def prove_trend_profit():
     print("=========================================================================")
@@ -37,7 +38,7 @@ def prove_trend_profit():
     
     # 2. Setup models
     detector = MarketRegimeDetector()
-    predictor = LSTMLikePredictor(5, 8)
+    predictor = LSTMLikePredictor(5, 24)  # P0-5 : même archi que le live (audit §4.9)
     ppo = PPOTRAgent(4, 1)
     
     # Pre-train
@@ -70,6 +71,20 @@ def prove_trend_profit():
     
     # 4. Run Backtest
     backtester = EventDrivenBacktester(initial_capital=100000.0, commission_pct=0.0002, slippage_pct=0.0001)
+
+    # P0-5 (audit §4.9) : garde-fou anti-biais identique au live — REJET si échec.
+    _bias = audit_backtest(
+        df,
+        assets_universe=["BTCUSDT"],
+        assets_tested=["BTCUSDT"],
+        slippage_bps=1.0,          # 0.0001 * 10000 (coûts réalistes, jamais 0)
+        commission_pct=0.0002,
+    )
+    if _bias["status"] == "REJECTED":
+        print(f"❌ BACKTEST REJETÉ par l'audit des biais : {_bias['issues']}")
+        return
+    print(f"✅ Audit des biais passé (score {_bias['score']})")
+
     results = backtester.run(df, meta_engine, risk, detector, predictor, ppo)
     
     print(f"Rendement de l'actif sous-jacent : +{((df['close'].iloc[-1] - df['close'].iloc[0])/df['close'].iloc[0])*100:.2f}%")

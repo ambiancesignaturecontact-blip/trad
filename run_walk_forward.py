@@ -8,6 +8,7 @@ from models.price_predictor import LSTMLikePredictor, PPOTRAgent
 from strategies.engine import MetaAllocationEngine, TrendFollowingStrategy, MeanReversionStrategy, GridTradingStrategy
 from risk.risk_manager import RiskManager
 from backtester.engine import EventDrivenBacktester
+from backtester.bias_audit import audit_backtest
 from models.mlops_pipeline import MLOpsAutoTrainer
 from db_manager import DBManager
 
@@ -36,9 +37,24 @@ def execute_walk_forward_analysis():
     
     db = DBManager()
     detector = MarketRegimeDetector()
-    predictor = LSTMLikePredictor(5, 8)
+    predictor = LSTMLikePredictor(5, 24)  # P0-5 : même archi que le live (audit §4.9)
     ppo = PPOTRAgent(4, 1)
     mlops_trainer = MLOpsAutoTrainer(detector, predictor, db)
+
+    # P0-5 (audit §4.9) : garde-fou anti-biais identique au live — un backtest
+    # qui échoue à l'audit (look-ahead/survivorship/slippage) est REJETÉ :
+    # aucune preuve de rentabilité valide pour le système réellement déployé.
+    _bias = audit_backtest(
+        df,
+        assets_universe=["BTCUSDT"],
+        assets_tested=["BTCUSDT"],
+        slippage_bps=1.0,          # 0.0001 * 10000 (coûts réalistes, jamais 0)
+        commission_pct=0.0004,
+    )
+    if _bias["status"] == "REJECTED":
+        print(f"❌ BACKTEST REJETÉ par l'audit des biais : {_bias['issues']}")
+        return
+    print(f"✅ Audit des biais passé (score {_bias['score']})")
     
     # Configure walk-forward glissant partitions:
     # 5 windows: each has 150 bars training/warm-up and 50 bars out-of-sample test

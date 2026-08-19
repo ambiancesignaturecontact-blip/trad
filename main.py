@@ -915,6 +915,96 @@ order_flow = OrderFlowEngine()          # LOT 3: order flow réel (delta/CVD/OFI
 risk_state = RiskStateMachine()          # LOT 2: machine à états NORMAL/CAUTION/HALT (PDF Faille 3)
 win_tracker = StrategyWinRateTracker(STATE)  # LOT 2: win rates RÉELS par stratégie (PDF Pilier F)
 risk_pipeline_last = {}                  # dernier tracé du pipeline (télémétrie/audit)
+
+
+# ============ P0-4 (audit indépendant §2.1) : distribution réelle de final_scale ============
+# 17 facteurs multiplicatifs en chaîne peuvent s'auto-amplifier silencieusement
+# (0.8^15 ≈ 3.5% de la taille de base). On accumule les final_scale observés en
+# live et on loggue p10/p50/p90 sur la fenêtre glissante de 48h — si p50 < 20%,
+# le problème est la chaîne de facteurs, pas le seuil de signal.
+
+FINAL_SCALE_DOWNSAMPLE_SEC = 60.0   # 1 échantillon / min / symbole max
+FINAL_SCALE_WINDOW_HOURS = 48.0     # fenêtre glissante de référence
+FINAL_SCALE_MAX_SAMPLES = 25000     # borne dure mémoire
+
+
+def _record_final_scale(symbol: str, final_scale: float, n_steps: int) -> None:
+    """Accumule un échantillon (downsamplé à 1/min/symbole) de final_scale."""
+    try:
+        now = time.time()
+        last_ts = STATE.setdefault("final_scale_last_ts", {})
+        if now - last_ts.get(symbol, 0.0) < FINAL_SCALE_DOWNSAMPLE_SEC:
+            return
+        last_ts[symbol] = now
+        samples = STATE.setdefault("final_scale_samples", [])
+        samples.append({"ts": now, "symbol": symbol,
+                        "final_scale": float(final_scale), "n_steps": int(n_steps)})
+        if len(samples) > FINAL_SCALE_MAX_SAMPLES:
+            del samples[: len(samples) - FINAL_SCALE_MAX_SAMPLES]
+    except Exception:
+        pass  # l'instrumentation ne doit jamais casser la boucle de trading
+
+
+def _purge_final_scale_samples(max_age_sec: float) -> None:
+    samples = STATE.get("final_scale_samples", [])
+    if not samples:
+        return
+    cutoff = time.time() - max_age_sec
+    # purge amortie : les échantillons sont horodatés de façon croissante
+    while samples and samples[0]["ts"] < cutoff:
+        samples.pop(0)
+
+
+def _final_scale_stats() -> dict:
+    """Calcule p10/p50/p90/min/max sur l'échantillon accumulé (>= 5 points)."""
+    samples = STATE.get("final_scale_samples", [])
+    if len(samples) < 5:
+        return None
+    vals = np.array([s["final_scale"] for s in samples], dtype=float)
+    p10, p50, p90 = np.percentile(vals, [10, 50, 90])
+    return {
+        "n": len(samples),
+        "span_hours": round((samples[-1]["ts"] - samples[0]["ts"]) / 3600.0, 2),
+        "p10": round(float(p10), 4),
+        "p50": round(float(p50), 4),
+        "p90": round(float(p90), 4),
+        "min": round(float(vals.min()), 4),
+        "max": round(float(vals.max()), 4),
+    }
+
+
+def _final_scale_report() -> dict:
+    """Purge + calcul + log périodique de la distribution de final_scale."""
+    _purge_final_scale_samples(FINAL_SCALE_WINDOW_HOURS * 3600.0)
+    stats = _final_scale_stats()
+    if stats and stats["n"] >= 10:
+        logger.info(
+            f"📊 FINAL_SCALE distribution (n={stats['n']} sur {stats['span_hours']}h) : "
+            f"p10={stats['p10']:.4f} p50={stats['p50']:.4f} p90={stats['p90']:.4f} "
+            f"[min={stats['min']:.4f}, max={stats['max']:.4f}]"
+        )
+        if stats["p50"] < 0.20:
+            logger.warning(
+                "⚠️ FINAL_SCALE p50 < 20% : la chaîne de facteurs du pipeline de risque "
+                "s'auto-amplifie (diagnostic audit §2.1) — le problème n'est pas le seuil "
+                "de signal mais l'empilement de prudence."
+            )
+    else:
+        logger.info(f"📊 FINAL_SCALE : échantillon insuffisant (n={stats['n'] if stats else 0}) — collecte en cours.")
+    STATE["final_scale_stats"] = stats
+    return stats
+
+
+async def final_scale_stats_loop():
+    """P0-4 : loggue la distribution réelle de final_scale (p10/p50/p90)
+    toutes les 60 min sur la fenêtre glissante de 48h."""
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            _final_scale_report()
+        except Exception as e:
+            logger.warning(f"final_scale stats loop error: {e}")
+
 execution_bandit = ExecutionStyleBandit()
 strategy_exec_attr = StrategyExecutionAttribution()
 
@@ -1578,6 +1668,7 @@ TASK_FACTORIES = {
     "autonomous_ai_scheduler": lambda: autonomous_ai_scheduler(),
     "copy_trading_refresh_scheduler": lambda: copy_trading_refresh_scheduler(),
     "copy_mirror_scheduler": lambda: copy_mirror_scheduler(),
+    "final_scale_stats": lambda: final_scale_stats_loop(),
 }
 
 
@@ -2070,7 +2161,9 @@ async def autonomous_ai_scheduler():
                 meta_local = MetaAllocationEngine(strategies=[strat])
                 risk_local = RiskManager()
                 det_local = MarketRegimeDetector()
-                pred_local = LSTMLikePredictor(input_dim=5, hidden_dim=8)
+                # P0-5 (audit §4.9) : même archi que le live (hidden_dim=24),
+                # sinon la validation walk-forward ne vaut pas pour le déploiement.
+                pred_local = LSTMLikePredictor(input_dim=5, hidden_dim=24)
                 ppo_local = PPOTRAgent(state_dim=4, action_dim=1)
 
                 # Primary asset + optional secondary assets from the DB candle cache
@@ -3048,6 +3141,10 @@ async def startup_event():
     # Start the real copy-mirroring scheduler
     launch_named(copy_mirror_scheduler(), "copy_mirror_scheduler")
     logger.info("✅ LOT 71: Copy mirroring scheduler started (every 10 min)")
+
+    # P0-4 (audit §2.1) : distribution de final_scale (p10/p50/p90) toutes les 60 min
+    launch_named(final_scale_stats_loop(), "final_scale_stats")
+    logger.info("✅ P0-4: final_scale distribution stats loop started (every 60 min)")
 
     # LOT 7 (PDF Faille 6) : watchdog des tâches de fond (supervision + auto-restart)
     asyncio.create_task(task_watchdog_loop())
@@ -4170,6 +4267,8 @@ async def live_trading_loop():
                         STATE["risk_pipeline_steps"] = _pipe["steps"]
                         risk_pipeline_last.update({"symbol": symbol, "final_scale": _pipe["final_scale"],
                                                    "n_steps": len(_pipe["steps"])})
+                        # P0-4 (audit §2.1) : accumulation de la distribution réelle
+                        _record_final_scale(symbol, _pipe["final_scale"], len(_pipe["steps"]))
                     except Exception as _pe:
                         logger.error(f"Risk pipeline failed ({_pe}) — using conservative path")
                         target_qty = min(target_qty, cvar_qty, max_asset_qty) * abs(final_signal)
@@ -4972,6 +5071,9 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "strategy_win_rates": STATE.get("strategy_win_rates", {}),
         "strategy_trade_counts": STATE.get("strategy_trade_counts", {}),
         "risk_pipeline_steps": STATE.get("risk_pipeline_steps", [])[-12:],
+        # P0-4 (audit §2.1) : distribution observée de final_scale (p10/p50/p90)
+        "final_scale_stats": STATE.get("final_scale_stats"),
+        "final_scale_samples_count": len(STATE.get("final_scale_samples", [])),
         "regime_confidence": STATE.get("regime_confidence", {}),
         "hmm_validation": STATE.get("hmm_validation", {}),
         "expert_contribution": mixture_of_experts.expert_contribution_report(),
@@ -5700,7 +5802,8 @@ async def run_backtest_handler(_auth: dict = Depends(require_auth)):
 
     backtester = EventDrivenBacktester(initial_capital=100000.0)
     local_detector = MarketRegimeDetector()
-    local_predictor = LSTMLikePredictor(5, 8)
+    # P0-5 (audit §4.9) : même archi que le live (hidden_dim=24).
+    local_predictor = LSTMLikePredictor(5, 24)
     local_ppo = PPOTRAgent(4, 1)
     
     split = int(len(df) * 0.6)

@@ -9,7 +9,10 @@ class LSTMLikePredictor:
     Includes forward propagation through time (BPTT) and online training gradient descents.
     Requires no external heavy frameworks (PyTorch/TensorFlow).
     """
-    def __init__(self, input_dim=5, hidden_dim=8, output_dim=1, lr=0.01):
+    # P0-5 (audit §4.9) : hidden_dim=24 par défaut = MÊME archi que le live
+    # (main.py). Tout backtest/script qui instancie LSTMLikePredictor() sans
+    # préciser hidden_dim hérite de l'archi déployée — plus de dérive 8 vs 24.
+    def __init__(self, input_dim=5, hidden_dim=24, output_dim=1, lr=0.01):
         self.input_dim = input_dim
         self.hidden_dim = hidden_dim
         self.output_dim = output_dim
