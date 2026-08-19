@@ -77,3 +77,56 @@ class MonteCarloStressTester:
             "max_best_case_usd": max_outcome,
             "min_worst_case_usd": min_outcome
         }
+
+    def bootstrap_sharpe_significance(self, equity_curve: list,
+                                      n_permutations: int = 1000,
+                                      seed: int = 42) -> dict:
+        """
+        Monte Carlo BOOTSTRAP sur la courbe d'équité (PDF Pilier N) :
+        on permute les rendements 1000+ fois pour mesurer si le Sharpe observé
+        est dû à la CHANCE ou à un vrai edge.
+
+        Principe (mentalité n°3) : le passé honnête est tout ce qu'on a. Si un
+        Sharpe aléatoire dépasse le Sharpe observé dans plus de 5 % des
+        permutations, la performance n'est PAS significative -> réduction de
+        confiance (pas de promotion de stratégie sur du bruit).
+        """
+        try:
+            if equity_curve is None or len(equity_curve) < 30:
+                return {"significant": None, "reason": "échantillon insuffisant"}
+            rets = np.diff(np.asarray(equity_curve, dtype=float))
+            rets = rets[~np.isnan(rets)]
+            if len(rets) < 20 or float(np.std(rets)) == 0.0:
+                return {"significant": None, "reason": "rendements constants"}
+
+            observed_sharpe = float(np.mean(rets) / np.std(rets))
+
+            rng = np.random.RandomState(seed)  # reproductibilité (seed fixe)
+            # H0 : pas de drift. On RECENTRE les rendements (moyenne -> 0) puis
+            # on permute : la distribution des Sharpe sous H0 est ainsi la
+            # bonne référence (une simple permutation conserverait la moyenne
+            # et rendrait le test aveugle au drift).
+            centered = rets - np.mean(rets)
+            perm_sharpes = []
+            for _ in range(n_permutations):
+                perm = rng.permutation(centered)
+                s = float(np.mean(perm) / (np.std(perm) + 1e-12))
+                perm_sharpes.append(s)
+            perm_sharpes = np.array(perm_sharpes)
+
+            # p-value : probabilité qu'un Sharpe aléatoire dépasse l'observé
+            p_value = float(np.mean(perm_sharpes >= observed_sharpe))
+            significant = p_value < 0.05
+
+            return {
+                "observed_sharpe": round(observed_sharpe, 4),
+                "permutation_sharpe_mean": round(float(np.mean(perm_sharpes)), 4),
+                "permutation_sharpe_std": round(float(np.std(perm_sharpes)), 4),
+                "p_value": round(p_value, 4),
+                "significant": significant,
+                "n_permutations": n_permutations,
+                "seed": seed,
+            }
+        except Exception as e:
+            logger.warning(f"Bootstrap Sharpe failed: {e}")
+            return {"significant": None, "reason": str(e)}

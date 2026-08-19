@@ -307,6 +307,16 @@ window.qpLogin = async function () {
                     </div>
                 </div>
 
+                <!-- Attribution & Coûts (LOT 8) -->
+                <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">ATTRIBUTION — FACTEURS (PnL %)</p>
+                    <div id="val-attribution" class="text-[11px] text-slate-300 font-bold mt-1">calcul…</div>
+                    <div class="w-full bg-slate-950 rounded-full h-1 mt-2 overflow-hidden">
+                        <div id="bar-costs" class="bg-rose-500 h-1 rounded-full" style="width: 0%"></div>
+                    </div>
+                    <p class="text-[9px] text-slate-500 font-bold mt-1">Coûts réels: <span id="val-costs">$0.00</span> · Stress: <span id="val-stress">n/a</span></p>
+                </div>
+
                 <!-- Risk State (LOT 2) -->
                 <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
                     <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">ÉTAT RISQUE (NORMAL/CAUTION/HALT)</p>
@@ -828,6 +838,19 @@ window.qpLogin = async function () {
                     barOfi.style.width = `${(ofiVal + 1) / 2 * 100}%`;
                     barOfi.className = `h-1 rounded-full ${ofl.liquidation_cascade ? 'bg-rose-500' : ofiVal >= 0 ? 'bg-cyan-500' : 'bg-amber-500'}`;
                 }
+            }
+            // Attribution & coûts (LOT 8)
+            const attr = data.attribution_report || {};
+            const byFactor = attr.by_factor || {};
+            const factorStr = Object.entries(byFactor).map(([f, s]) => `${f}: ${(s.pnl_pct*100).toFixed(2)}%`).join(' · ');
+            safeSetText('val-attribution', factorStr || 'pas encore de trades clôturés');
+            const costs = data.cost_metrics || {};
+            safeSetText('val-costs', `$${(costs.total_costs_usd || 0).toFixed(2)} (${costs.n_trades_costed || 0} trades)`);
+            const stress = data.stress_test_report || {};
+            safeSetText('val-stress', stress.status ? `${stress.status} (pire ${stress.worst_loss_pct}%)` : 'n/a');
+            const barCosts = document.getElementById('bar-costs');
+            if (barCosts && costs.total_costs_usd) {
+                barCosts.style.width = `${Math.min(100, costs.total_costs_usd / 100)}%`;
             }
             // Risk State (LOT 2)
             const rs = data.risk_state || {};

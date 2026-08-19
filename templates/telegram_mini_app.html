@@ -756,6 +756,18 @@
                     <div class="font-bold text-sm">${(() => { const rs = telemetry.risk_state || {}; const e = {NORMAL:'🟢', CAUTION:'🟠', HALT:'🔴'}[rs.state] || '⚪'; return e + ' ' + (rs.state || 'NORMAL') + ' · ' + Math.round((rs.scale_factor ?? 1) * 100) + '%' + (rs.reason ? ' (' + rs.reason + ')' : ''); })()}</div>
                 </div>
                 <div>
+                    <div class="text-zinc-400">Coûts réels</div>
+                    <div class="font-bold text-sm">${(() => { const c = telemetry.cost_metrics || {}; return '$' + (c.total_costs_usd ?? 0).toFixed(2) + ' (' + (c.n_trades_costed ?? 0) + ' trades)'; })()}</div>
+                </div>
+                <div>
+                    <div class="text-zinc-400">Sharpe / Sortino</div>
+                    <div class="font-bold text-sm">${(() => { const q = telemetry.quality_metrics || {}; return (q.sharpe ?? 'n/a') + ' / ' + (q.sortino ?? 'n/a'); })()}</div>
+                </div>
+                <div>
+                    <div class="text-zinc-400">Stress crises</div>
+                    <div class="font-bold text-sm">${(() => { const s = telemetry.stress_test_report || {}; return s.status ? s.status + ' (pire: ' + s.worst_loss_pct + '%)' : 'n/a'; })()}</div>
+                </div>
+                <div>
                     <div class="text-zinc-400">Regime</div>
                     <div class="font-bold text-sm">${telemetry.regime_name || 'Unknown'}</div>
                 </div>

@@ -95,7 +95,13 @@ def compute_health_score(state: Dict, db) -> int:
 
 
 def build_daily_report(state: Dict, db) -> Dict:
-    """P&L report: per strategy, per asset, per mode + positions + risk."""
+    """P&L report: per strategy, per asset, per mode + positions + risk.
+
+    LOT 8 (PDF Pilier Q) : enrichi avec les métriques de qualité
+    (Sharpe/Sortino/Calmar/expectancy), l'attribution par facteur/régime
+    et les coûts réels (Pilier O) — le rapport répond « ce dollar vient du
+    momentum BTC en régime haussier ».
+    """
     mode = state.get("mode", "DEMO")
     initial_cap = state.get("initial_capital_demo" if mode == "DEMO" else "initial_capital_real", 0.0) or 0.0
     equity = state.get("current_equity", 0.0) or 0.0
@@ -181,6 +187,16 @@ def build_daily_report(state: Dict, db) -> Dict:
             "sentiment_available": state.get("sentiment_available", False),
             "data_quality": state.get("data_quality_status", "UNAVAILABLE"),
         },
+        # LOT 8 (PDF Pilier Q) : métriques de qualité + attribution + coûts
+        "quality_metrics": state.get("quality_metrics", {}),
+        "attribution": {
+            "by_factor": state.get("attribution_report", {}).get("by_factor", {}),
+            "by_regime": state.get("attribution_report", {}).get("by_regime", {}),
+            "by_asset": state.get("attribution_report", {}).get("by_asset", {}),
+        },
+        "costs": state.get("cost_metrics", {}),
+        "stress_test": state.get("stress_test_report", {}),
+        "bootstrap_sharpe": state.get("bootstrap_sharpe", {}),
     }
 
 

@@ -30,6 +30,10 @@ from core.position_manager import (PositionProtection, PositionProtectionStore,
                                      can_pyramid, position_age_hours)
 from core.portfolio_allocator import PortfolioAllocator
 from core.counterparty_risk import CounterpartyRiskManager
+from core.cost_accounting import CostAccounting
+from core.attribution import PerformanceAttribution, quality_metrics
+from models.scenario_stress import ScenarioStressTester, CRISIS_SCENARIOS
+from backtester.bias_audit import audit_backtest
 from core.volatility_targeting import volatility_scale_factor
 from core.signal_library import SIGNAL_LIBRARY, evaluate_all_signals, evaluate_signal
 from core.execution_router import ExecutionAlpha, SlippageModel, decide_style
@@ -108,6 +112,15 @@ async def lifespan(app):
 
 app = FastAPI(title="Institutional AI Trading Platform", version="1.0.0", docs_url="/api/docs", redoc_url="/api/redoc",
               lifespan=lifespan)
+
+
+@app.exception_handler(Exception)
+async def _global_exception_handler(request, exc):
+    """LOT 8 : handler global — loggue le traceback complet (diagnostic)."""
+    import traceback
+    logger.error(f"⚠️ EXCEPTION GLOBALE sur {request.method} {request.url.path}: {exc}\n{traceback.format_exc()}")
+    from fastapi.responses import JSONResponse
+    return JSONResponse(status_code=500, content={"detail": f"Internal error: {exc}"})
 # Institutional middleware (audit B2/B3): request logging, security headers, rate limits, CORS
 app.add_middleware(LoginRateLimitMiddleware)
 app.add_middleware(IPRateLimitMiddleware)
@@ -252,6 +265,9 @@ from core.dynamic_capital_allocator import DynamicCapitalAllocator
 capital_allocator = DynamicCapitalAllocator(base_exposure=0.68, max_exposure=0.92, min_exposure=0.28)
 portfolio_allocator = PortfolioAllocator()  # LOT 6: allocation top-down en cascade (PDF Pilier L)
 counterparty_risk = CounterpartyRiskManager()  # LOT 7: risque de contrepartie par exchange (PDF Pilier P)
+cost_accounting = CostAccounting()            # LOT 8: coût réel par trade + portage (PDF Pilier O)
+attribution = PerformanceAttribution()        # LOT 8: attribution par facteur/régime/actif (PDF Pilier Q)
+scenario_tester = ScenarioStressTester()      # LOT 8: stress par crises réelles (PDF Pilier N)
 logger.info("✅ LOT 50: Dynamic Capital Allocator initialized")
 
 # === LOT 52: Trade Journal (with Notes + Screenshots) ===
@@ -474,6 +490,11 @@ STATE = {
     "decision_log": [],               # LOT 7: journal des décisions (méta-attribution)
     "reason_weights": {},             # LOT 7: poids des raisons (méta-attribution)
     "reason_weights_factor": 1.0,     # LOT 7: facteur global des raisons
+    "cost_metrics": {},               # LOT 8: coûts réels (télémétrie)
+    "attribution_report": {},         # LOT 8: attribution performance
+    "quality_metrics": {},            # LOT 8: Sharpe/Sortino/Calmar/expectancy
+    "stress_test_report": {},         # LOT 8: crises réelles rejouées
+    "bootstrap_sharpe": {},           # LOT 8: Sharpe vs chance
     "consultative_mode": os.getenv("CONSULTATIVE_MODE", "").lower() == "true",
     "chaos_until": 0.0,               # §5c
     "background_tasks": {},           # LOT 7: registre des tâches de fond (watchdog)
@@ -599,6 +620,15 @@ def record_closed_trade(symbol: str, exit_price: float, side: str) -> None:
             pass
     except Exception as _ae:
         logger.debug(f"Counterfactual alpha / MoE record failed: {_ae}")
+    # LOT 8 (PDF Pilier Q) : attribution de performance — chaque dollar est
+    # tracé (facteur, régime, actif, stratégie) + post-mortem.
+    try:
+        attribution.record(symbol, strategy, pnl_pct,
+                           regime_name=STATE.get("regime_name", ""),
+                           pnl_usd=pnl_pct * 0.01 * STATE.get("current_equity", 0.0))
+        STATE["attribution_report"] = attribution.full_report()
+    except Exception:
+        pass
     # LOT 7 (PDF Pilier K) : journal des décisions pour la méta-attribution
     # (quelles raisons gagnent ?) -> réduit automatiquement le poids des
     # mauvaises raisons.
@@ -1702,6 +1732,24 @@ async def autonomous_ai_scheduler():
                         logger.warning(f"🧟 Experts MoE mis en sommeil: {_sleepy}")
                 except Exception:
                     pass
+                # LOT 8 (PDF Pilier N/Q) : métriques de qualité + stress crises
+                # réelles + bootstrap du Sharpe (chaque cycle autonome)
+                try:
+                    _eq = STATE["equity_history_demo"] if STATE["mode"] == "DEMO" else STATE["equity_history_real"]
+                    _trades = attribution.trades[-200:]
+                    _qm = quality_metrics(_eq, _trades)
+                    STATE["quality_metrics"] = _qm
+                    # Stress test : crises réelles sur le portefeuille complet
+                    _positions = db.get_positions()
+                    _prices = STATE.get("last_known_prices", {})
+                    STATE["stress_test_report"] = scenario_tester.run_stress(
+                        _positions, STATE[active_balance_key], _prices)
+                    # Bootstrap : le Sharpe observé est-il dû à la chance ?
+                    if len(_eq) >= 30:
+                        STATE["bootstrap_sharpe"] = monte_carlo_tester.bootstrap_sharpe_significance(
+                            _eq, n_permutations=1000, seed=42)
+                except Exception as _qe:
+                    logger.debug(f"Quality metrics/stress failed: {_qe}")
                 # LOT 7 (PDF Pilier K) : méta-attribution -> RÉDUCTION AUTOMATIQUE
                 # du poids des mauvaises raisons (quelles raisons gagnent ?)
                 try:
@@ -4320,6 +4368,22 @@ async def live_trading_loop():
                                     order_type="MARKET"
                                 )
                                 platform_metrics.ORDERS_TOTAL.labels(mode=active_mode, side=side).inc()
+                                # LOT 8 (PDF Pilier O) : coût RÉEL du trade (frais +
+                                # slippage réalisé) tracé et retranché du PnL.
+                                try:
+                                    _fee_rate = 0.001
+                                    if _paper_fee is not None:
+                                        _fee_rate = _paper_fee / max(order_cost, 1e-9)
+                                    _slip_bps = execution_alpha.avg_slippage_bps(_style if "_style" in dir() else None)
+                                    cost_accounting.record_trade_cost(
+                                        symbol=symbol, side=side, qty=trade_qty_formatted,
+                                        price=execution_price, fee_rate=_fee_rate,
+                                        slippage_bps=_slip_bps if _slip_bps else 5.0,
+                                        style=_style if "_style" in dir() else "market",
+                                        venue="Binance" if symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT") else "Bybit")
+                                    STATE["cost_metrics"] = cost_accounting.to_dict()
+                                except Exception:
+                                    pass
                                 # LOT 6 : compteur de pyramiding (ajout sur position existante)
                                 try:
                                     if pos_qty != 0.0 and (pos_qty * new_qty) > 0:
@@ -4461,6 +4525,18 @@ async def live_trading_loop():
         STATE[active_equity_history_key].append(net_equity)
         if len(STATE[active_equity_history_key]) > 100:
             STATE[active_equity_history_key].pop(0)
+
+        # LOT 8 (PDF Pilier O) : coût de PORTAGE (funding) des positions tenues
+        # — une position longue peut être perdante NET même si le prix monte.
+        try:
+            for _p in db.get_positions():
+                _fr = STATE.get("funding_rates", {}).get(_p["symbol"])
+                _px = STATE.get("last_known_prices", {}).get(_p["symbol"])
+                if _fr is not None and _px:
+                    cost_accounting.apply_funding_to_position(_p["symbol"], _p["qty"], _px, _fr)
+            STATE["cost_metrics"] = cost_accounting.to_dict()
+        except Exception:
+            pass
 
         STATE["last_tick_ts"] = time.time()  # health-score heartbeat
 
@@ -4671,6 +4747,14 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
     current_eq = STATE["current_equity"]
     
     live_pnl_usd = current_eq - initial_cap if initial_cap > 0 else 0.0
+    # LOT 8 (PDF Pilier O) : PnL NET — les coûts RÉELS (frais + slippage +
+    # impact + gas + funding) sont retranchés du PnL affiché. Mentalité n°2 :
+    # l'edge est net des coûts.
+    try:
+        _costs = float(cost_accounting.total_costs_usd)
+        live_pnl_usd -= _costs
+    except Exception:
+        pass
     live_pnl_pct = (live_pnl_usd / initial_cap) * 100.0 if initial_cap > 0 else 0.0
     
     # Packaged JSON (Passed through serialize_helper to resolve any PostgreSQL datetime serialization mismatches!)
@@ -4762,6 +4846,11 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "counterparty": counterparty_risk.to_dict(),
         "reason_weights": STATE.get("reason_weights", {}),
         "reason_weights_factor": STATE.get("reason_weights_factor", 1.0),
+        "cost_metrics": STATE.get("cost_metrics", {}),
+        "attribution_report": STATE.get("attribution_report", {}),
+        "quality_metrics": STATE.get("quality_metrics", {}),
+        "stress_test_report": STATE.get("stress_test_report", {}),
+        "bootstrap_sharpe": STATE.get("bootstrap_sharpe", {}),
         "watchdog": {
             "tasks_monitored": list(_BG_TASKS.keys()),
             "tasks_alive": sum(1 for t in _BG_TASKS.values() if t and not t.done()),
@@ -5293,6 +5382,41 @@ async def manage_copytrade(payload: CopyTradeRequest, _auth: dict = Depends(requ
         raise HTTPException(status_code=400, detail=msg)
 
 
+@app.get("/api/v1/attribution")
+async def api_v1_attribution(_auth: dict = Depends(require_auth)):
+    """
+    LOT 8 (PDF Pilier Q) : attribution de performance — d'où vient chaque
+    dollar (facteur, régime, actif, stratégie) + métriques de qualité.
+    """
+    return {
+        "attribution": STATE.get("attribution_report", {}),
+        "quality_metrics": STATE.get("quality_metrics", {}),
+        "costs": STATE.get("cost_metrics", {}),
+        "ts": time.time(),
+    }
+
+
+@app.post("/api/v1/stress")
+async def api_v1_stress(_auth: dict = Depends(require_auth)):
+    """
+    LOT 8 (PDF Pilier N) : stress test par SCÉNARIOS de crises RÉELLES
+    (COVID 2020, krach 2018, FTX 2022) sur le portefeuille COMPLET.
+    """
+    try:
+        _positions = db.get_positions()
+        _prices = STATE.get("last_known_prices", {})
+        _bal = STATE["balance_demo"] if STATE["mode"] == "DEMO" else STATE["balance_real"]
+        _res = scenario_tester.run_stress(_positions, _bal, _prices)
+        STATE["stress_test_report"] = _res
+        db.add_audit_log("STRESS_TEST", audit_ip(),
+                         f"Stress crises réelles: {_res['status']} (pire {_res['worst']} {_res['worst_loss_pct']}%)")
+        return _res
+    except Exception as e:
+        import traceback
+        logger.error(f"STRESS TEST endpoint error: {e}\n{traceback.format_exc()}")
+        return {"ok": False, "error": str(e)}
+
+
 @app.post("/api/risk-state/reset")
 async def reset_risk_state(_auth: dict = Depends(require_auth)):
     """
@@ -5365,6 +5489,27 @@ async def run_backtest_handler(_auth: dict = Depends(require_auth)):
     if df is None:
         raise HTTPException(status_code=400, detail="Historical bars not loaded yet.")
         
+    # LOT 8 (PDF Pilier N) : AUDIT DES BIAIS avant tout backtest (look-ahead,
+    # survivorship, slippage). Un backtest qui échoue à l'audit est REJETÉ.
+    try:
+        _bias = audit_backtest(
+            df,
+            assets_universe=list(STATE["assets"].keys()),
+            assets_tested=list(STATE["assets"].keys()),
+            slippage_bps=5.0,          # coûts réalistes (jamais 0)
+            commission_pct=0.001,
+        )
+        STATE["last_bias_audit"] = _bias
+        if _bias["status"] == "REJECTED":
+            db.add_audit_log("BACKTEST_BIAS_REJECTED", audit_ip(),
+                             f"Backtest rejeté: {_bias['issues']}")
+            return {"ok": False, "status": "REJECTED", "bias_audit": _bias}
+        db.add_audit_log("BACKTEST_BIAS_OK", audit_ip(),
+                         f"Audit biais passé (score {_bias['score']})")
+    except Exception as _be:
+        logger.warning(f"Bias audit failed: {_be}")
+        _bias = {"status": "UNKNOWN"}
+
     backtester = EventDrivenBacktester(initial_capital=100000.0)
     local_detector = MarketRegimeDetector()
     local_predictor = LSTMLikePredictor(5, 8)
@@ -5395,6 +5540,9 @@ async def run_backtest_handler(_auth: dict = Depends(require_auth)):
         local_predictor,
         local_ppo
     )
+    # LOT 8 (PDF Pilier N) : le rapport de backtest inclut l'audit des biais
+    if isinstance(metrics, dict):
+        metrics["bias_audit"] = _bias
     return JSONResponse(metrics)
 
 
