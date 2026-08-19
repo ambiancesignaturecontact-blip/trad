@@ -117,6 +117,14 @@ flowchart LR
 - `secret.key` et `trading_platform.db` sont **exclus du dépôt** (`.gitignore`).
 - Audit-logs chaînés (hash SHA-256).
 - Gates de sécurité REAL : aucune donnée → aucun ordre (`HALT`).
+- **Auth forcée automatiquement sur tout déploiement non-local** (Railway détecté
+  via `PORT` / `RAILWAY_*`) : les routes d'action exigent alors un JWT même en DEMO —
+  définissez `ADMIN_USER`, `ADMIN_PASSWORD` et `JWT_SECRET_KEY`. En local, si
+  `AUTH_ENABLED` est vide, l'accès reste libre (mode démo).
+- Les secrets (JWT auto-généré, mot de passe admin auto-généré) ne sont **jamais
+  loggés en clair** : le mot de passe admin auto-généré est livré par Telegram DM
+  (si `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`) ou via le fichier
+  `.admin_credentials` (0600, exclu du dépôt) — à supprimer après première connexion.
 
 ## 🗺️ Feuille de route (non bloquant)
 

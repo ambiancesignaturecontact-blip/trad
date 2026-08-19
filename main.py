@@ -22,6 +22,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
 from typing import List, Dict
+from pathlib import Path
 from core.middleware import (RequestLoggingMiddleware, SecurityHeadersMiddleware,
                              IPRateLimitMiddleware, LoginRateLimitMiddleware, install_cors)
 from core.position_manager import (PositionProtection, PositionProtectionStore,
@@ -727,14 +728,41 @@ def update_asset_order_book(symbol: str, bids: list, asks: list, exchange: str =
 
 
 
+def _is_remote_deployment() -> bool:
+    """
+    P0-2 (audit indépendant §2.9): détecte un déploiement non-local.
+    Considéré non-local si une variable RAILWAY_* est présente (Railway) ou si
+    PORT est défini dans l'environnement (convention PaaS/Railway) — une URL
+    publique est alors exposée et l'authentification devient OBLIGATOIRE.
+    """
+    if any(k.startswith("RAILWAY_") for k in os.environ):
+        return True
+    port = os.getenv("PORT", "").strip()
+    return port.isdigit() and int(port) > 0
+
+
+def auth_enforced() -> bool:
+    """
+    L'authentification est-elle exigée sur les routes d'action ?
+     - AUTH_ENABLED=true explicite, OU
+     - mode REAL (argent réel : jamais contrôlable sans session), OU
+     - déploiement non-local (PORT/RAILWAY_* -> URL publique, P0-2).
+    """
+    if os.getenv("AUTH_ENABLED", "").lower() == "true":
+        return True
+    if STATE["mode"] == "REAL":
+        return True
+    return _is_remote_deployment()
+
+
 def require_auth(credentials=Depends(auth_security_optional)):
     """
     Protects state-changing endpoints.
-    Enforced when AUTH_ENABLED=true OR when the platform runs in REAL mode
-    (institutional rule: real money can never be controlled without a session).
+    Enforced when AUTH_ENABLED=true, OR in REAL mode, OR on any non-local
+    deployment (P0-2: PORT/RAILWAY_* -> an exposed URL must never be open
+    without authentication, even in DEMO mode).
     """
-    auth_required = os.getenv("AUTH_ENABLED", "").lower() == "true" or STATE["mode"] == "REAL"
-    if not auth_required:
+    if not auth_enforced():
         return {"role": Roles.ADMIN, "username": "local-demo", "sub": "1"}
     if credentials is None or not getattr(credentials, "credentials", None):
         raise HTTPException(status_code=401, detail="Authentication required")
@@ -1572,6 +1600,129 @@ def launch_named(coro, name: str):
     return task
 
 
+def _telegram_send_sync(token: str, chat_id: str, text: str) -> bool:
+    """Envoi Telegram best-effort synchrone (canal dédié pour un secret au boot).
+    Ne lève jamais : retourne False en cas d'échec."""
+    try:
+        with httpx.Client(timeout=10) as client:
+            resp = client.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat_id, "text": text},
+            )
+            return resp.status_code == 200
+    except Exception:
+        return False
+
+
+def _deliver_admin_password_once(admin_pass: str, creds_path: str = None) -> str:
+    """
+    P0-3 (audit indépendant §2.10): livre le mot de passe admin auto-généré par
+    un canal dédié — JAMAIS dans les logs applicatifs (les logs sont souvent
+    centralisés/exportés vers des tiers).
+    Ordre : 1) Telegram DM si TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID configurés,
+            2) fichier .admin_credentials en mode 0600, 3) aucun canal.
+    Retourne "telegram" | "file" | "none".
+    """
+    tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+    tg_chat = os.getenv("TELEGRAM_CHAT_ID", "")
+    if tg_token and tg_chat:
+        try:
+            ok = _telegram_send_sync(
+                tg_token,
+                tg_chat,
+                "🔐 QUANT-PORTAL : mot de passe admin auto-généré "
+                "(secret — ne pas partager, ne pas logger).\n"
+                "username=admin_quant\n"
+                f"password={admin_pass}\n"
+                "Définissez ADMIN_PASSWORD (env) puis redémarrez pour le remplacer.",
+            )
+            if ok:
+                return "telegram"
+        except Exception:
+            pass
+    path = Path(creds_path) if creds_path else Path(os.path.dirname(os.path.abspath(__file__))) / ".admin_credentials"
+    try:
+        path.write_text(
+            "# QUANT-PORTAL — mot de passe admin auto-généré (SECRET).\n"
+            "# Ne jamais committer, logger ni partager. Supprimez ce fichier après\n"
+            "# la première connexion et définissez ADMIN_PASSWORD (env) à la place.\n"
+            f"username=admin_quant\npassword={admin_pass}\n",
+            encoding="utf-8",
+        )
+        os.chmod(path, 0o600)
+        return "file"
+    except Exception:
+        return "none"
+
+
+def _ensure_auth_secrets(creds_path: str = None) -> None:
+    """
+    Audit B3-3/B3-4 + P0-2/P0-3 : auto-génère des secrets forts au premier boot
+    (jamais de défaut prévisible), les persiste chiffrés en DB et injecte dans
+    l'environnement. Ne JAMAIS logguer un secret en clair : le mot de passe
+    admin auto-généré est livré via _deliver_admin_password_once() uniquement.
+    """
+    import secrets as _secrets
+    import bcrypt as _bcrypt
+
+    # ---- JWT secret: reuse persisted or generate strong ----
+    jwt_secret = os.getenv("JWT_SECRET_KEY", "")
+    if len(jwt_secret) < 24:
+        persisted = db.get_setting("jwt_secret_key", decrypt=True)
+        if persisted and len(persisted) >= 24:
+            jwt_secret = persisted
+        else:
+            jwt_secret = _secrets.token_urlsafe(48)
+            db.save_setting("jwt_secret_key", jwt_secret, encrypt=True)
+            logger.warning(
+                "🔐 AUTH: auto-generated a strong JWT_SECRET_KEY and stored it "
+                "encrypted in the DB. Set JWT_SECRET_KEY env to override."
+            )
+        os.environ["JWT_SECRET_KEY"] = jwt_secret
+
+    # ---- Admin password: reuse persisted hash or generate + upsert ----
+    admin_pass = os.getenv("ADMIN_PASSWORD", "")
+    if not admin_pass or admin_pass == "ChangeMe!Institutionnel2026":
+        persisted_hash = db.get_user("admin_quant")
+        if persisted_hash and persisted_hash.get("password_hash", "").startswith("$2"):
+            # a real bcrypt hash already exists in the DB -> rely on it
+            logger.warning(
+                "🔐 AUTH: ADMIN_PASSWORD env not set - using the bcrypt hash "
+                "already stored in the users table. Set ADMIN_PASSWORD to override."
+            )
+        else:
+            admin_pass = _secrets.token_urlsafe(12)
+            hashed = _bcrypt.hashpw(admin_pass.encode(), _bcrypt.gensalt()).decode()
+            db.upsert_admin(hashed, Roles.ADMIN)
+            os.environ["ADMIN_PASSWORD"] = admin_pass
+            # P0-3: le secret n'apparaît JAMAIS dans les logs — canal dédié.
+            delivered = _deliver_admin_password_once(admin_pass, creds_path)
+            if delivered == "telegram":
+                logger.warning(
+                    "🔐 AUTH: auto-generated admin password — livré par Telegram "
+                    "(jamais loggé). Définissez ADMIN_PASSWORD env pour le remplacer."
+                )
+            elif delivered == "file":
+                logger.warning(
+                    "🔐 AUTH: auto-generated admin password — écrit dans "
+                    ".admin_credentials (0600, jamais loggé). Supprimez ce fichier "
+                    "après la première connexion et définissez ADMIN_PASSWORD env."
+                )
+            else:
+                logger.warning(
+                    "🔐 AUTH: auto-generated admin password (jamais loggé, aucun "
+                    "canal de livraison configuré). Définissez ADMIN_PASSWORD env "
+                    "pour garder la main sur l'accès."
+                )
+    else:
+        # env password provided: make sure the DB hash is in sync
+        try:
+            hashed = _bcrypt.hashpw(admin_pass.encode(), _bcrypt.gensalt()).decode()
+            db.upsert_admin(hashed, Roles.ADMIN)
+        except Exception:
+            pass
+
+
 def validate_startup_config():
     """
     LOT 62: Institutional startup configuration checklist.
@@ -1625,6 +1776,15 @@ def validate_startup_config():
     else:
         checks.append(("DeFi EVM wallet", "not configured (CEX routing only)"))
 
+    # 5. Authentication (P0-2 audit indépendant §2.9)
+    production_auth = auth_enforced()
+    if _is_remote_deployment():
+        checks.append(("Authentication", "FORCED on (non-local deployment detected)"))
+    elif production_auth:
+        checks.append(("Authentication", "on (AUTH_ENABLED=true or REAL mode)"))
+    else:
+        checks.append(("Authentication", "off (local DEMO only)"))
+
     logger.info("========== STARTUP CONFIGURATION CHECKLIST (LOT 62) ==========")
     for name, status in checks:
         logger.info(f"[CONFIG] {name:<32} -> {status}")
@@ -1637,58 +1797,11 @@ def validate_startup_config():
             "strictly forbidden in production. Configure SUPABASE_DB_URL first."
         )
 
-    # Audit B3-3/B3-4: never run with DEFAULT secrets when auth is enforced.
-    # Instead of hard-blocking startup (which broke Railway deploys without env
-    # secrets), we AUTO-GENERATE strong secrets on first boot, persist them in the
-    # DB (encrypted) and inject them into the environment. This keeps the system
-    # secure (no predictable defaults) while being zero-config to run.
-    production_auth = os.getenv("AUTH_ENABLED", "").lower() == "true" or STATE["mode"] == "REAL"
+    # Audit B3-3/B3-4 + P0-2/P0-3 (audit indépendant §2.9/§2.10): jamais de
+    # secrets par défaut prévisibles ; AUTH forcée sur tout déploiement
+    # non-local (PORT/RAILWAY_* -> URL publique) ; aucun secret loggé en clair.
     if production_auth:
-        import secrets as _secrets
-        import bcrypt as _bcrypt
-
-        # ---- JWT secret: reuse persisted or generate strong ----
-        jwt_secret = os.getenv("JWT_SECRET_KEY", "")
-        if len(jwt_secret) < 24:
-            persisted = db.get_setting("jwt_secret_key", decrypt=True)
-            if persisted and len(persisted) >= 24:
-                jwt_secret = persisted
-            else:
-                jwt_secret = _secrets.token_urlsafe(48)
-                db.save_setting("jwt_secret_key", jwt_secret, encrypt=True)
-                logger.warning(
-                    "🔐 AUTH: auto-generated a strong JWT_SECRET_KEY and stored it "
-                    "encrypted in the DB. Set JWT_SECRET_KEY env to override."
-                )
-            os.environ["JWT_SECRET_KEY"] = jwt_secret
-
-        # ---- Admin password: reuse persisted hash or generate + upsert ----
-        admin_pass = os.getenv("ADMIN_PASSWORD", "")
-        if not admin_pass or admin_pass == "ChangeMe!Institutionnel2026":
-            persisted_hash = db.get_user("admin_quant")
-            if persisted_hash and persisted_hash.get("password_hash", "").startswith("$2"):
-                # a real bcrypt hash already exists in the DB -> rely on it
-                logger.warning(
-                    "🔐 AUTH: ADMIN_PASSWORD env not set - using the bcrypt hash "
-                    "already stored in the users table. Set ADMIN_PASSWORD to override."
-                )
-            else:
-                admin_pass = _secrets.token_urlsafe(12)
-                hashed = _bcrypt.hashpw(admin_pass.encode(), _bcrypt.gensalt()).decode()
-                db.upsert_admin(hashed, Roles.ADMIN)
-                os.environ["ADMIN_PASSWORD"] = admin_pass
-                logger.warning(
-                    f"🔐 AUTH: auto-generated admin password. THIS IS SHOWN ONCE - "
-                    f"save it now and set ADMIN_PASSWORD env to override. "
-                    f"username=admin_quant password={admin_pass}"
-                )
-        else:
-            # env password provided: make sure the DB hash is in sync
-            try:
-                hashed = _bcrypt.hashpw(admin_pass.encode(), _bcrypt.gensalt()).decode()
-                db.upsert_admin(hashed, Roles.ADMIN)
-            except Exception:
-                pass
+        _ensure_auth_secrets()
 
 
 async def autonomous_ai_scheduler():
@@ -3473,6 +3586,18 @@ async def live_trading_loop():
                                         audit_ip(),
                                         f"Cross-Venue {symbol} arbitrage broadcast on-chain. Tx: {bcast.get('tx_hash', '?')}"
                                     )
+                                    # P0-1 (audit §2.3): message honnête — la tx est
+                                    # broadcastée mais AUCUNE protection anti-sandwich
+                                    # on-chain n'est active (contrat non déployé).
+                                    await telegram_bot.send_push_notification(
+                                        f"✅ *ARBITRAGE DEX-CEX EXÉCUTÉ* (broadcast on-chain)\n"
+                                        f"-----------------------------------------\n"
+                                        f"📈 Actif : `{symbol}`\n"
+                                        f"⚖️ Route : *{route}*\n"
+                                        f"📊 Écart : *{spread*100:.2f}%* — gain net estimé : *+{profit_pct*100:.2f}%*\n"
+                                        f"🔗 Tx : `{bcast.get('tx_hash', 'voir audit log')}`\n"
+                                        f"⚠️ Aucune protection anti-sandwich on-chain active."
+                                    )
                                 else:
                                     db.add_audit_log(
                                         "DEX_CEX_ARBITRAGE_BROADCAST_FAILED",
@@ -3490,13 +3615,15 @@ async def live_trading_loop():
                                 f"Cross-Venue {symbol} arbitrage detected. Route: {route} (Spread: {spread*100:.2f}%)."
                             )
                             await telegram_bot.send_push_notification(
-                                f"🏆 *ARBITRAGE DEX-CEX CAPTURÉ*\n"
+                                f"🔎 *ARBITRAGE DEX-CEX DÉTECTÉ — NON EXÉCUTÉ (signal-only)*\n"
                                 f"-----------------------------------------\n"
                                 f"📈 Actif : `{symbol}`\n"
-                                f"⚖️ Route : *{route}*\n"
-                                f"📊 Écart de prix : *{spread*100:.2f}%*\n"
-                                f"💵 Gain net estimé : *+{profit_pct*100:.2f}% (net de gaz)*\n"
-                                f"🛡️ Protection : *MevShield On-Chain active*"
+                                f"⚖️ Route : *{route}* (écart {spread*100:.2f}%)\n"
+                                f"💵 Gain net estimé si exécuté : *+{profit_pct*100:.2f}% (net de gaz)*\n"
+                                f"ℹ️ Exécution désactivée : mode signal-only "
+                                f"(ARBITRAGE_EXECUTION={arb_exec_mode}). Réglez "
+                                f"ARBITRAGE_EXECUTION=auto + EVM_PRIVATE_KEY pour une "
+                                f"vraie exécution."
                             )
                     else:
                         logger.warning(f"Skipping arbitrage check for {symbol} due to unavailable Bybit secondary price feed.")

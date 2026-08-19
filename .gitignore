@@ -6,6 +6,7 @@ __pycache__/
 # Database and Security files (Strictly excluded to prevent key leakage!)
 trading_platform.db
 secret.key
+.admin_credentials
 
 # Environments
 .env
