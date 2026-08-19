@@ -192,7 +192,7 @@ class TelegramBotManager:
                 for p in pending:
                     try:
                         _submit(p["symbol"], p["side"], p["qty"], p["price"], p["mode"], p["strategy"])
-                        _db.add_audit_log("APPROVED_ORDER", "127.0.0.1",
+                        _db.add_audit_log("APPROVED_ORDER", "telegram",
                                           f"Telegram approved {p['side']} {p['qty']} {p['symbol']} ({p['strategy']})")
                         approved += 1
                     except Exception as e:
@@ -270,7 +270,7 @@ class TelegramBotManager:
                 if self.db:
                     self.db.add_audit_log(
                         "DEMO_BALANCE_RESET_TELEGRAM", 
-                        "127.0.0.1", 
+                        "telegram", 
                         f"Demo balance has been manually reset to {amount} USD via Telegram."
                     )
                     
@@ -464,7 +464,7 @@ class TelegramBotManager:
                     logger.error(f"Emergency close failed for {p['symbol']} via Telegram: {str(exc)}")
                     
             if self.db:
-                self.db.add_audit_log("KILL_SWITCH_ENGAGED_TELEGRAM", "127.0.0.1", "Global KILL SWITCH activated via Telegram remote control.")
+                self.db.add_audit_log("KILL_SWITCH_ENGAGED_TELEGRAM", "telegram", "Global KILL SWITCH activated via Telegram remote control.")
                 
             await self.send_push_notification(
                 "🚨 *URGENCE : KILL SWITCH DÉCLENCHÉ VIA TELEGRAM !*\n\n"

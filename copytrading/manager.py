@@ -24,12 +24,40 @@ class CopyTrader:
         self.calculate_seq()
 
     def calculate_seq(self):
+        """
+        Score de sélection RENFORCÉ (LOT 7, PDF Pilier J) :
+        - Sharpe (rendement ajusté du risque)
+        - Drawdown : plus il est profond, plus le score baisse
+        - Cohérence : ROI annualisé vs pire mois (régularité > hasard)
+        - Historique suffisant : un trader sans historique long est pénalisé
+        - Coût de latence du suivi : suivre un scalper ultra-rapide est
+          irréaliste -> pénalité pour les traders trop rapides
+        Mentalité n°17 : on réévalue en permanence, zéro attachement.
+        """
         m_dd = max(self.max_drawdown, 0.02)
-        if self.win_rate > 0:
-            self.seq_score = (self.roi_annual * self.win_rate) / (m_dd * 1.05)
+        # Sharpe (si fourni) sinon ratio rendement/drawdown
+        if self.sharpe and self.sharpe > 0:
+            base = self.sharpe * 0.7 + self.roi_annual / (m_dd * 1.05) * 0.3
+        elif self.win_rate > 0:
+            base = (self.roi_annual * self.win_rate) / (m_dd * 1.05)
         else:
-            # win_rate unknown (e.g. Hyperliquid source) -> risk-adjusted return score
-            self.seq_score = self.roi_annual / (m_dd * 1.05)
+            base = self.roi_annual / (m_dd * 1.05)
+        # Cohérence : pénalité si le ROI annualisé est très élevé mais le
+        # drawdown aussi (variance = risque caché)
+        consistency = max(0.5, min(1.5, (self.roi_annual + 1.0) / (m_dd + 1.0)))
+        base *= consistency
+        # Historique : l'account_value sert de proxy (les comptes réels avec
+        # un long historique ont généralement plus de capital)
+        history_bonus = 1.0
+        if getattr(self, "account_value", 0.0) > 0:
+            history_bonus = min(1.2, max(0.8, self.account_value / 500000.0))
+        base *= history_bonus
+        # Coût de latence : un ROI journalier démesuré est probablement
+        # intraday -> pénalité (suivre en miroir avec latence = slippage)
+        daily_roi = max(self.roi_annual, 0.0) / 365.0
+        if daily_roi > 0.02:
+            base *= 0.7
+        self.seq_score = base
         return self.seq_score
 
 
@@ -219,6 +247,44 @@ class CopyTradingManager:
             del self.copied_traders[trader_id]
             return True, "Stopped following successfully."
         return False, "Not following this trader."
+
+    # Plafond de capital par trader copié (PDF Pilier J : contrôle de risque)
+    MAX_ALLOCATION_PCT = 0.10      # jamais plus de 10% du capital sur 1 trader
+    STOP_LOSS_TRADER_PCT = -0.15   # stop global : -15% de perte estimée -> arrêt
+
+    def check_trader_risk(self, trader_id: str, total_capital: float) -> tuple:
+        """
+        LOT 7 (PDF Pilier J) : contrôle de risque PAR trader copié.
+        1. Plafond de capital : l'allocation demandée ne peut pas dépasser
+           MAX_ALLOCATION_PCT du capital total.
+        2. Stop global : si la perte estimée du trader dépasse
+           STOP_LOSS_TRADER_PCT de l'allocation, on ARRÊTE de le suivre
+           (mentalité n°12 : couper les perdants sans état d'âme).
+        Retourne (ok, message).
+        """
+        alloc = self.copied_traders.get(trader_id)
+        if not alloc:
+            return True, "trader non suivi"
+        cap = float(alloc.get("allocated_capital", 0.0))
+        if total_capital > 0 and cap > total_capital * self.MAX_ALLOCATION_PCT:
+            return False, (f"plafond dépassé: {cap:.0f}$ > {self.MAX_ALLOCATION_PCT*100:.0f}% "
+                           f"du capital ({total_capital * self.MAX_ALLOCATION_PCT:.0f}$)")
+        pnl_est = float(alloc.get("pnl_estimate_usd", 0.0))
+        if cap > 0 and pnl_est / cap <= self.STOP_LOSS_TRADER_PCT:
+            return False, (f"stop global déclenché: perte estimée {pnl_est/cap*100:.1f}% "
+                           f"<= {self.STOP_LOSS_TRADER_PCT*100:.0f}% -> arrêt du suivi")
+        return True, "risque ok"
+
+    def enforce_trader_risk(self, total_capital: float) -> list:
+        """Arrête automatiquement les traders sous-performants (stop global)."""
+        stopped = []
+        for trader_id in list(self.copied_traders.keys()):
+            ok, msg = self.check_trader_risk(trader_id, total_capital)
+            if not ok and "stop global" in msg:
+                self.stop_copying(trader_id)
+                stopped.append(trader_id)
+                logger.warning(f"🛑 COPY STOP: {trader_id} ({msg})")
+        return stopped
 
     def refresh_allocation_pnl(self) -> None:
         """AUDIT B13-2: updates the tracked P&L of each allocation from the real

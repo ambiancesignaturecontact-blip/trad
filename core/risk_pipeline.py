@@ -72,6 +72,7 @@ RISK_PIPELINE_ORDER: List[str] = [
     "regime_confidence",# 9bis. Certitude du régime + causalité        [mul]
     "capacity",        # 9ter. Capacité (1% volume 24h, Pilier L)     [mul]
     "cash_reserve",    # 9quater. Réserve cash (jamais 100% investi)  [mul]
+    "reason_attribution",# 9quinquies. Poids des raisons (méta-attribution) [mul]
     "order_flow",      # 10. Flux toxique (delta/CVD/VPIN/OFI)       [mul]
     "confidence",      # 11. Indice de confiance (méta-cognition)    [mul]
     "organization",    # 12. Facteur desk (organisation)             [mul]
@@ -333,6 +334,7 @@ def apply_risk_pipeline(base_qty: float,
                         regime_confidence_scale: float = 1.0,
                         capacity_scale: float = 1.0,
                         cash_reserve_scale: float = 1.0,
+                        reason_attribution_scale: float = 1.0,
                         news_scale: float = 1.0,
                         macro_scale: float = 1.0,
                         tactile_scale: float = 1.0,
@@ -367,6 +369,7 @@ def apply_risk_pipeline(base_qty: float,
         "regime_confidence": max(0.0, float(regime_confidence_scale)),
         "capacity": max(0.0, float(capacity_scale)),
         "cash_reserve": max(0.0, float(cash_reserve_scale)),
+        "reason_attribution": max(0.0, float(reason_attribution_scale)),
         "news_shock": max(0.0, float(news_scale)),
         "macro_event": max(0.0, float(macro_scale)),
         "macro_tactile": max(0.0, float(tactile_scale)),

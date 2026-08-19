@@ -57,6 +57,42 @@ def meta_attribution(decision_log: List[dict]) -> Dict[str, Dict]:
     return stats
 
 
+
+
+def reason_weight_from_attribution(attribution: Dict[str, Dict],
+                                   base_weight: float = 1.0,
+                                   min_weight: float = 0.3,
+                                   min_samples: int = 5) -> Dict[str, float]:
+    """
+    LOT 7 (PDF Pilier K) : boucle la méta-attribution (quelles raisons
+    gagnent ?) vers une RÉDUCTION AUTOMATIQUE du poids des mauvaises raisons.
+
+    Une raison avec un win rate < 50% et une contribution négative sur un
+    échantillon suffisant voit son poids réduit (jusqu'à min_weight). Les
+    raisons sans échantillon restent à base_weight (jamais de pénalité sans
+    preuve — mentalité n°20).
+
+    Retourne {reason: weight_factor}.
+    """
+    weights: Dict[str, float] = {}
+    for reason, stats in attribution.items():
+        n = int(stats.get("n", 0))
+        if n < min_samples:
+            weights[reason] = base_weight
+            continue
+        wr = float(stats.get("win_rate", 0.5))
+        avg_pnl = float(stats.get("avg_pnl", 0.0))
+        if wr < 0.5 and avg_pnl <= 0:
+            # mauvaise raison prouvée -> réduction (proportionnelle à la preuve)
+            factor = base_weight * (0.5 + 0.5 * (wr / 0.5))
+            weights[reason] = max(min_weight, factor)
+        elif wr >= 0.55:
+            # bonne raison -> léger bonus (jamais plus de 1.2x)
+            weights[reason] = min(1.2, base_weight * 1.1)
+        else:
+            weights[reason] = base_weight
+    return weights
+
 def health_honesty_component(divergence: float, base_score: int) -> int:
     """
     VISION §7c: reduce the health score when the simulation is lying.

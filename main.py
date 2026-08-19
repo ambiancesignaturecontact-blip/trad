@@ -29,6 +29,7 @@ from core.position_manager import (PositionProtection, PositionProtectionStore,
                                      apply_breakeven_stop, partial_take_profit,
                                      can_pyramid, position_age_hours)
 from core.portfolio_allocator import PortfolioAllocator
+from core.counterparty_risk import CounterpartyRiskManager
 from core.volatility_targeting import volatility_scale_factor
 from core.signal_library import SIGNAL_LIBRARY, evaluate_all_signals, evaluate_signal
 from core.execution_router import ExecutionAlpha, SlippageModel, decide_style
@@ -41,7 +42,7 @@ from core.hypothesis_generator import HypothesisGenerator
 from core.meta_cognition import (adaptive_conviction_threshold, decide_no_trade, hedging_decision)
 from core.execution_agent import ExecutionStyleBandit, tradability_factor, StrategyExecutionAttribution
 from core.risk_committee import RiskCommittee, daily_risk_budget
-from core.self_assessment import simulation_divergence, honesty_factor, meta_attribution, health_honesty_component
+from core.self_assessment import simulation_divergence, honesty_factor, meta_attribution, health_honesty_component, reason_weight_from_attribution
 from core.llm_narrative import (daily_market_narrative, explain_decision, answer_question,
                                  daily_market_narrative_async, answer_question_async)
 from core.organization import Organization
@@ -250,6 +251,7 @@ logger.info("✅ LOT 49: Execution Simulator (Slippage + Latency) initialized")
 from core.dynamic_capital_allocator import DynamicCapitalAllocator
 capital_allocator = DynamicCapitalAllocator(base_exposure=0.68, max_exposure=0.92, min_exposure=0.28)
 portfolio_allocator = PortfolioAllocator()  # LOT 6: allocation top-down en cascade (PDF Pilier L)
+counterparty_risk = CounterpartyRiskManager()  # LOT 7: risque de contrepartie par exchange (PDF Pilier P)
 logger.info("✅ LOT 50: Dynamic Capital Allocator initialized")
 
 # === LOT 52: Trade Journal (with Notes + Screenshots) ===
@@ -469,8 +471,12 @@ STATE = {
     "portfolio_allocation": {},       # LOT 6: budget top-down (Pilier L)
     "strategy_diversification": {},   # LOT 6: corrélation entre stratégies
     "position_pyramids": {},          # LOT 6: nb d'ajouts (pyramiding) par symbole
+    "decision_log": [],               # LOT 7: journal des décisions (méta-attribution)
+    "reason_weights": {},             # LOT 7: poids des raisons (méta-attribution)
+    "reason_weights_factor": 1.0,     # LOT 7: facteur global des raisons
     "consultative_mode": os.getenv("CONSULTATIVE_MODE", "").lower() == "true",
     "chaos_until": 0.0,               # §5c
+    "background_tasks": {},           # LOT 7: registre des tâches de fond (watchdog)
     "last_narrative": "",             # §3/§6
     "risk_state": {"state": "NORMAL", "reason": "", "scale_factor": 1.0},
     "risk_pipeline_steps": [],        # LOT 2: étapes du pipeline de risque (audit)
@@ -480,6 +486,22 @@ STATE = {
 # ============ INSTITUTIONAL SAFETY HELPERS (roadmap) ============
 ORDER_COOLDOWN_REAL_SECONDS = settings.get_float("trading", "order_cooldown_real_seconds", 60.0)
 ORDER_COOLDOWN_DEMO_SECONDS = settings.get_float("trading", "order_cooldown_demo_seconds", 10.0)
+
+
+# LOT 7 (PDF Faille 6) : vraie IP client pour les audit logs (plus d'IP en dur
+# dans les appels d'audit — la source réelle doit être tracée, mentalité n°9).
+_current_request_ip = ["127.0.0.1"]
+
+
+def set_request_ip(ip: str) -> None:
+    """Mémorise l'IP réelle du client courant (appelé par le middleware)."""
+    if ip and ip != "unknown":
+        _current_request_ip[0] = ip
+
+
+def audit_ip() -> str:
+    """Retourne l'IP réelle du client si disponible, sinon la dernière connue."""
+    return _current_request_ip[0]
 
 
 def set_data_quality(status):
@@ -577,6 +599,21 @@ def record_closed_trade(symbol: str, exit_price: float, side: str) -> None:
             pass
     except Exception as _ae:
         logger.debug(f"Counterfactual alpha / MoE record failed: {_ae}")
+    # LOT 7 (PDF Pilier K) : journal des décisions pour la méta-attribution
+    # (quelles raisons gagnent ?) -> réduit automatiquement le poids des
+    # mauvaises raisons.
+    try:
+        _log = STATE.setdefault("decision_log", [])
+        _log.append({
+            "reasons": list(STATE.get("last_reasoning", []))[:5] or [strategy],
+            "pnl": round(pnl_pct, 6),
+            "symbol": symbol,
+            "ts": time.time(),
+        })
+        if len(_log) > 300:
+            STATE["decision_log"] = _log[-300:]
+    except Exception:
+        pass
     logger.info(
         f"📊 WIN-RATE RÉEL: {strategy} +1 trade clôturé ({symbol}) pnl={pnl_pct*100:+.2f}% "
         f"-> wr={win_tracker.get(strategy):.2f} (n={win_tracker.samples(strategy)})"
@@ -720,7 +757,7 @@ def check_price_alerts(symbol: str, price: float):
                 a["triggered_price"] = price
                 _alerts_persist()
                 logger.info(f"🔔 PRICE ALERT {symbol}: {direction} {target} reached ({price:.2f})")
-                db.add_audit_log("PRICE_ALERT", "127.0.0.1",
+                db.add_audit_log("PRICE_ALERT", audit_ip(),
                                  f"Alert {a.get('id')} {symbol} {direction} {target} hit @ {price:.2f}")
                 try:
                     asyncio.create_task(telegram_bot.send_push_notification(
@@ -1448,6 +1485,46 @@ async def order_flow_websocket_listener():
     asyncio.create_task(listen_liquidations())
 
 
+# LOT 7 : registre module-level des tâches de fond (jamais dans STATE :
+# les objets Task ne sont pas sérialisables JSON)
+_BG_TASKS: dict = {}
+
+
+# LOT 7 : fabriques des tâches de fond surveillées par le watchdog
+TASK_FACTORIES = {
+    "live_trading_loop": lambda: live_trading_loop(),
+    "multi_exchange_websocket_listener": lambda: multi_exchange_websocket_listener(),
+    "order_flow_websocket_listener": lambda: order_flow_websocket_listener(),
+    "price_consensus_loop": lambda: price_consensus_loop(),
+    "telegram_poll": lambda: telegram_bot.poll_telegram_commands_loop(),
+    "reconciliation_scheduler": lambda: reconciliation_scheduler(),
+    "concierge_scheduler": lambda: concierge_scheduler(),
+    "db_backup_scheduler": lambda: db_backup_scheduler(),
+    "autonomous_ai_scheduler": lambda: autonomous_ai_scheduler(),
+    "copy_trading_refresh_scheduler": lambda: copy_trading_refresh_scheduler(),
+    "copy_mirror_scheduler": lambda: copy_mirror_scheduler(),
+}
+
+
+def register_background_tasks() -> None:
+    """Enregistre toutes les tâches de fond lancées au démarrage pour le watchdog."""
+    STATE.setdefault("background_tasks", {})
+    for name in TASK_FACTORIES:
+        # retrouve la tâche par nom dans asyncio.all_tasks()
+        for t in asyncio.all_tasks():
+            if t.get_name() == f"qp_{name}":
+                STATE["background_tasks"][name] = t
+                break
+
+
+def launch_named(coro, name: str):
+    """Lance une coroutine comme tâche nommée (surveillable par le watchdog)."""
+    task = asyncio.create_task(coro)
+    task.set_name(f"qp_{name}")
+    _BG_TASKS[name] = task
+    return task
+
+
 def validate_startup_config():
     """
     LOT 62: Institutional startup configuration checklist.
@@ -1625,6 +1702,19 @@ async def autonomous_ai_scheduler():
                         logger.warning(f"🧟 Experts MoE mis en sommeil: {_sleepy}")
                 except Exception:
                     pass
+                # LOT 7 (PDF Pilier K) : méta-attribution -> RÉDUCTION AUTOMATIQUE
+                # du poids des mauvaises raisons (quelles raisons gagnent ?)
+                try:
+                    _attr = meta_attribution(STATE.get("decision_log", []))
+                    if len(_attr) >= 2:
+                        _rw = reason_weight_from_attribution(_attr)
+                        STATE["reason_weights"] = _rw
+                        # facteur global : moyenne des poids (bornée 0.5..1.1)
+                        _avg = sum(_rw.values()) / max(len(_rw), 1)
+                        STATE["reason_weights_factor"] = max(0.5, min(1.1, _avg))
+                        logger.info(f"🧠 MÉTA-ATTRIBUTION: {len(_rw)} raisons pesées, facteur {_avg:.2f}")
+                except Exception:
+                    pass
             else:
                 logger.info(f"🤖 Autonomous AI: PPO buffer {len(buf)}/50 - collecting more experiences.")
 
@@ -1692,7 +1782,7 @@ async def autonomous_ai_scheduler():
             try:
                 _vetoes = risk_committee.evaluate(meta_engine, STATE)
                 for v in _vetoes:
-                    db.add_audit_log("RISK_COMMITTEE", "127.0.0.1", f"{v['action']} {v['strategy']} (score {v['score']})")
+                    db.add_audit_log("RISK_COMMITTEE", audit_ip(), f"{v['action']} {v['strategy']} (score {v['score']})")
                 try:
                     _stress_corr = float(db.get_setting("autonomous_last_stress_corr") or 0.5)
                 except Exception:
@@ -1855,7 +1945,7 @@ async def autonomous_ai_scheduler():
             except Exception as ve:
                 logger.warning(f"🤖 Autonomous AI: walk-forward validation error: {ve}")
 
-            db.add_audit_log("AUTONOMOUS_AI_CYCLE", "127.0.0.1", "Completed autonomous self-retrain/validate cycle.")
+            db.add_audit_log("AUTONOMOUS_AI_CYCLE", audit_ip(), "Completed autonomous self-retrain/validate cycle.")
         except Exception as e:
             logger.error(f"🤖 Autonomous AI cycle failed: {e}")
 
@@ -1891,7 +1981,7 @@ async def concierge_scheduler():
                 logger.info("✅ Concierge quotidien envoyé")
             except Exception as e:
                 logger.warning(f"Concierge Telegram envoi échoué: {e}")
-            db.add_audit_log("DAILY_CONCIERGE", "127.0.0.1", "Daily report generated.")
+            db.add_audit_log("DAILY_CONCIERGE", audit_ip(), "Daily report generated.")
         except Exception as e:
             logger.warning(f"Concierge scheduler error: {e}")
             await asyncio.sleep(3600)
@@ -1943,20 +2033,20 @@ async def api_v1_macro_override(payload: MacroOverrideRequest,
     try:
         if payload.action == "reduce":
             STATE["macro_scale_factor_tactile"] = payload.factor
-            db.add_audit_log("MACRO_OVERRIDE", "127.0.0.1",
+            db.add_audit_log("MACRO_OVERRIDE", audit_ip(),
                              f"Opérateur: réduction macro manuelle x{payload.factor}")
             return {"ok": True, "action": "reduce", "factor": payload.factor,
                     "risk_state": risk_state.to_dict()}
         if payload.action == "halt":
             risk_state.enter(RiskStateMachine.HALT, "MACRO_OVERRIDE")
             STATE["risk_state"] = risk_state.to_dict()
-            db.add_audit_log("MACRO_OVERRIDE", "127.0.0.1", "Opérateur: HALT macro manuel")
+            db.add_audit_log("MACRO_OVERRIDE", audit_ip(), "Opérateur: HALT macro manuel")
             return {"ok": True, "action": "halt", "risk_state": risk_state.to_dict()}
         # reset
         risk_state.reset(reason="macro/override")
         STATE["macro_scale_factor_tactile"] = 1.0
         STATE["risk_state"] = risk_state.to_dict()
-        db.add_audit_log("MACRO_OVERRIDE", "127.0.0.1", "Opérateur: reset macro (NORMAL)")
+        db.add_audit_log("MACRO_OVERRIDE", audit_ip(), "Opérateur: reset macro (NORMAL)")
         return {"ok": True, "action": "reset", "risk_state": risk_state.to_dict()}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -2014,7 +2104,7 @@ async def api_create_user(payload: UserCreateRequest, _admin: dict = Depends(req
     ok = db.create_user(payload.username, hashed, payload.role)
     if not ok:
         raise HTTPException(status_code=500, detail="Failed to create user.")
-    db.add_audit_log("USER_CREATED", "127.0.0.1", f"User '{payload.username}' created (role {payload.role}).")
+    db.add_audit_log("USER_CREATED", audit_ip(), f"User '{payload.username}' created (role {payload.role}).")
     return {"status": "Success", "username": payload.username, "role": payload.role}
 
 
@@ -2024,7 +2114,7 @@ async def api_delete_user(username: str, _admin: dict = Depends(require_admin)):
         raise HTTPException(status_code=400, detail="Cannot delete the bootstrap admin.")
     if not db.delete_user(username):
         raise HTTPException(status_code=404, detail="User not found.")
-    db.add_audit_log("USER_DELETED", "127.0.0.1", f"User '{username}' deleted.")
+    db.add_audit_log("USER_DELETED", audit_ip(), f"User '{username}' deleted.")
     return {"status": "Deleted", "username": username}
 
 
@@ -2306,7 +2396,7 @@ async def api_approve(_auth: dict = Depends(require_auth)):
         try:
             submit_order_via_oms(p["symbol"], p["side"], p["qty"], p["price"], p["mode"], p["strategy"],
                                  exchange="Binance" if p["symbol"] in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit")
-            db.add_audit_log("APPROVED_ORDER", "127.0.0.1",
+            db.add_audit_log("APPROVED_ORDER", audit_ip(),
                              f"Operator approved {p['side']} {p['qty']} {p['symbol']} ({p['strategy']})")
             approved += 1
         except Exception as e:
@@ -2373,7 +2463,7 @@ async def webhook_trade(payload: WebhookTradeRequest):
     db.update_position(symbol, qty if side == "BUY" else -qty, price, mode)
     db.add_order(symbol=symbol, side=side, price=price, qty=qty, status="FILLED",
                  mode=mode, strategy="WEBHOOK", order_type="MARKET")
-    db.add_audit_log("WEBHOOK_TRADE", "127.0.0.1", f"Webhook {side} {qty} {symbol} @ {price:.2f}")
+    db.add_audit_log("WEBHOOK_TRADE", audit_ip(), f"Webhook {side} {qty} {symbol} @ {price:.2f}")
     platform_metrics.ORDERS_TOTAL.labels(mode=mode, side=side).inc()
     STATE["last_order_times"][symbol] = time.time()
     return {"status": "FILLED", "symbol": symbol, "side": side, "qty": qty, "price": price}
@@ -2391,6 +2481,18 @@ async def copy_mirror_scheduler():
         try:
             if not copy_manager.copied_traders:
                 continue
+            # LOT 7 (PDF Pilier J) : stop global des traders sous-performants
+            try:
+                _total_cap = STATE["balance_demo"] if STATE["mode"] == "DEMO" else STATE["balance_real"]
+                _stopped = copy_manager.enforce_trader_risk(_total_cap)
+                if _stopped:
+                    try:
+                        asyncio.create_task(telegram_bot.send_push_notification(
+                            f"🛑 *COPY STOP*\nTrader(s) arrêté(s) (stop global) : {', '.join(_stopped)}"))
+                    except Exception:
+                        pass
+            except Exception:
+                pass
             exec_mode = os.getenv("COPYTRADE_EXECUTION", "signal_only")
             for tid, alloc in list(copy_manager.copied_traders.items()):
                 trader = copy_manager.traders.get(tid)
@@ -2415,7 +2517,7 @@ async def copy_mirror_scheduler():
                                                  exchange="Binance" if o["symbol"] in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit")
                             db.add_order(symbol=o["symbol"], side=o["side"], price=STATE["assets"][o["symbol"]]["price"],
                                          qty=o["qty"], status="FILLED", mode="REAL", strategy="COPY_MIRROR", order_type="MARKET")
-                            db.add_audit_log("COPY_MIRROR_EXECUTED", "127.0.0.1",
+                            db.add_audit_log("COPY_MIRROR_EXECUTED", audit_ip(),
                                              f"Mirror {o['side']} {o['qty']:.5f} {o['symbol']} (trader {tid[:10]}…)")
                             platform_metrics.ORDERS_TOTAL.labels(mode="REAL", side=o["side"]).inc()
                         except Exception as oe:
@@ -2423,7 +2525,7 @@ async def copy_mirror_scheduler():
                     logger.info(f"🪞 COPY MIRROR: executed {len(orders)} mirror orders for {tid[:10]}…")
                 else:
                     for o in orders:
-                        db.add_audit_log("COPY_MIRROR_SIGNAL", "127.0.0.1",
+                        db.add_audit_log("COPY_MIRROR_SIGNAL", audit_ip(),
                                          f"Mirror signal {o['side']} {o['qty']:.5f} {o['symbol']} "
                                          f"(execution {exec_mode} - keys required for auto)")
                     logger.info(f"🪞 COPY MIRROR: {len(orders)} mirror signals (mode {exec_mode}) for {tid[:10]}…")
@@ -2503,6 +2605,24 @@ async def reconciliation_scheduler():
 
             if active_mode == "REAL" and client:
                 try:
+                    # LOT 7 (PDF Pilier P) : risque de contrepartie — limite de
+                    # capital par exchange + signaux de santé (spread/volume)
+                    try:
+                        _cb = counterparty_risk.check_exchange_balance(
+                            "Binance", float(STATE.get("balance_real", 0.0)),
+                            STATE.get("current_equity", 0.0))
+                        if _cb.get("action") == "block":
+                            logger.critical(f"⚠️ CONTREPARTIE: {_cb['message']}")
+                            risk_state.enter(RiskStateMachine.CAUTION, "COUNTERPARTY_CAP")
+                            STATE["risk_state"] = risk_state.to_dict()
+                            try:
+                                asyncio.create_task(telegram_bot.send_push_notification(
+                                    f"⚠️ *RISQUE CONTREPARTIE*\n{_cb['message']}"))
+                            except Exception:
+                                pass
+                        STATE["counterparty_check"] = _cb
+                    except Exception:
+                        pass
                     balance = client.fetch_balance()
                     actual_balance = float(balance.get("total", {}).get("USDT", 0.0))
                     internal_balance = float(STATE.get("balance_real", 0.0))
@@ -2520,6 +2640,19 @@ async def reconciliation_scheduler():
                             )
                         except Exception:
                             pass
+                        # LOT 7 (PDF Pilier K) : en mode REAL, tout écart non
+                        # expliqué -> HALT AUTOMATIQUE (les comptes doivent
+                        # TOUJOURS coller ; un écart = problème de ledger ou
+                        # d'exécution -> on arrête avant d'empirer).
+                        if active_mode == "REAL":
+                            risk_state.enter(RiskStateMachine.HALT,
+                                             f"RECONCILIATION_BALANCE:{actual_balance:.0f}!={internal_balance:.0f}")
+                            STATE["risk_state"] = risk_state.to_dict()
+                            try:
+                                await telegram_bot.send_push_notification(
+                                    "🔴 *HALT RÉCONCILIATION*\nÉcart de balance non expliqué en mode REAL\n→ Trading arrêté. Vérifier le ledger avant /resume.")
+                            except Exception:
+                                pass
                     else:
                         STATE["balance_real"] = actual_balance
                         logger.info(f"RECONCILIATION OK: balance {actual_balance:.2f} USDT")
@@ -2547,7 +2680,16 @@ async def reconciliation_scheduler():
                                             pass
                                 except Exception:
                                     pass
-                    reconciler.reconcile_positions(actual_pos, "REAL")
+                    _pos_ok = reconciler.reconcile_positions(actual_pos, "REAL")
+                    # LOT 7 (PDF Pilier K) : HALT auto en REAL sur écart de positions
+                    if not _pos_ok and active_mode == "REAL":
+                        risk_state.enter(RiskStateMachine.HALT, "RECONCILIATION_POSITIONS")
+                        STATE["risk_state"] = risk_state.to_dict()
+                        try:
+                            await telegram_bot.send_push_notification(
+                                "🔴 *HALT RÉCONCILIATION*\nÉcart de positions non expliqué en mode REAL\n→ Trading arrêté. Vérifier avant /resume.")
+                        except Exception:
+                            pass
                 except Exception as e:
                     logger.warning(f"REAL reconciliation failed: {e}")
             else:
@@ -2678,24 +2820,24 @@ async def startup_event():
     STATE["eth_defi_balance"] = defi_wallet.fetch_native_balance()
     
     # Start the continuous WebSockets trading execution background process
-    asyncio.create_task(live_trading_loop())
+    launch_named(live_trading_loop(), "live_trading_loop")
     
     # Start the multi-source price consensus engine (PDF: redondance 2+ sources)
-    asyncio.create_task(price_consensus_loop())
+    launch_named(price_consensus_loop(), "price_consensus_loop")
 
     # LOT 3: order flow réel (trades + liquidations) pour Delta/CVD/OFI/cascades
-    asyncio.create_task(order_flow_websocket_listener())
+    launch_named(order_flow_websocket_listener(), "order_flow_websocket_listener")
     logger.info("✅ OrderFlow WS listener started (trades réels + liquidations)")
     logger.info("✅ Multi-source price consensus loop started (Binance/Bybit/Coinbase/Kraken/OKX/CoinGecko/CryptoCompare/Yahoo...)")
     
     # Start the official Dual-Exchange WebSockets Stream
-    asyncio.create_task(multi_exchange_websocket_listener())
+    launch_named(multi_exchange_websocket_listener(), "multi_exchange_websocket_listener")
     
     # Send the startup push notification safely within the running loop
     asyncio.create_task(telegram_bot.send_startup_message())
     
     # Start the tactile Telegram remote control worker
-    asyncio.create_task(telegram_bot.poll_telegram_commands_loop())
+    launch_named(telegram_bot.poll_telegram_commands_loop(), "telegram_poll")
 
     # Start the LOT 46 model-selection scheduler (needs a running event loop)
     asyncio.create_task(lot46_model_selection_scheduler())
@@ -2706,28 +2848,40 @@ async def startup_event():
     logger.info("✅ WS heartbeat loop started")
 
     # Start the balance/position reconciliation loop
-    asyncio.create_task(reconciliation_scheduler())
+    launch_named(reconciliation_scheduler(), "reconciliation_scheduler")
     logger.info("✅ LOT 69: Reconciliation scheduler started (every 5 min)")
 
     # Start the daily risk-concierge digest
-    asyncio.create_task(concierge_scheduler())
+    launch_named(concierge_scheduler(), "concierge_scheduler")
     logger.info("✅ LOT 70: Daily risk-concierge scheduler started")
 
     # Start the daily DB backup task
-    asyncio.create_task(db_backup_scheduler())
+    launch_named(db_backup_scheduler(), "db_backup_scheduler")
     logger.info("✅ LOT 64: Daily DB backup scheduler started")
 
     # Start the autonomous AI self-improvement loop
-    asyncio.create_task(autonomous_ai_scheduler())
+    launch_named(autonomous_ai_scheduler(), "autonomous_ai_scheduler")
     logger.info("✅ LOT 66: Autonomous AI scheduler started (self-retrain every 6h)")
 
     # Start the copy-trading leaderboard refresher
-    asyncio.create_task(copy_trading_refresh_scheduler())
+    launch_named(copy_trading_refresh_scheduler(), "copy_trading_refresh_scheduler")
     logger.info("✅ LOT 67: Copy Trading leaderboard refresher started")
 
     # Start the real copy-mirroring scheduler
-    asyncio.create_task(copy_mirror_scheduler())
+    launch_named(copy_mirror_scheduler(), "copy_mirror_scheduler")
     logger.info("✅ LOT 71: Copy mirroring scheduler started (every 10 min)")
+
+    # LOT 7 (PDF Faille 6) : watchdog des tâches de fond (supervision + auto-restart)
+    asyncio.create_task(task_watchdog_loop())
+    # Enregistre les tâches nommées pour le watchdog (auto-restart si mortes)
+    try:
+        for _t in asyncio.all_tasks():
+            _n = _t.get_name()
+            if _n.startswith("qp_"):
+                _BG_TASKS[_n[3:]] = _t
+        logger.info(f"✅ Watchdog des tâches de fond démarré ({len(_BG_TASKS)} tâches surveillées)")
+    except Exception:
+        logger.info("✅ Watchdog des tâches de fond démarré")
 
 
 async def live_trading_loop():
@@ -2755,7 +2909,7 @@ async def live_trading_loop():
             if _state_changed:
                 STATE["risk_state"] = risk_state.to_dict()
                 try:
-                    db.add_audit_log("RISK_STATE_CHANGE", "127.0.0.1",
+                    db.add_audit_log("RISK_STATE_CHANGE", audit_ip(),
                                      f"État risque -> {risk_state.state} ({risk_state.reason})")
                 except Exception:
                     pass
@@ -3012,7 +3166,7 @@ async def live_trading_loop():
                                 )
                                 try:
                                     db.add_audit_log(
-                                        "SOURCE_DIVERGENCE", "127.0.0.1",
+                                        "SOURCE_DIVERGENCE", audit_ip(),
                                         f"{symbol}: divergence {cons['divergence_pct']:.3f}% "
                                         f"(sources {list(cons['sources'].keys())}) -> trading gelé."
                                     )
@@ -3042,7 +3196,7 @@ async def live_trading_loop():
                                 )
                                 try:
                                     db.add_audit_log(
-                                        "SOURCE_DIVERGENCE", "127.0.0.1",
+                                        "SOURCE_DIVERGENCE", audit_ip(),
                                         f"{symbol}: divergence {cons['divergence_pct']:.3f}% -> trading gelé."
                                     )
                                 except Exception:
@@ -3116,7 +3270,7 @@ async def live_trading_loop():
                             )
                             try:
                                 db.add_audit_log(
-                                    "FUNDING_SOURCE_DIVERGENCE", "127.0.0.1",
+                                    "FUNDING_SOURCE_DIVERGENCE", audit_ip(),
                                     f"{symbol}: funding Binance/Bybit divergent {fcons.get('sources')} -> ignoré."
                                 )
                             except Exception:
@@ -3168,7 +3322,7 @@ async def live_trading_loop():
                         )
                         db.add_audit_log(
                             "FUNDING_ARBITRAGE_SIGNAL",
-                            "127.0.0.1",
+                            audit_ip(),
                             f"Funding arb signal on {symbol} (rate {funding_8h*100:.3f}%/8h) - signal only, not executed."
                         )
                     else:
@@ -3180,7 +3334,7 @@ async def live_trading_loop():
                         }
                         db.add_audit_log(
                             "FUNDING_ARBITRAGE_ENTERED",
-                            "127.0.0.1",
+                            audit_ip(),
                             f"Entered Delta-Neutral Cash-and-Carry on {symbol} (Funding Rate: {funding_8h*100:.3f}% / 8h)."
                         )
                     await telegram_bot.send_push_notification(
@@ -3199,7 +3353,7 @@ async def live_trading_loop():
                         del funding_arb_engine.active_arbitrages[symbol]
                     db.add_audit_log(
                         "FUNDING_ARBITRAGE_EXITED",
-                        "127.0.0.1",
+                        audit_ip(),
                         f"Wound down funding arbitrage on {symbol}. Accumulated yield: ${acc_funding:.2f} USD."
                     )
                     await telegram_bot.send_push_notification(
@@ -3251,13 +3405,13 @@ async def live_trading_loop():
                                     bcast = defi_wallet.broadcast_signed_transaction(raw_tx)
                                     db.add_audit_log(
                                         "DEX_CEX_ARBITRAGE_BROADCAST",
-                                        "127.0.0.1",
+                                        audit_ip(),
                                         f"Cross-Venue {symbol} arbitrage broadcast on-chain. Tx: {bcast.get('tx_hash', '?')}"
                                     )
                                 else:
                                     db.add_audit_log(
                                         "DEX_CEX_ARBITRAGE_BROADCAST_FAILED",
-                                        "127.0.0.1",
+                                        audit_ip(),
                                         f"DEX signing failed: {signed_dex.get('reason', 'unknown')}"
                                     )
                             else:
@@ -3267,7 +3421,7 @@ async def live_trading_loop():
                                 )
                             db.add_audit_log(
                                 "DEX_CEX_ARBITRAGE_SIGNAL",
-                                "127.0.0.1",
+                                audit_ip(),
                                 f"Cross-Venue {symbol} arbitrage detected. Route: {route} (Spread: {spread*100:.2f}%)."
                             )
                             await telegram_bot.send_push_notification(
@@ -3352,7 +3506,7 @@ async def live_trading_loop():
                             _hedge = hedging_decision(symbol, positions, STATE.get("corr_matrix_cache", {}), max_correlation=0.85)
                             if _hedge:
                                 STATE["last_hedge_ts"] = time.time()
-                                db.add_audit_log("HEDGE_DECISION", "127.0.0.1",
+                                db.add_audit_log("HEDGE_DECISION", audit_ip(),
                                                  f"Hedge {_hedge['hedge_side']} {_hedge['hedge_qty']:.5f} {_hedge['hedge_symbol']}: {_hedge['reason']}")
                                 db.add_event(time.time(), "hedge", json.dumps(_hedge, default=str))
                                 logger.info(f"🛡️ HEDGE: {_hedge['hedge_symbol']} {_hedge['hedge_side']} {_hedge['hedge_qty']:.5f}")
@@ -3457,7 +3611,7 @@ async def live_trading_loop():
                                     status="FILLED", mode=active_mode, strategy="PARTIAL_TP",
                                     order_type="MARKET",
                                 )
-                                db.add_audit_log("PARTIAL_TAKE_PROFIT", "127.0.0.1",
+                                db.add_audit_log("PARTIAL_TAKE_PROFIT", audit_ip(),
                                                  f"50% de {symbol} sécurisé à {exit_price:.2f} (reste {_partial['remain_qty']:.5f})")
                                 try:
                                     asyncio.create_task(telegram_bot.send_push_notification(
@@ -3497,7 +3651,7 @@ async def live_trading_loop():
                                     order_type="MARKET",
                                 )
                                 db.add_audit_log(
-                                    f"PROTECTION_{action}", "127.0.0.1",
+                                    f"PROTECTION_{action}", audit_ip(),
                                     f"{action} executed on {symbol} @ {exit_price:.2f} (entry {prot.entry_price:.2f})",
                                 )
                                 # VISION §1d: counterfactual marginal alpha vs the market move
@@ -3720,6 +3874,9 @@ async def live_trading_loop():
                                         f"(confiance régime {_conf:.2f})")
                     except Exception:
                         pass
+                    # 9quinquies. MÉTA-ATTRIBUTION (LOT 7, PDF Pilier K) : les
+                    # mauvaises raisons prouvées réduisent la taille
+                    _reason_s = float(STATE.get("reason_weights_factor", 1.0))
                     # 9ter. CAPACITÉ + RÉSERVE DE CASH (LOT 6, PDF Pilier L) :
                     # la taille d'un trade ne peut pas dépasser 1 % du volume
                     # réel 24h (impact de marché, mentalité n°11) et l'exposition
@@ -3798,6 +3955,7 @@ async def live_trading_loop():
                             regime_confidence_scale=_regime_s,
                             capacity_scale=_cap_s,
                             cash_reserve_scale=_cash_s,
+                            reason_attribution_scale=_reason_s,
                             confidence_scale=_conf_s,
                             org_scale=_org_s,
                             rlhf_scale=_rlhf_s,
@@ -3955,7 +4113,7 @@ async def live_trading_loop():
                                              "price": execution_price, "mode": active_mode,
                                              "strategy": dominant_strategy, "ts": time.time()}
                                 STATE["pending_approvals"].append(_proposal)
-                                db.add_audit_log("PENDING_APPROVAL", "127.0.0.1",
+                                db.add_audit_log("PENDING_APPROVAL", audit_ip(),
                                                  f"Proposal {side} {trade_qty_formatted} {symbol} awaits operator approval")
                                 try:
                                     asyncio.create_task(telegram_bot.send_push_notification(
@@ -4013,7 +4171,7 @@ async def live_trading_loop():
                                                 f"SOR {symbol} {side}: venue {_sor['venue']} "
                                                 f"(net {_sor['net_price']:.6f}) | {_sor['reason']}")
                                             db.add_audit_log(
-                                                "SOR_CHOICE", "127.0.0.1",
+                                                "SOR_CHOICE", audit_ip(),
                                                 f"{symbol} {side}: venue {_sor['venue']} "
                                                 f"net {_sor['net_price']:.6f} - {json.dumps(_sor.get('quotes', []))[:200]}")
                                     except Exception as _se:
@@ -4116,7 +4274,7 @@ async def live_trading_loop():
                                     )
                                     if _paper.get("rejected"):
                                         logger.warning(f"PAPER REJECTED {symbol} {side} {trade_qty_formatted}: {_paper['reason']}")
-                                        db.add_audit_log("DEMO_ORDER_REJECTED", "127.0.0.1",
+                                        db.add_audit_log("DEMO_ORDER_REJECTED", audit_ip(),
                                                          f"{symbol} {side} {trade_qty_formatted}: {_paper['reason']}")
                                         platform_metrics.ORDERS_FAILED.labels(mode="DEMO").inc()
                                         continue
@@ -4202,7 +4360,7 @@ async def live_trading_loop():
                             
                                 db.add_audit_log(
                                     "REAL_ORDER" if active_mode == "REAL" else "DEMO_ORDER", 
-                                    "127.0.0.1", 
+                                    audit_ip(), 
                                     f"Executed {side} order of {trade_qty_formatted:.5f} {symbol} at {execution_price:.2f} USD."
                                 )
                                 # VISION_FUTUR §1: attribute PnL to the responsible desk
@@ -4280,7 +4438,7 @@ async def live_trading_loop():
                                 platform_metrics.ORDERS_FAILED.labels(mode=active_mode).inc()
                                 db.add_audit_log(
                                     "ORDER_REJECTED", 
-                                    "127.0.0.1", 
+                                    audit_ip(), 
                                     f"Order {side} of {trade_qty_formatted:.5f} {symbol} failed/rejected: {str(exc)}"
                                 )
                             
@@ -4390,7 +4548,7 @@ async def live_trading_loop():
                     )
                 except Exception as exc:
                     logger.error(f"Failed during circuit breaker exposure flatting: {str(exc)}")
-            db.add_audit_log("CIRCUIT_BREAKER_TRIPPED", "127.0.0.1", f"EMERGENCY KILL SWITCH ENGAGED: {msg}")
+            db.add_audit_log("CIRCUIT_BREAKER_TRIPPED", audit_ip(), f"EMERGENCY KILL SWITCH ENGAGED: {msg}")
             # LOT 2 (PDF Pilier G) : le circuit breaker déclenche la machine à
             # états -> HALT (cool-down + redémarrage progressif ensuite).
             risk_state.enter(RiskStateMachine.HALT, f"CIRCUIT_BREAKER:{msg[:80]}")
@@ -4601,6 +4759,15 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "portfolio_allocation": STATE.get("portfolio_allocation", {}),
         "strategy_diversification": STATE.get("strategy_diversification", {}),
         "position_pyramids": STATE.get("position_pyramids", {}),
+        "counterparty": counterparty_risk.to_dict(),
+        "reason_weights": STATE.get("reason_weights", {}),
+        "reason_weights_factor": STATE.get("reason_weights_factor", 1.0),
+        "watchdog": {
+            "tasks_monitored": list(_BG_TASKS.keys()),
+            "tasks_alive": sum(1 for t in _BG_TASKS.values() if t and not t.done()),
+            "supervisor_issues": supervisor.last_issues,
+            "running": True,
+        },
         
         "copy_traders": [
             {
@@ -4654,6 +4821,40 @@ async def broadcast_telemetry(consensus_signals):
             platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
         except Exception:
             pass
+
+
+async def task_watchdog_loop():
+    """
+    LOT 7 (PDF Faille 6 + Pilier K) : WATCHDOG des tâches de fond.
+    - Le Supervisor étendu surveille les signes vitaux de TOUS les flux.
+    - Si une tâche de fond critique est morte (terminée ou en erreur),
+      elle est REDÉMARRÉE automatiquement (mentalité n°13 : surveiller).
+    - Les tâches enregistrées dans STATE["background_tasks"] sont les
+      coroutines lancées au démarrage (boucle trading, WS, consensus,
+      order flow, schedulers...).
+    """
+    while True:
+        await asyncio.sleep(20)
+        try:
+            # 1. Signes vitaux étendus (Pilier K)
+            supervisor.check(force=True)
+
+            # 2. Redémarrage des tâches de fond mortes
+            # NOTE : les objets Task ne sont PAS stockés dans STATE (non
+            # sérialisables) — registre module-level _BG_TASKS uniquement.
+            for name, task in list(_BG_TASKS.items()):
+                if task is None or task.done():
+                    logger.warning(f"🛠️ WATCHDOG: tâche de fond '{name}' MORTE -> redémarrage...")
+                    try:
+                        restart = TASK_FACTORIES.get(name)
+                        if restart:
+                            new_task = asyncio.create_task(restart())
+                            _BG_TASKS[name] = new_task
+                            logger.info(f"✅ WATCHDOG: '{name}' redémarrée")
+                    except Exception as e:
+                        logger.error(f"WATCHDOG: échec redémarrage {name}: {e}")
+        except Exception as e:
+            logger.debug(f"Watchdog error: {e}")
 
 
 async def websocket_heartbeat_loop():
@@ -4874,7 +5075,7 @@ async def login(payload: LoginRequest):
             logger.warning(f"Bootstrap admin hash upgrade skipped: {e}")
 
     if not ok:
-        db.add_audit_log("AUTH_FAILURE", "127.0.0.1", f"Failed login attempt for '{payload.username}'.")
+        db.add_audit_log("AUTH_FAILURE", audit_ip(), f"Failed login attempt for '{payload.username}'.")
         raise HTTPException(status_code=401, detail="Invalid credentials.")
 
     if totp_secret:  # TOTP second factor enforced whenever configured
@@ -4898,7 +5099,7 @@ async def toggle_strategy(payload: StrategyToggle, _auth: dict = Depends(require
     strategy.enabled = payload.enabled
     db.add_audit_log(
         "STRATEGY_TOGGLED", 
-        "127.0.0.1", 
+        audit_ip(), 
         f"Modified strategy '{payload.name}' enabled status to {payload.enabled}."
     )
     return {"status": "Success", "message": f"Strategy {payload.name} modified to {payload.enabled}"}
@@ -4910,7 +5111,7 @@ async def toggle_bot(payload: BotToggleRequest, _auth: dict = Depends(require_au
     action_str = "STARTED" if payload.is_running else "PAUSED"
     db.add_audit_log(
         "BOT_STATE_CHANGED", 
-        "127.0.0.1", 
+        audit_ip(), 
         f"Automated trading loop has been manually {action_str}."
     )
     return {"status": "Success", "message": f"Automated trading loop {action_str} successfully."}
@@ -4932,7 +5133,7 @@ async def set_demo_balance(payload: SetBalanceRequest, _auth: dict = Depends(req
     
     db.add_audit_log(
         "DEMO_BALANCE_RESET", 
-        "127.0.0.1", 
+        audit_ip(), 
         f"Demo balance has been manually reset to {payload.balance} USD."
     )
     return {"status": "Success", "message": f"Demo balance successfully set to {payload.balance} USD."}
@@ -4971,7 +5172,7 @@ async def trigger_monte_carlo(_auth: dict = Depends(require_auth)):
     
     db.add_audit_log(
         "MONTE_CARLO_TEST_EXECUTED",
-        "127.0.0.1",
+        audit_ip(),
         f"Executed 10,000 Monte Carlo stress-testing simulations. Survival rate: {res['survival_probability_pct']:.2f}%."
     )
     
@@ -4983,7 +5184,7 @@ async def update_risk_settings(payload: RiskSettingsUpdate, _auth: dict = Depend
     risk_manager.params.update(payload.dict())
     db.add_audit_log(
         "RISK_SETTINGS_UPDATED", 
-        "127.0.0.1", 
+        audit_ip(), 
         f"Updated Risk thresholds: Max daily drawdown to {payload.max_daily_drawdown_pct*100:.2f}%."
     )
     return {"status": "Success", "message": "Risk management policies updated successfully."}
@@ -4996,7 +5197,7 @@ async def store_keys(payload: KeyStorage, _auth: dict = Depends(require_auth)):
     db.save_setting(f"{payload.exchange}_secret_key", payload.secret_key, encrypt=True)
     db.add_audit_log(
         "API_KEYS_STORED", 
-        "127.0.0.1", 
+        audit_ip(), 
         f"Stored and encrypted API key pairs for exchange {payload.exchange}."
     )
     return {"status": "Success", "message": f"Encrypted keys stored for {payload.exchange}."}
@@ -5025,7 +5226,7 @@ async def switch_mode(payload: SwitchModeRequest, _auth: dict = Depends(require_
             is_totp = False
 
     if not (is_wallet or is_totp):
-        db.add_audit_log("AUTH_FAILURE", "127.0.0.1", f"Failed 2FA transit attempt to mode {payload.target_mode}.")
+        db.add_audit_log("AUTH_FAILURE", audit_ip(), f"Failed 2FA transit attempt to mode {payload.target_mode}.")
         raise HTTPException(status_code=401, detail="Invalid 2FA factor. Security block triggered.")
         
     if payload.target_mode not in ["DEMO", "REAL"]:
@@ -5060,7 +5261,7 @@ async def switch_mode(payload: SwitchModeRequest, _auth: dict = Depends(require_
     STATE["mode"] = payload.target_mode
     db.add_audit_log(
         "TRADING_MODE_CHANGED", 
-        "127.0.0.1", 
+        audit_ip(), 
         f"Successfully changed system trading mode to {payload.target_mode} via authorization {payload.verification_2fa[:12]}..."
     )
     return {"status": "Success", "message": f"Platform successfully switched to {payload.target_mode} Mode."}
@@ -5069,17 +5270,25 @@ async def switch_mode(payload: SwitchModeRequest, _auth: dict = Depends(require_
 @app.post("/api/copy-trade")
 async def manage_copytrade(payload: CopyTradeRequest, _auth: dict = Depends(require_auth)):
     if payload.action == "START":
+        # LOT 7 (PDF Pilier J) : plafond de capital par trader copié
+        try:
+            _total_cap = STATE["balance_demo"] if STATE["mode"] == "DEMO" else STATE["balance_real"]
+            _cap_ok, _cap_msg = copy_manager.check_trader_risk(payload.trader_id, _total_cap) if payload.trader_id in copy_manager.copied_traders else (True, "")
+            if not _cap_ok:
+                return {"ok": False, "error": f"Risque copytrading: {_cap_msg}"}
+        except Exception:
+            pass
         ok, msg = copy_manager.start_copying(payload.trader_id, payload.allocated_capital)
         if ok:
             db.save_copy_allocation(payload.trader_id, payload.allocated_capital, 1)
-            db.add_audit_log("COPY_START", "127.0.0.1", f"Started copytrading {payload.trader_id} with {payload.allocated_capital} USD allocation.")
+            db.add_audit_log("COPY_START", audit_ip(), f"Started copytrading {payload.trader_id} with {payload.allocated_capital} USD allocation.")
             return {"status": "Success", "message": msg}
         raise HTTPException(status_code=400, detail=msg)
     else:
         ok, msg = copy_manager.stop_copying(payload.trader_id)
         if ok:
             db.save_copy_allocation(payload.trader_id, 0.0, 0)
-            db.add_audit_log("COPY_STOP", "127.0.0.1", f"Stopped copytrading {payload.trader_id}.")
+            db.add_audit_log("COPY_STOP", audit_ip(), f"Stopped copytrading {payload.trader_id}.")
             return {"status": "Success", "message": msg}
         raise HTTPException(status_code=400, detail=msg)
 
@@ -5094,7 +5303,7 @@ async def reset_risk_state(_auth: dict = Depends(require_auth)):
         changed = risk_state.reset(reason="api")
         STATE["risk_state"] = risk_state.to_dict()
         if changed:
-            db.add_audit_log("RISK_STATE_RESET", "127.0.0.1", "État risque remis à NORMAL via API")
+            db.add_audit_log("RISK_STATE_RESET", audit_ip(), "État risque remis à NORMAL via API")
         return {"ok": True, "risk_state": risk_state.to_dict()}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -5137,7 +5346,7 @@ async def engage_kill_switch(_auth: dict = Depends(require_auth)):
         except Exception as exc:
             logger.error(f"Emergency close failed for {p['symbol']}: {str(exc)}")
             
-    db.add_audit_log("KILL_SWITCH_ENGAGED", "127.0.0.1", "Global KILL SWITCH activated manually. Closed all open exposures.")
+    db.add_audit_log("KILL_SWITCH_ENGAGED", audit_ip(), "Global KILL SWITCH activated manually. Closed all open exposures.")
     return {"status": "Success", "message": "EMERGENCY GLOBAL KILL SWITCH ENGAGED. All exposures flatted, system locked."}
 
 
@@ -5146,7 +5355,7 @@ async def reset_bot(_auth: dict = Depends(require_auth)):
     STATE["kill_switch_active"] = False
     STATE["is_running"] = True
     risk_manager.circuit_breaker_active = False
-    db.add_audit_log("SYSTEM_RESET", "127.0.0.1", "Unlocked system state from emergency stop.")
+    db.add_audit_log("SYSTEM_RESET", audit_ip(), "Unlocked system state from emergency stop.")
     return {"status": "Success", "message": "System successfully unlocked and restarted."}
 
 

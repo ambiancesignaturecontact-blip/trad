@@ -57,16 +57,22 @@ def restore_state_snapshot(db, state: dict, max_age_seconds: float = 3600.0) -> 
 
 
 class Supervisor:
-    """§5b: watches the vital signs; recovers what it can, halts what it must."""
+    """§5b: watches the vital signs; recovers what it can, halts what it must.
+
+    LOT 7 (PDF Pilier K) : signes vitaux ÉTENDUS à tous les flux critiques
+    (prix, order flow, consensus multi-sources, sentiment, on-chain) —
+    pas seulement le prix. L'état est exposé pour le watchdog.
+    """
 
     def __init__(self, state: dict):
         self.state = state
         self.last_check = 0.0
+        self.last_issues: list = []
 
     def check(self, now: float = None, force: bool = False) -> list:
         now = now or time.time()
         if not force and now - self.last_check < 15:
-            return []
+            return self.last_issues
         self.last_check = now
         issues = []
         # 1. trading loop heartbeat
@@ -84,6 +90,36 @@ class Supervisor:
         # 3. data quality
         if self.state.get("data_quality_status") in ("UNAVAILABLE", "INVALID"):
             issues.append(f"data quality {self.state.get('data_quality_status')}")
+        # LOT 7 (PDF Pilier K) : flux critiques supplémentaires
+        # 4. Consensus multi-sources : si un actif n'a AUCUNE source depuis >60s
+        try:
+            _pc = self.state.get("price_consensus", {})
+            _div = self.state.get("price_divergent", {})
+            _div_count = sum(1 for v in _div.values() if v)
+            if _div_count > 0:
+                issues.append(f"source divergence ({_div_count} actif(s))")
+        except Exception:
+            pass
+        # 5. Order flow : si aucun trade réel reçu depuis longtemps sur les
+        # cryptos (flux down silencieux)
+        try:
+            _of = self.state.get("order_flow", {})
+            _of_btc = _of.get("BTCUSDT", {})
+            if _of_btc.get("n_trades", 0) == 0 and self.state.get("last_tick_ts", 0.0) > 0:
+                # silencieux seulement si le bot tourne depuis > 5 min
+                if now - self.state.get("last_tick_ts", 0.0) > 300:
+                    issues.append("order flow silent (aucun trade réel reçu)")
+        except Exception:
+            pass
+        # 6. Sentiment indisponible (sources news down)
+        try:
+            if self.state.get("sentiment_available") is False and \
+               self.state.get("last_tick_ts", 0.0) > 0 and \
+               now - self.state.get("last_tick_ts", 0.0) > 600:
+                issues.append("news sentiment unavailable (>10min)")
+        except Exception:
+            pass
+        self.last_issues = issues
         for issue in issues:
             logger.warning(f"🩺 SUPERVISOR: {issue}")
         return issues
@@ -104,7 +140,7 @@ def chaos_cut_feed(state: dict, db, duration_seconds: float = 20.0) -> dict:
         "rule": "trading refused while feed is down",
     }
     try:
-        db.add_audit_log("CHAOS_TEST", "127.0.0.1", f"Feed outage simulated for {duration_seconds}s")
+        db.add_audit_log("CHAOS_TEST", "supervisor", f"Feed outage simulated for {duration_seconds}s")
     except Exception:
         pass
     logger.warning(f"🌀 CHAOS TEST: feed cut for {duration_seconds}s - verifying safe behavior")

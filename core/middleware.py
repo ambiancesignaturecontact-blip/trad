@@ -34,6 +34,15 @@ class RequestLoggingMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next):
         rid = uuid.uuid4().hex[:12]
         request.state.request_id = rid
+        # LOT 7 (PDF Faille 6) : mémorise la VRAIE IP client pour les audit logs
+        # (les middlewares s'exécutent dans l'ordre d'ajout ; celui-ci est
+        # ajouté après les rate-limiters, donc ip est dispo).
+        try:
+            if request.client and request.client.host:
+                from main import set_request_ip
+                set_request_ip(request.client.host)
+        except Exception:
+            pass
         start = time.perf_counter()
         response = await call_next(request)
         dur_ms = (time.perf_counter() - start) * 1000.0
