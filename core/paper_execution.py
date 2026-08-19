@@ -25,7 +25,23 @@ VENUE_FEES = {
     "Bybit": {"taker": 0.001, "maker": 0.00085},
     "default": {"taker": 0.001, "maker": 0.001},
 }
+# FIX (logs prod) : le min notional n'est plus en dur — il est dérivé du
+# capital (config.yaml : 3$ < 200$, 5$ < 1000$, 10$ sinon) pour que les
+# micro-comptes et les paires à petit notionnel (EURUSD) puissent trader.
 MIN_NOTIONAL_USD = 10.0
+
+
+def min_notional_for_capital(capital: float) -> float:
+    """Min notional adapté au capital (config.yaml, défauts documentés)."""
+    try:
+        from core.config import settings
+        if capital < 200.0:
+            return settings.get_float("trading", "min_notional_usd_micro", 3.0)
+        if capital < 1000.0:
+            return settings.get_float("trading", "min_notional_usd_small", 5.0)
+        return settings.get_float("trading", "min_notional_usd_normal", 10.0)
+    except Exception:
+        return 3.0 if capital < 200.0 else (5.0 if capital < 1000.0 else 10.0)
 
 
 def _book_walk_price(side: str, qty: float, order_book: Optional[dict]):
@@ -76,8 +92,9 @@ def simulate_paper_fill(symbol: str, side: str, qty: float, arrival_price: float
     if qty <= 0:
         return {"status": "REJECTED", "reason": "invalid quantity", "rejected": True}
     notional = qty * arrival_price
-    if notional < MIN_NOTIONAL_USD:
-        return {"status": "REJECTED", "reason": f"below min notional ${MIN_NOTIONAL_USD}", "rejected": True}
+    min_notional = min_notional_for_capital(balance) if balance > 0 else MIN_NOTIONAL_USD
+    if notional < min_notional:
+        return {"status": "REJECTED", "reason": f"below min notional ${min_notional}", "rejected": True}
     if balance > 0:
         if side.upper() == "BUY" and notional * 1.01 > balance:
             return {"status": "REJECTED", "reason": "insufficient balance", "rejected": True}

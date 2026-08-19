@@ -289,7 +289,13 @@ class MLOpsAutoTrainer:
         """
         try:
             from models.lopez_de_prado import calculate_deflated_sharpe_ratio
-            n_trials = int(self.db.get_setting("mlops_n_trials", "1") or "1")
+            # FIX (logs prod) : la valeur DB peut être vide/None (première
+            # exécution) — parsing robuste, jamais int('') (crash observé).
+            try:
+                _raw = self.db.get_setting("mlops_n_trials", "1")
+                n_trials = int(str(_raw).strip()) if str(_raw).strip() else 1
+            except (TypeError, ValueError):
+                n_trials = 1
             champion_key = f"mlops_champion_sharpe_{model_type}"
             champion_raw = self.db.get_setting(champion_key, "")
             champion_sharpe = float(champion_raw) if champion_raw else None

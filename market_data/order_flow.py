@@ -200,14 +200,18 @@ class OrderFlowEngine:
                     # flux très déséquilibré -> on réduit (le marché « sait » quelque chose)
                     factor *= max(0.4, 1.0 - (ratio - TOXIC_DELTA_RATIO) * 2.0)
         if vpin is not None:
-            # VPIN est une probabilité : bornée à [0,1]. Une valeur hors plage
-            # (>1) est une erreur de calcul (ex: barres sans volume cohérent),
-            # pas un signal de toxicité -> traitée comme neutre (mentalité n°5).
-            vpin_b = max(0.0, min(1.0, float(vpin)))
-            if vpin_b > 0.75:
-                factor *= 0.6
-            elif vpin_b > 0.65:
-                factor *= 0.8
+            # FIX (logs prod) : VPIN est une probabilité NORMALISÉE -> il est
+            # mathématiquement borné à [0,1]. Une valeur > 1.0 (ex: 4276, 6.9M
+            # observés sur barres à volume constant) est une ERREUR de calcul,
+            # PAS un signal de toxicité. On l'ignore (neutre) au lieu de la
+            # clamper à 1.0 — sinon TOUS les actifs étaient réduits à 0.6 en
+            # permanence (mentalité n°5 : ne pas réagir à une donnée douteuse).
+            vpin_f = float(vpin)
+            if 0.0 <= vpin_f <= 1.0:
+                if vpin_f > 0.75:
+                    factor *= 0.6
+                elif vpin_f > 0.65:
+                    factor *= 0.8
         ofi = self.compute_ofi(symbol)
         if ofi is not None and abs(ofi) > 0.6:
             factor *= 0.8

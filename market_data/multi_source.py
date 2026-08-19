@@ -394,7 +394,15 @@ class MultiSourcePriceEngine:
                     "status": "SINGLE_SOURCE", "ts": time.time()}
         else:
             a, bb = rates["binance"], rates["bybit"]
-            if abs(a - bb) > 0.5 * max(abs(a), abs(bb), 1e-6):
+            # FIX (logs prod) : seuil réaliste — voir docstring. Un écart de
+            # 2-3x entre les taux des deux venues est NORMAL (calculs/périodes
+            # différents) ; seule une vraie anomalie bloque le consensus.
+            signs_opposed = (a > 0 > bb) or (bb > 0 > a)
+            abs_gap = abs(a - bb)
+            if signs_opposed and abs_gap > 1e-6:
+                data = {"funding_rate_8h": None, "sources": rates,
+                        "status": "DIVERGENT", "ts": time.time()}
+            elif abs_gap > 0.0001:  # écart > 1 bp : anomalie réelle
                 data = {"funding_rate_8h": None, "sources": rates,
                         "status": "DIVERGENT", "ts": time.time()}
             else:

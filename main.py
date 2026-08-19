@@ -1386,10 +1386,18 @@ async def multi_exchange_websocket_listener():
                 logger.warning(f"Bybit WS disconnected: {str(e)}. Reconnecting in 5s...")
                 await asyncio.sleep(5)
 
-    # Lancement concurrent des 3 tâches
-    asyncio.create_task(listen_binance())
-    asyncio.create_task(listen_bybit())
-    asyncio.create_task(order_book_snapshot_loop())
+    # FIX (logs prod) : la tâche parente RESTE VIVANTE tant que ses sous-tâches
+    # tournent — sinon le watchdog la voit "morte" immédiatement et la redémarre
+    # en boucle (fuite de listeners doublons). asyncio.gather attend les 3.
+    try:
+        await asyncio.gather(
+            listen_binance(),
+            listen_bybit(),
+            order_book_snapshot_loop(),
+        )
+    except Exception as e:
+        logger.warning(f"multi_exchange_websocket_listener: sous-tâche terminée en erreur ({e}) -> redémarrage complet par watchdog")
+        raise
 
 
 async def price_consensus_loop():
@@ -1511,9 +1519,17 @@ async def order_flow_websocket_listener():
                 logger.debug(f"Bybit liquidation WS down: {e}")
                 await asyncio.sleep(10)
 
-    asyncio.create_task(listen_bybit_trades())
-    asyncio.create_task(listen_binance_trades())
-    asyncio.create_task(listen_liquidations())
+    # FIX (logs prod) : idem — la tâche parente attend ses sous-tâches pour
+    # ne pas être redémarrée en boucle par le watchdog.
+    try:
+        await asyncio.gather(
+            listen_bybit_trades(),
+            listen_binance_trades(),
+            listen_liquidations(),
+        )
+    except Exception as e:
+        logger.warning(f"order_flow_websocket_listener: sous-tâche terminée en erreur ({e}) -> redémarrage complet par watchdog")
+        raise
 
 
 # LOT 7 : registre module-level des tâches de fond (jamais dans STATE :
