@@ -3889,18 +3889,30 @@ async def live_trading_loop():
                     max_asset_qty = (STATE[active_balance_key] * max_asset_pct) / current_price
 
                     # VISION_FUTUR §2d: meta-label filter — filtre les faux signaux avant
-                    # exécution (López de Prado). Warm-up : <5 trades clôturés pour la
-                    # stratégie -> autorisé en DEMO (sinon le bot ne peut jamais apprendre).
+                    # exécution (López de Prado).
+                    # FIX (mini-app 50$) : warm-up porté à 20 trades clôturés et,
+                    # en DEMO, un win rate faible RÉDUIT la taille au lieu de
+                    # BLOQUER totalement — sinon le bot arrête de trader après 5
+                    # trades perdants et ne peut plus JAMAIS apprendre (piège
+                    # observé en production : 'wr 0.12 (n=5)' -> aucun trade).
+                    # En REAL, le filtre reste bloquant (prudence maximale).
                     try:
                         _ml_count = win_tracker.samples(_dom_early)
-                        if not meta_label_filter(_dom_early,
-                                                 STATE.get("strategy_win_rates", {}),
-                                                 counts=STATE.get("strategy_trade_counts", {}),
-                                                 min_samples=5):
-                            decide_no_trade(symbol, final_signal, 0.999,
-                                            [f"meta-label: wr {STATE.get('strategy_win_rates', {}).get(_dom_early, 0.0):.2f} (n={_ml_count})"],
-                                            STATE["no_trade_stats"], db)
-                            continue
+                        _ml_ok = meta_label_filter(_dom_early,
+                                                   STATE.get("strategy_win_rates", {}),
+                                                   counts=STATE.get("strategy_trade_counts", {}),
+                                                   min_samples=20)
+                        if not _ml_ok:
+                            if active_mode == "REAL":
+                                decide_no_trade(symbol, final_signal, 0.999,
+                                                [f"meta-label REAL: wr {STATE.get('strategy_win_rates', {}).get(_dom_early, 0.0):.2f} (n={_ml_count})"],
+                                                STATE["no_trade_stats"], db)
+                                continue
+                            # DEMO : pas de blocage total — le win rate faible
+                            # réduit la taille (le bot continue d'apprendre)
+                            target_qty *= max(0.25, STATE.get("strategy_win_rates", {}).get(_dom_early, 0.0) / 0.52)
+                            STATE["meta_label_scale"] = max(0.25, STATE.get("strategy_win_rates", {}).get(_dom_early, 0.0) / 0.52)
+                            logger.info(f"META-LABEL DEMO {symbol}: wr {STATE.get('strategy_win_rates', {}).get(_dom_early, 0.0):.2f} (n={_ml_count}) -> taille x{STATE['meta_label_scale']:.2f} (apprentissage continu)")
                     except Exception:
                         pass
 
@@ -5402,6 +5414,19 @@ async def manage_copytrade(payload: CopyTradeRequest, _auth: dict = Depends(requ
             db.add_audit_log("COPY_STOP", audit_ip(), f"Stopped copytrading {payload.trader_id}.")
             return {"status": "Success", "message": msg}
         raise HTTPException(status_code=400, detail=msg)
+
+
+@app.get("/api/walkforward-stats")
+async def api_walkforward_stats(_auth: dict = Depends(require_auth)):
+    """
+    Poids Walk-Forward des stratégies (utilisé par la mini-app).
+    Retourne les poids actuels du MetaAllocationEngine (bandit + PnL réel).
+    """
+    try:
+        weights = meta_engine.get_strategy_weights()
+        return {"weights": weights, "ts": time.time()}
+    except Exception as e:
+        return {"weights": {}, "error": str(e)}
 
 
 @app.get("/api/v1/honesty")

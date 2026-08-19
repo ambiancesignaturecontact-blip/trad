@@ -153,17 +153,38 @@ async def answer_question_async(question: str, context: dict) -> str:
     """Async assistant - for async callers."""
     if not _api_key():
         # structured fallback: answer from live data
-        price = context.get("last_price", 0.0)
-        equity = context.get("current_equity", 0.0)
+        # FIX (mini-app) : last_price peut être None tant qu'aucune donnée
+        # réelle n'est arrivée -> on affiche "indisponible" au lieu de crasher
+        # (TypeError sur formatage de None) et la mini-app affichait
+        # "Pas de réponse" sur une erreur 500.
+        try:
+            price = context.get("last_price")
+            price_txt = f"${price:,.2f}" if isinstance(price, (int, float)) and price > 0 else "indisponible (pas encore de tick réel)"
+        except (TypeError, ValueError):
+            price_txt = "indisponible"
+        try:
+            equity = context.get("current_equity") or 0.0
+            equity_txt = f"${float(equity):,.2f}"
+        except (TypeError, ValueError):
+            equity_txt = "indisponible"
         regime = context.get("regime_name", "?")
         q = question.lower()
         if "prix" in q or "bitcoin" in q or "btc" in q:
-            return f"BTC est à ${price:,.2f} actuellement (régime '{regime}'). Équité du bot : ${equity:,.2f}."
-        if "achet" in q or "pourquoi" in q:
-            return ("Je me base sur le méta-modèle (12 stratégies pondérées), le régime, la "
-                    "microstructure (VPIN) et la qualité des données. Configurez OPENROUTER_API_KEY "
-                    "pour des réponses détaillées.")
-        return f"Régime: {regime} | BTC: ${price:,.2f} | Équité: ${equity:,.2f}. (Réponse structurée — clé LLM absente.)"
+            return f"BTC est à {price_txt} actuellement (régime '{regime}'). Équité du bot : {equity_txt}."
+        if "achet" in q or "pourquoi" in q or "strategie" in q or "trade" in q:
+            return ("Je me base sur le méta-modèle (12 stratégies pondérées), le régime HMM, la "
+                    "microstructure (VPIN/order flow) et la qualité des données. Toutes les données "
+                    "sont réelles ; en cas de doute le bot réduit ou ne trade pas. Configurez "
+                    "OPENROUTER_API_KEY pour des réponses détaillées.")
+        if "risque" in q or "drawdown" in q or "sécurité" in q or "securite" in q:
+            return ("La pyramide de risque : Kelly fractionnaire (win rate réel), CVaR, plafond 25% "
+                    "par actif, réserve cash 15%, machine à états NORMAL/CAUTION/HALT. Le bot "
+                    "survit d'abord, gagne ensuite.")
+        if "position" in q or "portefeuille" in q or "equity" in q:
+            return (f"Équité actuelle : {equity_txt}. Positions ouvertes : "
+                    f"{', '.join(context.get('positions', [])) or 'aucune'}.")
+        return (f"Régime: {regime} | BTC: {price_txt} | Équité: {equity_txt}. "
+                f"(Réponse structurée — clé LLM absente, OPENROUTER_API_KEY non configurée.)")
     prompt = (
         f"Tu es l'assistant d'un terminal de trading quantitatif. Réponds en français, de façon "
         f"précise et honnête, en t'appuyant sur ces données réelles: {json.dumps(context, default=str)[:2000]}. "

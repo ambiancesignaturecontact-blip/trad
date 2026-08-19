@@ -142,7 +142,14 @@
                 <div class="text-right">
                     <div class="text-xs text-zinc-400">CAPITAL ACTUEL</div>
                     <div id="capital-display" class="font-display text-3xl font-bold tabular-nums tracking-tighter">$124,850</div>
+                    <div id="equity-display" class="text-[10px] text-zinc-500 font-semibold mt-0.5">Équité: —</div>
                 </div>
+            </div>
+            <div class="flex gap-1.5 mt-2">
+                <span id="badge-bot" class="px-2 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 text-[10px] font-bold">BOT: —</span>
+                <span id="badge-risk" class="px-2 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 text-[10px] font-bold">RISQUE: —</span>
+                <span id="badge-data" class="px-2 py-1 rounded-lg bg-zinc-800 text-zinc-400 text-[10px] font-bold">DATA: —</span>
+                <span id="badge-costs" class="px-2 py-1 rounded-lg bg-zinc-800 text-zinc-400 text-[10px] font-bold">COÛTS: $0</span>
             </div>
         </div>
 
@@ -299,6 +306,29 @@
 
         <!-- ACTIONS -->
         <div class="px-5 py-6 border-t border-zinc-800 bg-zinc-950">
+            <!-- RÉGLER LE CAPITAL (mini-app complète) -->
+            <div class="mb-4 p-3 rounded-2xl bg-zinc-900 border border-zinc-800">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="font-semibold text-xs text-zinc-300">💰 RÉGLER LE CAPITAL (DEMO)</span>
+                    <span id="set-balance-status" class="text-[10px] text-emerald-400 font-bold"></span>
+                </div>
+                <div class="flex gap-2">
+                    <input id="set-balance-input" type="number" min="1" step="50" placeholder="Montant $"
+                           class="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-zinc-950 border border-zinc-700 text-sm font-semibold focus:outline-none focus:border-cyan-500" />
+                    <button onclick="setBalance()"
+                            class="px-4 py-2.5 rounded-xl bg-cyan-500/90 hover:bg-cyan-500 text-black text-sm font-bold active:scale-[0.98] transition-all">
+                        APPLIQUER
+                    </button>
+                </div>
+                <div class="flex gap-1.5 mt-2">
+                    <button onclick="setBalanceQuick(50)" class="flex-1 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] font-bold text-zinc-300">$50</button>
+                    <button onclick="setBalanceQuick(500)" class="flex-1 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] font-bold text-zinc-300">$500</button>
+                    <button onclick="setBalanceQuick(1000)" class="flex-1 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] font-bold text-zinc-300">$1k</button>
+                    <button onclick="setBalanceQuick(10000)" class="flex-1 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] font-bold text-zinc-300">$10k</button>
+                    <button onclick="setBalanceQuick(100000)" class="flex-1 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] font-bold text-zinc-300">$100k</button>
+                </div>
+                <p class="text-[9px] text-zinc-500 mt-1.5 font-medium">Le bot s'adapte automatiquement (min notional 3$/5$/10$ selon le capital, limites de risque micro-comptes).</p>
+            </div>
             <div class="grid grid-cols-2 gap-3">
                 <button onclick="pauseBot()" 
                         class="flex items-center justify-center gap-x-2 px-5 py-3.5 rounded-3xl bg-zinc-800 hover:bg-zinc-700 active:scale-[0.985] transition-all text-sm font-semibold">
@@ -651,6 +681,42 @@
         }
         
         // Actions
+        // RÉGLER LE CAPITAL DEMO (mini-app complète)
+        async function setBalance() {
+            const input = document.getElementById('set-balance-input');
+            const amount = parseFloat(input ? input.value : 0);
+            if (!amount || amount <= 0) { alert('❌ Montant invalide'); return; }
+            await doSetBalance(amount);
+        }
+        function setBalanceQuick(amount) {
+            const input = document.getElementById('set-balance-input');
+            if (input) input.value = amount;
+            doSetBalance(amount);
+        }
+        async function doSetBalance(amount) {
+            const status = document.getElementById('set-balance-status');
+            if (status) status.textContent = '…';
+            try {
+                const resp = await fetch('/api/set-demo-balance', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({balance: amount})
+                });
+                if (!resp.ok) {
+                    const err = await resp.json().catch(() => ({}));
+                    if (status) status.textContent = '❌ ' + (err.detail || 'refusé');
+                    alert('❌ ' + (err.detail || 'Action refusée par le serveur'));
+                    return;
+                }
+                if (status) status.textContent = '✅ ' + amount.toLocaleString() + '$';
+                await loadTelemetry();
+                setTimeout(() => { if (status) status.textContent = ''; }, 3000);
+            } catch (e) {
+                if (status) status.textContent = '❌ ' + e.message;
+                alert('❌ Erreur réseau: ' + e.message);
+            }
+        }
+
         // AUDIT B14-5: actions now AWAIT the server response, surface errors and
         // resynchronize from real telemetry instead of optimistic local state.
         async function pauseBot() {
@@ -701,6 +767,22 @@
                 
                 state.mode = telemetry.mode || state.mode;
                 state.capital = telemetry.balance ?? state.capital;
+                // Badges header (mini-app complète)
+                const eqEl = document.getElementById('equity-display');
+                if (eqEl) eqEl.textContent = 'Équité: $' + (telemetry.current_equity ?? 0).toLocaleString(undefined, {maximumFractionDigits: 0});
+                const badgeBot = document.getElementById('badge-bot');
+                if (badgeBot) { badgeBot.textContent = 'BOT: ' + (telemetry.is_running ? 'ACTIF' : 'PAUSE'); badgeBot.className = 'px-2 py-1 rounded-lg text-[10px] font-bold ' + (telemetry.is_running ? 'bg-emerald-500/15 text-emerald-400' : 'bg-amber-500/15 text-amber-400'); }
+                const badgeRisk = document.getElementById('badge-risk');
+                const rs = telemetry.risk_state || {};
+                if (badgeRisk) {
+                    const rsEmoji = {NORMAL:'🟢', CAUTION:'🟠', HALT:'🔴'}[rs.state] || '⚪';
+                    badgeRisk.textContent = 'RISQUE: ' + rsEmoji + ' ' + (rs.state || 'NORMAL');
+                    badgeRisk.className = 'px-2 py-1 rounded-lg text-[10px] font-bold ' + (rs.state === 'HALT' ? 'bg-red-500/20 text-red-400' : rs.state === 'CAUTION' ? 'bg-amber-500/15 text-amber-400' : 'bg-emerald-500/15 text-emerald-400');
+                }
+                const badgeData = document.getElementById('badge-data');
+                if (badgeData) badgeData.textContent = 'DATA: ' + (telemetry.data_quality_status || 'n/a');
+                const badgeCosts = document.getElementById('badge-costs');
+                if (badgeCosts) badgeCosts.textContent = 'COÛTS: $' + ((telemetry.cost_metrics && telemetry.cost_metrics.total_costs_usd) || 0).toFixed(2);
                 state.pnl = telemetry.live_pnl_usd ?? 0;
                 state.pnl_pct = telemetry.live_pnl_pct ?? 0;
                 state.is_running = telemetry.is_running ?? state.is_running;

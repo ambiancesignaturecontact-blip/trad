@@ -105,8 +105,12 @@ class PortfolioAllocator:
             return {s: {"weight_penalty": 1.0, "max_corr": 0.0} for s in strategy_returns}
 
         matrix = np.array([strategy_returns[n][-min_samples:] for n in names])
-        # corrélation pair-à-pair (matrice de Pearson)
-        corr = np.corrcoef(matrix)
+        # FIX (logs) : une série à variance nulle (rendements constants)
+        # produit des NaN dans np.corrcoef (RuntimeWarning + corr invalide).
+        # On remplace les NaN par 0 (aucune corrélation mesurable = neutre).
+        with np.errstate(invalid="ignore", divide="ignore"):
+            corr = np.corrcoef(matrix)
+            corr = np.nan_to_num(corr, nan=0.0)
         np.fill_diagonal(corr, 0.0)
 
         result = {}

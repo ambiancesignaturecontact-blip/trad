@@ -44,8 +44,10 @@ def compute_market_state(state: dict, regime_probs: dict, vol_mean: float = 0.0,
             "vol_regime": vol_regime,
             "correlation": round(float(avg_correlation), 3),
             "corr_regime": corr_regime,
-            "sentiment": float(state.get("sentiment_index", 0.0)),
-            "onchain_risk": float(state.get("onchain_risk_score", 0.0)),
+            # FIX (logs) : sentiment/onchain peuvent être None (source
+            # indisponible) -> neutre 0.0, jamais de float(None) qui spamme
+            "sentiment": float(state.get("sentiment_index") or 0.0),
+            "onchain_risk": float(state.get("onchain_risk_score") or 0.0),
             "data_quality": state.get("data_quality_status", "UNAVAILABLE"),
             "n_assets": len(vols),
         }
@@ -142,8 +144,9 @@ def compute_structural_regimes(state: dict, spread_bps: float = 2.0,
     liquidity (spread), sentiment, on-chain, correlation, macro.
     """
     try:
-        sentiment = float(state.get("sentiment_index", 0.0))
-        onchain = float(state.get("onchain_risk_score", 0.5))
+        # FIX (logs) : mêmes gardes None -> neutre
+        sentiment = float(state.get("sentiment_index") or 0.0)
+        onchain = float(state.get("onchain_risk_score") or 0.5)
         liq_regime = "tight" if spread_bps < 3 else ("wide" if spread_bps > 15 else "normal")
         sent_regime = "bullish" if sentiment > 0.2 else ("bearish" if sentiment < -0.2 else "neutral")
         onchain_regime = "risky" if onchain > 0.75 else ("healthy" if onchain < 0.4 else "normal")

@@ -1,0 +1,202 @@
+"""
+TESTS AUTONOMES — Mini-app complète + budget 50$ + assistant IA.
+
+Vérifie les 3 problèmes signalés par l'utilisateur :
+ 1. L'assistant IA ne doit JAMAIS répondre « Pas de réponse » ni crasher
+    (fallback structuré robuste aux None).
+ 2. Un budget de 50 $ doit pouvoir TRADER (sizing, filtres, méta-label).
+ 3. La mini-app doit permettre de régler le montant du capital DEMO.
+"""
+import asyncio
+import inspect
+
+import numpy as np
+import pytest
+
+from fastapi.testclient import TestClient
+
+
+# --------------------------------------------------------------------------- #
+# 1. ASSISTANT IA
+# --------------------------------------------------------------------------- #
+class TestAssistant:
+    def test_fallback_no_crash_without_price(self):
+        """Sans prix réel (None), l'assistant répond honnêtement au lieu de 500."""
+        from core.llm_narrative import answer_question_async
+        r = asyncio.run(answer_question_async(
+            "quel est le prix du bitcoin ?",
+            {"last_price": None, "current_equity": 50000.0,
+             "regime_name": "Mean-Reverting Range"}))
+        assert "indisponible" in r
+        assert "500" not in r  # pas d'erreur
+
+    def test_fallback_answers_common_questions(self):
+        from core.llm_narrative import answer_question_async
+        cases = [
+            ("pourquoi tu achètes ?", "méta-modèle"),
+            ("comment tu gères le risque ?", "risque"),
+            ("quelles sont mes positions ?", "positions"),
+            ("c'est quoi le régime actuel ?", "Régime"),
+        ]
+        for q, kw in cases:
+            r = asyncio.run(answer_question_async(q, {"last_price": 64000.0,
+                                                       "current_equity": 50000.0,
+                                                       "regime_name": "Range",
+                                                       "positions": ["BTCUSDT"]}))
+            assert r and len(r) > 10, f"réponse vide pour '{q}'"
+            assert "Pas de réponse" not in r
+
+    def test_endpoint_returns_answer(self):
+        """L'endpoint /api/v1/assistant/ask renvoie une réponse (pas 500)."""
+        import main
+        with TestClient(main.app) as c:
+            r = c.post("/api/v1/assistant/ask",
+                       json={"question": "pourquoi tu n'as pas acheté hier ?"})
+            assert r.status_code == 200
+            body = r.json()
+            assert "answer" in body
+            assert body["answer"] and len(body["answer"]) > 5
+            assert "Pas de réponse" not in body["answer"]
+
+    def test_miniapp_shows_answer_or_error(self):
+        """La mini-app utilise d.answer avec fallback uniquement sur erreur."""
+        src = open("templates/telegram_mini_app.html").read()
+        assert "d.answer || 'Pas de réponse'" in src
+
+
+# --------------------------------------------------------------------------- #
+# 2. BUDGET 50$ : LE BOT DOIT POUVOIR TRADER
+# --------------------------------------------------------------------------- #
+class TestMicroBudget50:
+    def test_sizing_generates_trade(self):
+        """Avec 50 $, le sizing produit un ordre >= min notional (3$)."""
+        from risk.risk_manager import RiskManager
+        from core.paper_execution import min_notional_for_capital
+        rm = RiskManager()
+        # BTC
+        qty = rm.calculate_position_size(50.0, 500.0, 64000.0)
+        assert qty * 64000.0 >= min_notional_for_capital(50.0)  # >= 3$
+        # EURUSD
+        qty2 = rm.calculate_position_size(50.0, 0.002, 1.158)
+        assert qty2 * 1.158 >= min_notional_for_capital(50.0)
+        # SOL
+        qty3 = rm.calculate_position_size(50.0, 0.5, 77.0)
+        assert qty3 * 77.0 >= min_notional_for_capital(50.0)
+
+    def test_meta_label_warmup_does_not_block_demo(self):
+        """Le méta-label ne bloque plus en DEMO : warm-up 20 trades, et un
+        win rate faible RÉDUIT la taille au lieu de bloquer (apprentissage)."""
+        src = open("main.py").read()
+        assert "min_samples=20" in src
+        # DEMO : pas de continue bloquant sur meta-label
+        assert 'if not _ml_ok:' in src
+        assert 'active_mode == "REAL"' in src
+        # la réduction DEMO existe
+        assert "target_qty *= max(0.25" in src
+
+    def test_meta_label_still_blocks_real(self):
+        """En REAL, le filtre reste bloquant (prudence maximale)."""
+        src = open("main.py").read()
+        assert "meta-label REAL" in src
+
+    def test_decision_pipeline_allows_50usd(self):
+        """Pipeline de risque complet avec 50 $ : la taille reste > 0."""
+        from core.risk_pipeline import apply_risk_pipeline
+        res = apply_risk_pipeline(
+            base_qty=0.00015625,          # ~10 $ de BTC à 64000
+            cvar_qty=1000.0,              # pas de contrainte CVaR
+            max_asset_qty=0.0007,         # 50$ * 0.85 / 64000 ≈ cap 42.5$
+            conviction=0.9,               # signal fort
+            risk_state_scale=1.0,
+            order_flow_scale=1.0,
+            regime_confidence_scale=1.0,
+            capacity_scale=1.0,
+            cash_reserve_scale=1.0,
+        )
+        assert res["qty"] > 0
+        assert res["final_scale"] > 0.5
+
+    def test_micro_risk_limits(self):
+        """Les limites micro-comptes sont appliquées (config)."""
+        from risk.risk_manager import RiskManager
+        rm = RiskManager()
+        rm.set_initial_capital(50.0)
+        assert rm.params["max_daily_drawdown_pct"] == 0.18  # micro
+        assert rm.params["max_total_drawdown_pct"] == 0.35  # micro
+
+
+# --------------------------------------------------------------------------- #
+# 3. SET MONTANT (MINI-APP + API)
+# --------------------------------------------------------------------------- #
+class TestSetBalance:
+    def test_endpoint_exists(self):
+        import main
+        routes = [r.path for r in main.app.routes]
+        assert "/api/set-demo-balance" in routes
+
+    def test_endpoint_sets_balance(self):
+        import main
+        with TestClient(main.app) as c:
+            r = c.post("/api/set-demo-balance", json={"balance": 50.0})
+            assert r.status_code == 200
+            assert main.STATE["balance_demo"] == 50.0
+            assert main.STATE["initial_capital_demo"] == 50.0
+            # reset pour ne pas polluer
+            c.post("/api/set-demo-balance", json={"balance": 100000.0})
+            assert main.STATE["balance_demo"] == 100000.0
+
+    def test_endpoint_rejects_negative(self):
+        import main
+        with TestClient(main.app) as c:
+            r = c.post("/api/set-demo-balance", json={"balance": -5})
+            assert r.status_code == 422
+
+    def test_miniapp_has_set_balance_control(self):
+        """La mini-app contient le panneau de réglage du capital."""
+        src = open("templates/telegram_mini_app.html").read()
+        assert "set-balance-input" in src
+        assert "APPLIQUER" in src
+        assert "setBalanceQuick(50)" in src      # bouton $50
+        assert "setBalanceQuick(100000)" in src  # bouton $100k
+        assert "doSetBalance" in src
+        assert "/api/set-demo-balance" in src
+
+    def test_miniapp_badges(self):
+        """La mini-app affiche les badges équité/état/risque/data/coûts."""
+        src = open("templates/telegram_mini_app.html").read()
+        for bid in ("equity-display", "badge-bot", "badge-risk", "badge-data", "badge-costs"):
+            assert bid in src, f"badge {bid} manquant"
+
+
+# --------------------------------------------------------------------------- #
+# 4. INTÉGRATION : la mini-app est complète
+# --------------------------------------------------------------------------- #
+class TestMiniAppComplete:
+    def test_all_sections_present(self):
+        src = open("templates/telegram_mini_app.html").read()
+        sections = [
+            "MODE", "CAPITAL", "P&amp;L LIVE", "SHARPE", "DRAWDOWN",
+            "ASSISTANT", "MODE CONSULTATIF", "STRATÉGIES",
+            "RISQUE", "Honnêteté modules", "Order Flow", "Stress crises",
+            "Coûts réels", "RÉGLER LE CAPITAL",
+        ]
+        for s in sections:
+            assert s in src, f"section '{s}' manquante dans la mini-app"
+
+    def test_endpoints_used_exist(self):
+        """Tous les endpoints appelés par la mini-app existent dans main.py."""
+        import re
+        import main
+        routes = {r.path for r in main.app.routes}
+        src = open("templates/telegram_mini_app.html").read()
+        api_calls = set(re.findall(r"fetch\('(/api/[^']*)'", src))
+        missing = [c for c in api_calls if c not in routes and c not in
+                   ("/api/telemetry", "/api/status")]  # ces 2 sont GET implicites
+        # /api/telemetry et /api/status existent aussi
+        missing = [c for c in api_calls if c not in routes]
+        assert not missing, f"endpoints manquants appelés par la mini-app: {missing}"
+
+    def test_assistant_input_enter_key(self):
+        """Bonus : l'entrée Entrée dans l'input assistant déclenche la question."""
+        src = open("templates/telegram_mini_app.html").read()
+        assert "assistant-input" in src
