@@ -88,7 +88,11 @@ def test_cli_cost_assumptions_pass_bias_audit():
 # ---------------------------------------------------------------- P0-4 ----
 
 @pytest.fixture(autouse=True)
-def _clean_final_scale_state():
+def _clean_final_scale_state(monkeypatch):
+    # LEÇON APPRISE (P0-4) : AUCUN test de ce fichier ne doit écrire dans la
+    # vraie DB — sinon les données de test polluent la collecte réelle
+    # (c'est ce qui a faussé le p50=11,45% au boot).
+    monkeypatch.setattr(main, "db", _StoreDB())
     main.STATE["final_scale_samples"] = []
     main.STATE["final_scale_last_ts"] = {}
     main.STATE.pop("final_scale_stats", None)
@@ -115,9 +119,12 @@ def test_record_final_scale_downsample_per_symbol(monkeypatch):
 
 
 def test_record_final_scale_upper_bound(monkeypatch):
+    # borne réduite pour un test rapide (la sérialisation JSON complète à
+    # chaque persist est O(n) — 25 000 échantillons réels restent OK en prod)
+    monkeypatch.setattr(main, "FINAL_SCALE_MAX_SAMPLES", 100)
     clock = {"t": 1_000_000.0}
     monkeypatch.setattr(main.time, "time", lambda: clock["t"])
-    for i in range(main.FINAL_SCALE_MAX_SAMPLES + 1000):
+    for _ in range(1100):
         main.STATE["final_scale_last_ts"] = {}
         clock["t"] += 61.0  # 1 échantillon / min / symbole
         main._record_final_scale("BTCUSDT", 0.5, 17)
@@ -456,6 +463,82 @@ def test_limiting_factor_stats_aggregation(monkeypatch):
     assert lim["top"][0]["pct_of_samples"] == 60.0
     assert lim["top"][0]["median_value"] == pytest.approx(0.4)
     assert lim["top"][1]["factor"] == "capacity"
+
+
+def test_vpin_bounded_01_on_real_bars():
+    """FIX VPIN : sur des barres réelles (volumes 100-1000), le VPIN doit
+    rester une probabilité bornée [0,1] — plus jamais 6 988 465."""
+    import numpy as np
+    import pandas as pd
+    from models.microstructure_edge import MicrostructureEdgeEngine
+
+    n = 120
+    idx = pd.date_range("2026-08-01", periods=n, freq="h")
+    close = np.cumsum(np.random.RandomState(3).normal(0, 50, n)) + 65000
+    volume = np.random.RandomState(4).uniform(100, 1000, n)
+    df = pd.DataFrame({"close": close, "volume": volume}, index=idx)
+
+    eng = MicrostructureEdgeEngine()
+    for nb in (10, 50, 100):
+        vpin = eng.calculate_vpin(df, num_buckets=nb)
+        assert 0.0 <= vpin <= 1.0, f"VPIN hors bornes avec {nb} buckets : {vpin}"
+
+
+def test_vpin_neutral_on_empty_or_zero_volume():
+    from models.microstructure_edge import MicrostructureEdgeEngine
+    import pandas as pd
+    eng = MicrostructureEdgeEngine()
+    assert eng.calculate_vpin(pd.DataFrame()) == 0.5
+    df = pd.DataFrame({"close": [1.0, 1.0], "volume": [0.0, 0.0]})
+    assert eng.calculate_vpin(df) == 0.5
+
+
+def test_allocate_modulate_ignores_out_of_bounds_vpin(monkeypatch):
+    """FIX : un VPIN aberrant (hors [0,1]) ne doit PLUS réduire la conviction
+    dans MetaAllocationEngine.allocate() (max(0.50, 1-(6.9M-0.90)) = 0.50
+    appliqué à chaque tick = cause majeure des signaux faibles)."""
+    from strategies.engine import MetaAllocationEngine, TrendFollowingStrategy
+
+    eng = MetaAllocationEngine(strategies=[TrendFollowingStrategy()])
+    md = {
+        "df": None, "symbol": "BTCUSDT", "price_primary": 69000.0,
+        "price_secondary": 69000.0, "bids": [], "asks": [],
+        "inventory": 0.0, "max_inventory": 1.0,
+        "vpin": 6_988_465.87,          # valeur aberrante observée en prod
+        "kyle_lambda": 2.1e-07, "onchain_risk": 0.5, "sentiment": 0.0,
+        "funding_rate_8h": 0.0, "market_avg_return": 0.0, "cross_asset_bias": 0.0,
+    }
+    # VPIN normal (0.95) DOIT réduire ; VPIN aberrant doit être NEUTRE (1.0)
+    res_bad = eng.allocate(md, 1, 0.001, 0.0)
+    assert res_bad["modulate_factor"] == 1.0, \
+        f"VPIN aberrant modulé la conviction : {res_bad['modulate_factor']}"
+    md2 = dict(md, vpin=0.95)
+    res_high = eng.allocate(md2, 1, 0.001, 0.0)
+    assert res_high["modulate_factor"] < 1.0, "VPIN 0.95 devrait réduire"
+
+
+def test_final_scale_persists_every_5min(monkeypatch):
+    """P0-4 : persistance toutes les ~5 min (perte max 5 min au lieu de 60)."""
+    sdb = _StoreDB()
+    monkeypatch.setattr(main, "db", sdb)
+    clock = {"t": 1_000_000.0}
+    monkeypatch.setattr(main.time, "time", lambda: clock["t"])
+    main.STATE["final_scale_last_persist"] = 0.0
+    main.STATE["final_scale_samples"] = []
+    main._record_final_scale("BTCUSDT", 0.3, 17, steps=None)
+    assert "final_scale_samples_json" in sdb.s, \
+        "le premier échantillon doit persister (0 >= 300s)"
+    # 4 minutes plus tard : pas encore de persist
+    sdb.s.clear()
+    clock["t"] += 240.0
+    main._record_final_scale("BTCUSDT", 0.4, 17, steps=None)
+    assert "final_scale_samples_json" not in sdb.s, \
+        "persist trop fréquent (< 5 min)"
+    # 6 minutes plus tard : persist
+    clock["t"] += 120.0
+    main._record_final_scale("BTCUSDT", 0.5, 17, steps=None)
+    assert "final_scale_samples_json" in sdb.s, \
+        "persist attendu après >= 5 min"
 
 
 def test_floor_prevents_cumulative_self_strangulation():

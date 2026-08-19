@@ -17,58 +17,72 @@ class MicrostructureEdgeEngine:
         """
         Calculates VPIN (Volume-Synchronized Probability of Informed Trading).
         Measures the probability that order flow is driven by informed toxic traders.
+
+        FIX P0-4 (audit §2.1 / logs prod) : le bucket_size_volume était FIXE (50),
+        alors que les barres ont des volumes de 250-1000+ unités -> chaque barre
+        formait son propre bucket et le dénominateur (N * 50) devenait minuscule :
+        VPIN mesuré à 6 988 465 sur BTC (une probabilité bornée [0,1] !). Le
+        paramètre num_buckets était même ignoré.
+        Définition standard : on découpe le flux en num_buckets buckets de VOLUME
+        ÉGAL (bucket_size = volume_total / num_buckets), puis
+        VPIN = sum(|V_buy - V_sell|) / volume_total  -> mathématiquement borné [0,1].
         """
-        if df_ticks.empty or 'volume' not in df_ticks.columns or 'close' not in df_ticks.columns:
-            return 0.5 # Neutral fallback
-            
+        if df_ticks is None or df_ticks.empty or 'volume' not in df_ticks.columns or 'close' not in df_ticks.columns:
+            return 0.5  # Neutral fallback
+
         prices = df_ticks['close'].values
         volumes = df_ticks['volume'].values
-        
-        # Calculate tick direction (Buy vs Sell volume proxy using tick sign)
+        volumes = np.asarray(volumes, dtype=float)
+
+        total_volume_all = float(np.nansum(volumes))
+        if total_volume_all <= 0 or num_buckets < 2:
+            return 0.5
+
+        # Direction du tick : signe de la variation de prix (proxy buy/sell)
         price_diffs = np.diff(prices)
         tick_directions = np.sign(price_diffs)
-        # Pad first diff
         tick_directions = np.insert(tick_directions, 0, 0.0)
-        
-        # Partition ticks into equal-volume buckets
+
+        bucket_size = total_volume_all / num_buckets
+
+        # Partition en buckets de volume égal
         buy_volume_buckets = []
         sell_volume_buckets = []
-        
         current_buy_vol = 0.0
         current_sell_vol = 0.0
         current_total_vol = 0.0
-        
+
         for idx in range(len(volumes)):
             vol = volumes[idx]
             direction = tick_directions[idx]
-            
-            # Classify volume based on tick direction
+
             if direction >= 0:
                 current_buy_vol += vol
             else:
                 current_sell_vol += vol
-                
+
             current_total_vol += vol
-            
-            if current_total_vol >= self.bucket_size_volume:
+
+            if current_total_vol >= bucket_size:
                 buy_volume_buckets.append(current_buy_vol)
                 sell_volume_buckets.append(current_sell_vol)
-                
-                # Reset for next bucket
                 current_buy_vol = 0.0
                 current_sell_vol = 0.0
                 current_total_vol = 0.0
-                
+
+        # Dernier bucket résiduel (partiel) : inclus pour ne pas perdre du volume
+        if current_total_vol > 0 and len(buy_volume_buckets) > 0:
+            buy_volume_buckets.append(current_buy_vol)
+            sell_volume_buckets.append(current_sell_vol)
+
         if len(buy_volume_buckets) < 5:
             return 0.5
-            
-        # VPIN Formula = Sum(|V_buy - V_sell|) / (N_buckets * Bucket_Volume)
+
+        # VPIN = sum(|V_buy - V_sell|) / volume_total  -> borné [0,1] par construction
         abs_imbalances = np.abs(np.array(buy_volume_buckets) - np.array(sell_volume_buckets))
-        total_imbalance = np.sum(abs_imbalances)
-        total_volume = len(buy_volume_buckets) * self.bucket_size_volume
-        
-        vpin = total_imbalance / total_volume if total_volume > 0 else 0.5
-        return float(vpin)
+        vpin = float(np.sum(abs_imbalances)) / total_volume_all if total_volume_all > 0 else 0.5
+        # garde finale : jamais hors [0,1] (défense en profondeur)
+        return float(min(1.0, max(0.0, vpin)))
 
     def calculate_kyles_lambda(self, df_bars: pd.DataFrame) -> float:
         """

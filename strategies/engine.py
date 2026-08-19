@@ -500,6 +500,15 @@ class MetaAllocationEngine:
             kyle = float(market_data.get("kyle_lambda") or 0.0)
             onchain = float(market_data.get("onchain_risk") or 0.0)
 
+            # FIX P0-4 (audit §2.1 / logs prod) : le modulate VPIN s'appliquait
+            # SANS garde de bornes. Un VPIN aberrant (6 988 465 mesuré sur BTC,
+            # bug de calcul du bucket_size) donnait max(0.50, 1-(6.9M-0.90)) =
+            # 0.50 -> la CONVICTION était réduite de 50% à chaque tick, même
+            # quand le garde [0,1] de toxicity_factor la neutralisait ailleurs.
+            # VPIN est une probabilité : hors [0,1] = donnée douteuse = neutre.
+            if not (0.0 <= vpin <= 1.0):
+                vpin = 0.0
+
             if vpin > 0.90:
                 modulate_factor *= max(0.50, 1.0 - (vpin - 0.90))
             if onchain > 0.75:

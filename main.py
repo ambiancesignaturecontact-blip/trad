@@ -957,6 +957,11 @@ def _record_final_scale(symbol: str, final_scale: float, n_steps: int,
                         "limit_value": limiting["value"] if limiting else None})
         if len(samples) > FINAL_SCALE_MAX_SAMPLES:
             del samples[: len(samples) - FINAL_SCALE_MAX_SAMPLES]
+        # P0-4 : persistance FRÉQUENTE (5 min) — si le process meurt entre deux
+        # rapports 60 min, on ne perd que ~5 min de collecte au lieu de 60.
+        if now - STATE.get("final_scale_last_persist", 0.0) >= 300.0:
+            STATE["final_scale_last_persist"] = now
+            _persist_final_scale_samples()
     except Exception:
         pass  # l'instrumentation ne doit jamais casser la boucle de trading
 
@@ -1049,6 +1054,25 @@ def _load_final_scale_samples() -> None:
             )
     except Exception as e:
         logger.warning(f"FINAL_SCALE : rechargement impossible ({e})")
+
+
+def _signal_stats() -> dict:
+    """Distribution de |final_signal| sur la fenêtre glissante (diagnostic
+    conviction : si p50 est ~0.1, les signaux sont faibles juste au-dessus du
+    seuil 0.08 — la question d'ajuster conviction se tranche sur CES données)."""
+    sigs = [float(s) for s in STATE.get("recent_signals", []) if s is not None]
+    if len(sigs) < 5:
+        return {"n": len(sigs), "note": "échantillon insuffisant"}
+    v = np.abs(np.array(sigs))
+    return {
+        "n": len(sigs),
+        "abs_p10": round(float(np.percentile(v, 10)), 4),
+        "abs_p50": round(float(np.percentile(v, 50)), 4),
+        "abs_p90": round(float(np.percentile(v, 90)), 4),
+        "threshold": STATE.get("conviction_threshold", 0.15),
+        "entry_threshold": 0.08,
+        "note": "p50 proche de 0.1 = signaux faibles juste au-dessus du seuil d'entrée.",
+    }
 
 
 def _final_scale_report() -> dict:
@@ -5857,6 +5881,7 @@ async def api_v1_final_scale(_auth: dict = Depends(require_auth)):
         "stats": stats,
         # recalcul à la volée : le rapport ne tourne que toutes les 60 min
         "limiting_factor": _limiting_factor_stats(),
+        "signal_distribution": _signal_stats(),
         "samples_count": len(samples),
         "window_hours": FINAL_SCALE_WINDOW_HOURS,
         "collected_since": samples[0]["ts"] if samples else None,
