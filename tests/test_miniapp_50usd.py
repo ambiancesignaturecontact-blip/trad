@@ -200,3 +200,67 @@ class TestMiniAppComplete:
         """Bonus : l'entrée Entrée dans l'input assistant déclenche la question."""
         src = open("templates/telegram_mini_app.html").read()
         assert "assistant-input" in src
+
+
+# --------------------------------------------------------------------------- #
+# 5. SYNCHRO DASHBOARD <-> MINI-APP
+# --------------------------------------------------------------------------- #
+class TestUISync:
+    def test_visual_palette_unified(self):
+        """La mini-app utilise la palette slate (comme le dashboard), plus de zinc."""
+        mini = open("templates/telegram_mini_app.html").read()
+        assert "zinc-" not in mini
+        assert "slate-" in mini
+        assert "var(--accent)" in mini or "#22d3ee" in mini  # accent cyan unifié
+
+    def test_assistant_in_both(self):
+        dash = open("templates/dashboard.html").read()
+        mini = open("templates/telegram_mini_app.html").read()
+        assert "assistant" in dash.lower()
+        assert "assistant" in mini.lower()
+        assert "/api/v1/assistant/ask" in dash
+        assert "/api/v1/assistant/ask" in mini
+
+    def test_set_balance_in_both(self):
+        dash = open("templates/dashboard.html").read()
+        mini = open("templates/telegram_mini_app.html").read()
+        assert "/api/set-demo-balance" in dash
+        assert "/api/set-demo-balance" in mini
+        assert "RÉGLER LE CAPITAL" in dash
+        assert "RÉGLER LE CAPITAL" in mini
+
+    def test_advanced_controls_in_miniapp(self):
+        """La mini-app a maintenant les contrôles avancés du dashboard."""
+        mini = open("templates/telegram_mini_app.html").read()
+        for ep in ("/api/retrain", "/api/monte-carlo", "/api/v1/stress", "/api/reset-bot", "/api/toggle-strategy"):
+            assert ep in mini, f"{ep} manquant dans la mini-app"
+
+    def test_narrative_in_both(self):
+        dash = open("templates/dashboard.html").read()
+        mini = open("templates/telegram_mini_app.html").read()
+        assert "/api/v1/narrative" in dash
+        assert "/api/v1/narrative" in mini
+
+    def test_approve_in_both(self):
+        dash = open("templates/dashboard.html").read()
+        mini = open("templates/telegram_mini_app.html").read()
+        assert "/api/v1/approve" in dash
+        assert "/api/v1/approve" in mini
+
+    def test_all_endpoints_exist(self):
+        """Tous les endpoints appelés par les deux interfaces existent."""
+        import re
+        import main
+        routes = {r.path for r in main.app.routes}
+        for f in ("templates/dashboard.html", "templates/telegram_mini_app.html"):
+            src = open(f).read()
+            calls = set(re.findall(r"fetch\('(/api/[^']*)'", src))
+            missing = [c for c in calls if c not in routes]
+            assert not missing, f"{f}: endpoints manquants {missing}"
+
+    def test_key_sections_in_both(self):
+        dash = open("templates/dashboard.html").read().lower()
+        mini = open("templates/telegram_mini_app.html").read().lower()
+        for s in ("order flow", "état risque", "honnêteté", "attribution", "stress", "coûts"):
+            assert s in dash, f"'{s}' manquant dans dashboard"
+            assert s in mini, f"'{s}' manquant dans mini-app"

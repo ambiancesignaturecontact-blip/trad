@@ -337,6 +337,22 @@ window.qpLogin = async function () {
                     <p class="text-[9px] text-slate-500 font-bold mt-1">Un module ÉDUCATIF n'influence JAMAIS le sizing réel</p>
                 </div>
 
+                <!-- Assistant IA + Approbations (parité mini-app) -->
+                <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">ASSISTANT IA & APPROBATIONS</p>
+                    <div id="dash-pending" class="text-[10px] text-amber-400 font-bold mt-1 hidden">⚠️ Propositions en attente: <span id="dash-pending-count">0</span> · <a href="#" onclick="dashApproveAll(event)" class="underline">Tout approuver</a></div>
+                    <div class="flex gap-1.5 mt-2">
+                        <input id="dash-assistant-input" type="text" placeholder="Question à l'assistant…"
+                               class="flex-1 min-w-0 px-2 py-1.5 rounded-lg bg-slate-950 border border-slate-700 text-sm focus:outline-none focus:border-cyan-500"
+                               onkeydown="if(event.key==='Enter')dashAskAssistant()" />
+                        <button onclick="dashAskAssistant()"
+                                class="px-3 py-1.5 rounded-lg bg-cyan-500/90 hover:bg-cyan-500 text-black text-xs font-bold active:scale-[0.98] transition-all">➤</button>
+                    </div>
+                    <p id="dash-assistant-answer" class="text-[11px] text-slate-300 mt-2 leading-relaxed min-h-[20px]">Demande-moi : « pourquoi tu n'as pas acheté hier ? »</p>
+                    <button onclick="dashLoadNarrative()" class="w-full mt-2 py-1.5 rounded-lg bg-cyan-500/10 text-cyan-400 text-[11px] font-bold hover:bg-cyan-500/20">📜 Générer le narratif du jour</button>
+                    <p id="dash-narrative" class="text-[10px] text-slate-400 mt-1.5 leading-relaxed"></p>
+                </div>
+
                 <!-- Attribution & Coûts (LOT 8) -->
                 <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
                     <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">ATTRIBUTION — FACTEURS (PnL %)</p>
@@ -869,6 +885,8 @@ window.qpLogin = async function () {
                     barOfi.className = `h-1 rounded-full ${ofl.liquidation_cascade ? 'bg-rose-500' : ofiVal >= 0 ? 'bg-cyan-500' : 'bg-amber-500'}`;
                 }
             }
+            // Approbations en attente (parité mini-app)
+            try { updatePendingApprovals(data); } catch (e2) {}
             // Honnêteté des modules (LOT 9)
             const hSum = (data.module_honesty && data.module_honesty.summary) || {};
             safeSetText('val-honesty-prod', `${hSum.PRODUCTION || 0} PROD`);
@@ -917,6 +935,51 @@ window.qpLogin = async function () {
                     } catch (e2) { console.warn('refresh after set-balance failed', e2); }
                     setTimeout(() => { if (status) status.textContent = ''; }, 3000);
                 } catch (e) { if (status) status.textContent = '❌ ' + e.message; }
+            }
+            // Assistant IA + Approbations (parité mini-app)
+            async function dashAskAssistant() {
+                const input = document.getElementById('dash-assistant-input');
+                const box = document.getElementById('dash-assistant-answer');
+                const q = input ? input.value.trim() : '';
+                if (!q) return;
+                if (box) box.textContent = '…';
+                try {
+                    const r = await fetch('/api/v1/assistant/ask', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({question: q})
+                    });
+                    const d = await r.json();
+                    if (box) box.textContent = '🤖 ' + (d.answer || 'Pas de réponse');
+                } catch (e) { if (box) box.textContent = '❌ ' + e.message; }
+            }
+            async function dashLoadNarrative() {
+                const box = document.getElementById('dash-narrative');
+                if (box) box.textContent = '…';
+                try {
+                    const r = await fetch('/api/v1/narrative', {method: 'POST'});
+                    const d = await r.json();
+                    if (box) box.textContent = d.narrative || d.answer || JSON.stringify(d).slice(0, 300);
+                } catch (e) { if (box) box.textContent = '❌ ' + e.message; }
+            }
+            async function dashApproveAll(ev) {
+                if (ev) ev.preventDefault();
+                try {
+                    const r = await fetch('/api/v1/approve', {method: 'POST'});
+                    const d = await r.json();
+                    const el = document.getElementById('dash-pending');
+                    if (el) el.classList.add('hidden');
+                    alert('✅ ' + JSON.stringify(d).slice(0, 120));
+                } catch (e) { alert('❌ ' + e.message); }
+            }
+            // Mise à jour des approbations en attente depuis la télémétrie
+            function updatePendingApprovals(telemetry) {
+                const el = document.getElementById('dash-pending');
+                const count = (telemetry.pending_approvals || 0);
+                if (el) {
+                    if (count > 0) { el.classList.remove('hidden'); document.getElementById('dash-pending-count').textContent = count; }
+                    else { el.classList.add('hidden'); }
+                }
             }
             // Risk State (LOT 2)
             const rs = data.risk_state || {};

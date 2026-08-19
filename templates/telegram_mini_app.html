@@ -9,10 +9,14 @@
     <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.1/css/all.min.css">
     <style>
+        :root {
+            --accent: #22d3ee;  /* cyan-400 Tailwind — accent uniforme avec le dashboard */
+            --bg: #09090b;      /* fond slate-950, palette unifiée avec le dashboard */
+        }
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&amp;family=Space+Grotesk:wght@500;600&amp;display=swap');
         
         :root {
-            --primary: #00f5ff;
+            --primary: var(--accent);
         }
         
         body {
@@ -49,7 +53,7 @@
         }
 
         .nav-active {
-            background: linear-gradient(90deg, #00f5ff, #00d4ff);
+            background: linear-gradient(90deg, var(--accent), #00d4ff);
             color: #000;
             font-weight: 700;
         }
@@ -92,24 +96,24 @@
         }
     </style>
 </head>
-<body class="bg-zinc-950 text-zinc-200">
+<body class="bg-slate-950 text-slate-200">
 <!-- Login modal (institutional auth) -->
 <div id="qp-login-modal" style="position:fixed;inset:0;z-index:9999;display:none;align-items:center;justify-content:center;background:rgba(9,9,11,.9);backdrop-filter:blur(4px);padding:20px;">
     <div style="background:#18181b;border:1px solid rgba(0,245,255,.35);border-radius:18px;padding:26px;width:100%;max-width:340px;">
-        <div style="color:#00f5ff;font-weight:800;font-size:19px;margin-bottom:4px;">🔐 Accès opérateur</div>
+        <div style="color:var(--accent);font-weight:800;font-size:19px;margin-bottom:4px;">🔐 Accès opérateur</div>
         <div style="color:#71717a;font-size:12px;margin-bottom:12px;">Session requise pour les commandes sensibles</div>
         <input id="qp-user" type="text" placeholder="Utilisateur" autocomplete="username" style="width:100%;margin-top:8px;padding:12px 14px;border-radius:12px;background:#09090b;border:1px solid #27272a;color:#e4e4e7;font-size:16px;">
         <input id="qp-pass" type="password" placeholder="Mot de passe" autocomplete="current-password" style="width:100%;margin-top:8px;padding:12px 14px;border-radius:12px;background:#09090b;border:1px solid #27272a;color:#e4e4e7;font-size:16px;">
         <input id="qp-totp" type="text" inputmode="numeric" placeholder="Code 2FA (si activé)" style="width:100%;margin-top:8px;padding:12px 14px;border-radius:12px;background:#09090b;border:1px solid #27272a;color:#e4e4e7;font-size:16px;">
         <div id="qp-login-err" style="color:#f87171;font-size:12px;min-height:16px;margin-top:6px;"></div>
-        <button onclick="qpLogin()" style="width:100%;margin-top:10px;padding:13px;border-radius:12px;background:#00f5ff;color:#000;font-weight:800;font-size:16px;border:none;cursor:pointer;">Se connecter</button>
+        <button onclick="qpLogin()" style="width:100%;margin-top:10px;padding:13px;border-radius:12px;background:var(--accent);color:#000;font-weight:800;font-size:16px;border:none;cursor:pointer;">Se connecter</button>
     </div>
 </div>
 
-    <div class="mini-app min-h-screen bg-zinc-900 border border-zinc-800">
+    <div class="mini-app min-h-screen bg-slate-900 border border-slate-800">
         
         <!-- HEADER -->
-        <div class="px-5 pt-5 pb-4 bg-zinc-950 border-b border-zinc-800">
+        <div class="px-5 pt-5 pb-4 bg-slate-950 border-b border-slate-800">
             <div class="flex items-center justify-between">
                 <div class="flex items-center gap-x-3">
                     <div class="w-9 h-9 rounded-2xl bg-gradient-to-br from-cyan-400 to-blue-500 flex items-center justify-center shadow-lg">
@@ -117,13 +121,13 @@
                     </div>
                     <div>
                         <div class="font-display text-2xl font-bold tracking-tighter">Q-Bot</div>
-                        <div class="text-[10px] text-zinc-500 -mt-1">v4.2 • INSTITUTIONAL</div>
+                        <div class="text-[10px] text-slate-500 -mt-1">v4.2 • INSTITUTIONAL</div>
                     </div>
                 </div>
                 
                 <div class="flex items-center gap-x-2">
                     <div id="status-badge" 
-                         class="px-3 py-1 rounded-3xl text-xs font-bold flex items-center gap-x-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
+                         class="px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-x-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30">
                         <div class="w-2 h-2 rounded-full bg-emerald-400 status-dot"></div>
                         <span id="status-text">LIVE</span>
                     </div>
@@ -132,33 +136,33 @@
         </div>
 
         <!-- MODE & CAPITAL -->
-        <div class="px-5 py-4 bg-zinc-900 border-b border-zinc-800">
+        <div class="px-5 py-4 bg-slate-900 border-b border-slate-800">
             <div class="flex items-center justify-between">
                 <div>
-                    <div class="text-xs text-zinc-400">MODE</div>
+                    <div class="text-xs text-slate-400">MODE</div>
                     <div id="mode-display" class="font-bold text-xl tracking-tight">DEMO</div>
                 </div>
                 
                 <div class="text-right">
-                    <div class="text-xs text-zinc-400">CAPITAL ACTUEL</div>
+                    <div class="text-xs text-slate-400">CAPITAL ACTUEL</div>
                     <div id="capital-display" class="font-display text-3xl font-bold tabular-nums tracking-tighter">$124,850</div>
-                    <div id="equity-display" class="text-[10px] text-zinc-500 font-semibold mt-0.5">Équité: —</div>
+                    <div id="equity-display" class="text-[10px] text-slate-500 font-semibold mt-0.5">Équité: —</div>
                 </div>
             </div>
             <div class="flex gap-1.5 mt-2">
                 <span id="badge-bot" class="px-2 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 text-[10px] font-bold">BOT: —</span>
                 <span id="badge-risk" class="px-2 py-1 rounded-lg bg-emerald-500/15 text-emerald-400 text-[10px] font-bold">RISQUE: —</span>
-                <span id="badge-data" class="px-2 py-1 rounded-lg bg-zinc-800 text-zinc-400 text-[10px] font-bold">DATA: —</span>
-                <span id="badge-costs" class="px-2 py-1 rounded-lg bg-zinc-800 text-zinc-400 text-[10px] font-bold">COÛTS: $0</span>
+                <span id="badge-data" class="px-2 py-1 rounded-lg bg-slate-800 text-slate-400 text-[10px] font-bold">DATA: —</span>
+                <span id="badge-costs" class="px-2 py-1 rounded-lg bg-slate-800 text-slate-400 text-[10px] font-bold">COÛTS: $0</span>
             </div>
         </div>
 
         <!-- KPIs -->
-        <div class="grid grid-cols-3 gap-px bg-zinc-800 p-px">
+        <div class="grid grid-cols-3 gap-px bg-slate-800 p-px">
             <div class="glass p-4">
                 <div class="flex justify-between items-start">
                     <div>
-                        <div class="text-xs text-zinc-400">P&amp;L LIVE</div>
+                        <div class="text-xs text-slate-400">P&amp;L LIVE</div>
                         <div id="pnl-value" class="font-display text-2xl font-bold tabular-nums">+$4,820</div>
                     </div>
                     <div id="pnl-pct" class="text-emerald-400 text-sm font-bold">+3.87%</div>
@@ -166,25 +170,25 @@
             </div>
             
             <div class="glass p-4">
-                <div class="text-xs text-zinc-400">SHARPE</div>
+                <div class="text-xs text-slate-400">SHARPE</div>
                 <div id="sharpe-value" class="font-display text-2xl font-bold tabular-nums">1.84</div>
                 <div class="text-xs text-emerald-400">Excellent</div>
             </div>
             
             <div class="glass p-4">
-                <div class="text-xs text-zinc-400">DRAWDOWN</div>
+                <div class="text-xs text-slate-400">DRAWDOWN</div>
                 <div id="drawdown-value" class="font-display text-2xl font-bold tabular-nums text-amber-400">-2.1%</div>
             </div>
         </div>
 
         <!-- CHART -->
-        <div class="px-5 py-6 bg-zinc-900">
+        <div class="px-5 py-6 bg-slate-900">
             <div class="flex items-center justify-between mb-3 px-1">
                 <div class="font-semibold text-sm">Performance 24h</div>
-                <div class="text-xs px-2.5 py-1 bg-zinc-800 rounded-2xl text-zinc-400">BTC • 1H</div>
+                <div class="text-xs px-2.5 py-1 bg-slate-800 rounded-2xl text-slate-400">BTC • 1H</div>
             </div>
             
-            <div class="chart-container h-52 bg-zinc-950 rounded-3xl p-3 border border-zinc-800">
+            <div class="chart-container h-52 bg-slate-950 rounded-xl p-3 border border-slate-800">
                 <canvas id="equity-chart"></canvas>
             </div>
         </div>
@@ -193,7 +197,7 @@
         <div class="px-5 pb-2">
             <div class="flex items-center justify-between mb-3 px-1">
                 <div class="font-semibold text-sm">Positions ouvertes</div>
-                <div id="position-count" class="text-xs px-3 py-1 bg-zinc-800 text-zinc-400 rounded-2xl">3 actifs</div>
+                <div id="position-count" class="text-xs px-3 py-1 bg-slate-800 text-slate-400 rounded-2xl">3 actifs</div>
             </div>
             
             <!-- ===== VISION FUTUR : ORGANISATION + CONFIANCE + RECHERCHE ===== -->
@@ -201,15 +205,15 @@
                 <div class="section-header text-cyan-400">🏛️ ORGANISATION (desks)</div>
             </div>
             <div class="px-5 pb-2">
-                <div class="glass rounded-3xl p-4">
+                <div class="glass rounded-xl p-4">
                     <div class="flex justify-between items-center mb-2">
-                        <div class="text-xs text-zinc-400">Indice de confiance</div>
+                        <div class="text-xs text-slate-400">Indice de confiance</div>
                         <div id="confidence-badge" class="px-2 py-0.5 rounded-xl text-xs font-bold bg-emerald-500/10 text-emerald-400">--</div>
                     </div>
-                    <div class="h-1.5 bg-zinc-800 rounded-full overflow-hidden">
+                    <div class="h-1.5 bg-slate-800 rounded-full overflow-hidden">
                         <div id="confidence-bar" class="h-full bg-gradient-to-r from-red-500 via-amber-400 to-emerald-400" style="width:0%"></div>
                     </div>
-                    <div class="flex justify-between text-[10px] text-zinc-500 mt-1">
+                    <div class="flex justify-between text-[10px] text-slate-500 mt-1">
                         <span id="confidence-reason">--</span><span id="confidence-factor">×1.0</span>
                     </div>
                 </div>
@@ -219,42 +223,42 @@
             </div>
             <div class="px-5 pb-3">
                 <div class="section-header text-cyan-400">🔬 RECHERCHE AUTONOME</div>
-                <div class="glass rounded-3xl p-3 mt-2">
-                    <div class="text-[10px] text-zinc-500 mb-1">Signaux admis (inventés & promus par le bot)</div>
+                <div class="glass rounded-xl p-3 mt-2">
+                    <div class="text-[10px] text-slate-500 mb-1">Signaux admis (inventés & promus par le bot)</div>
                     <div id="admitted-signals" class="flex flex-wrap gap-1.5"></div>
                 </div>
                 <div class="grid grid-cols-2 gap-2 mt-2">
-                    <div class="glass rounded-3xl p-3">
-                        <div class="text-[10px] text-zinc-500">Régimes (proba)</div>
+                    <div class="glass rounded-xl p-3">
+                        <div class="text-[10px] text-slate-500">Régimes (proba)</div>
                         <div id="regime-probs" class="text-xs font-bold mt-1">--</div>
                     </div>
-                    <div class="glass rounded-3xl p-3">
-                        <div class="text-[10px] text-zinc-500">Veto risque</div>
+                    <div class="glass rounded-xl p-3">
+                        <div class="text-[10px] text-slate-500">Veto risque</div>
                         <div id="risk-vetoes" class="text-xs font-bold mt-1">0</div>
                     </div>
                 </div>
             </div>
             <div class="px-5 pb-3">
                 <div class="section-header text-cyan-400">🤝 MODE CONSULTATIF</div>
-                <div id="consultative-panel" class="glass rounded-3xl p-3 mt-2">
-                    <div class="text-[10px] text-zinc-500">Propositions en attente d'approbation</div>
+                <div id="consultative-panel" class="glass rounded-xl p-3 mt-2">
+                    <div class="text-[10px] text-slate-500">Propositions en attente d'approbation</div>
                     <div id="pending-count" class="font-bold text-lg">0</div>
                     <button onclick="approvePending()" class="w-full mt-2 py-2 rounded-xl bg-emerald-500/15 text-emerald-400 font-bold text-sm">✅ Tout approuver</button>
                 </div>
             </div>
             <div class="px-5 pb-3">
                 <div class="section-header text-cyan-400">🗣️ ASSISTANT</div>
-                <div class="glass rounded-3xl p-3 mt-2">
-                    <div id="assistant-answer" class="text-xs text-zinc-300 mb-2 min-h-[40px]">Demande-moi : « pourquoi tu n'as pas acheté hier ? »</div>
+                <div class="glass rounded-xl p-3 mt-2">
+                    <div id="assistant-answer" class="text-xs text-slate-300 mb-2 min-h-[40px]">Demande-moi : « pourquoi tu n'as pas acheté hier ? »</div>
                     <div class="flex gap-2">
-                        <input id="assistant-input" type="text" placeholder="Ta question…" class="flex-1 bg-zinc-900 border border-zinc-700 rounded-xl px-3 py-2 text-sm">
+                        <input id="assistant-input" type="text" placeholder="Ta question…" class="flex-1 bg-slate-900 border border-slate-700 rounded-xl px-3 py-2 text-sm">
                         <button onclick="askAssistant()" class="px-3 py-2 rounded-xl bg-cyan-500/20 text-cyan-300 font-bold text-sm">➤</button>
                     </div>
                 </div>
             </div>
             <div class="px-5 pb-3">
                 <button onclick="loadNarrative()" class="w-full py-2 rounded-xl bg-cyan-500/10 text-cyan-400 font-bold text-sm">📜 Générer le narratif du jour</button>
-                <div id="narrative-box" class="text-[11px] text-zinc-400 mt-2 leading-relaxed"></div>
+                <div id="narrative-box" class="text-[11px] text-slate-400 mt-2 leading-relaxed"></div>
             </div>
 
             <div id="positions-table" class="space-y-2">
@@ -263,7 +267,7 @@
         </div>
 
         <!-- STRATÉGIES ACTIVES + ADVANCED MODELS (LOT 46-57) -->
-        <div class="px-5 py-4 bg-zinc-900 border-t border-zinc-800">
+        <div class="px-5 py-4 bg-slate-900 border-t border-slate-800">
             <div class="font-semibold text-sm mb-3 px-1 flex justify-between">
                 <span>Stratégies actives (9)</span>
                 <span class="text-[10px] text-cyan-400">+ LOT 46-57</span>
@@ -286,7 +290,7 @@
 
             <!-- LOT 46 Active Models -->
             <div class="mt-4">
-                <div class="text-xs text-zinc-400 mb-1.5 px-1">Active Models (LOT 46)</div>
+                <div class="text-xs text-slate-400 mb-1.5 px-1">Active Models (LOT 46)</div>
                 <div id="active-models-mini" class="flex flex-wrap gap-1 text-[10px]">
                     <!-- Populated by JS -->
                 </div>
@@ -295,49 +299,66 @@
             <!-- LOT 50 Capital Exposure -->
             <div class="mt-3 px-1">
                 <div class="flex justify-between text-xs">
-                    <span class="text-zinc-400">Capital Exposure (LOT 50)</span>
+                    <span class="text-slate-400">Capital Exposure (LOT 50)</span>
                     <span id="capital-exposure" class="font-mono text-emerald-400">68%</span>
                 </div>
-                <div class="h-1.5 bg-zinc-800 rounded mt-1">
+                <div class="h-1.5 bg-slate-800 rounded mt-1">
                     <div id="exposure-bar" class="h-1.5 bg-emerald-400 rounded transition-all" style="width: 68%"></div>
                 </div>
             </div>
         </div>
 
         <!-- ACTIONS -->
-        <div class="px-5 py-6 border-t border-zinc-800 bg-zinc-950">
+        <div class="px-5 py-6 border-t border-slate-800 bg-slate-950">
             <!-- RÉGLER LE CAPITAL (mini-app complète) -->
-            <div class="mb-4 p-3 rounded-2xl bg-zinc-900 border border-zinc-800">
+            <div class="mb-4 p-3 rounded-2xl bg-slate-900 border border-slate-800">
                 <div class="flex items-center justify-between mb-2">
-                    <span class="font-semibold text-xs text-zinc-300">💰 RÉGLER LE CAPITAL (DEMO)</span>
+                    <span class="font-semibold text-xs text-slate-300">💰 RÉGLER LE CAPITAL (DEMO)</span>
                     <span id="set-balance-status" class="text-[10px] text-emerald-400 font-bold"></span>
                 </div>
                 <div class="flex gap-2">
                     <input id="set-balance-input" type="number" min="1" step="50" placeholder="Montant $"
-                           class="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-zinc-950 border border-zinc-700 text-sm font-semibold focus:outline-none focus:border-cyan-500" />
+                           class="flex-1 min-w-0 px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-sm font-semibold focus:outline-none focus:border-cyan-500" />
                     <button onclick="setBalance()"
                             class="px-4 py-2.5 rounded-xl bg-cyan-500/90 hover:bg-cyan-500 text-black text-sm font-bold active:scale-[0.98] transition-all">
                         APPLIQUER
                     </button>
                 </div>
                 <div class="flex gap-1.5 mt-2">
-                    <button onclick="setBalanceQuick(50)" class="flex-1 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] font-bold text-zinc-300">$50</button>
-                    <button onclick="setBalanceQuick(500)" class="flex-1 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] font-bold text-zinc-300">$500</button>
-                    <button onclick="setBalanceQuick(1000)" class="flex-1 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] font-bold text-zinc-300">$1k</button>
-                    <button onclick="setBalanceQuick(10000)" class="flex-1 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] font-bold text-zinc-300">$10k</button>
-                    <button onclick="setBalanceQuick(100000)" class="flex-1 py-1.5 rounded-lg bg-zinc-800 hover:bg-zinc-700 text-[11px] font-bold text-zinc-300">$100k</button>
+                    <button onclick="setBalanceQuick(50)" class="flex-1 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-300">$50</button>
+                    <button onclick="setBalanceQuick(500)" class="flex-1 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-300">$500</button>
+                    <button onclick="setBalanceQuick(1000)" class="flex-1 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-300">$1k</button>
+                    <button onclick="setBalanceQuick(10000)" class="flex-1 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-300">$10k</button>
+                    <button onclick="setBalanceQuick(100000)" class="flex-1 py-1.5 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-300">$100k</button>
                 </div>
-                <p class="text-[9px] text-zinc-500 mt-1.5 font-medium">Le bot s'adapte automatiquement (min notional 3$/5$/10$ selon le capital, limites de risque micro-comptes).</p>
+                <p class="text-[9px] text-slate-500 mt-1.5 font-medium">Le bot s'adapte automatiquement (min notional 3$/5$/10$ selon le capital, limites de risque micro-comptes).</p>
+            </div>
+            <!-- Contrôles avancés (parité dashboard) -->
+            <div class="mb-4 p-3 rounded-2xl bg-slate-900 border border-slate-800">
+                <div class="flex items-center justify-between mb-2">
+                    <span class="font-semibold text-xs text-slate-300">⚙️ CONTRÔLES AVANCÉS</span>
+                    <span id="adv-status" class="text-[10px] text-emerald-400 font-bold"></span>
+                </div>
+                <div class="grid grid-cols-2 gap-1.5">
+                    <button onclick="advRetrain()" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-200 active:scale-[0.98] transition-all">🧠 Retrain IA</button>
+                    <button onclick="advMonteCarlo()" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-200 active:scale-[0.98] transition-all">🎲 Monte-Carlo</button>
+                    <button onclick="advStress()" class="py-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-[11px] font-bold text-slate-200 active:scale-[0.98] transition-all">🌪️ Stress crises</button>
+                    <button onclick="advReset()" class="py-2 rounded-lg bg-red-500/15 hover:bg-red-500/25 text-[11px] font-bold text-red-400 active:scale-[0.98] transition-all">♻️ Reset bot</button>
+                </div>
+                <div class="mt-2">
+                    <div class="text-[10px] text-slate-500 font-bold mb-1">Stratégies (activer/désactiver)</div>
+                    <div id="adv-strategies" class="flex flex-wrap gap-1"></div>
+                </div>
             </div>
             <div class="grid grid-cols-2 gap-3">
                 <button onclick="pauseBot()" 
-                        class="flex items-center justify-center gap-x-2 px-5 py-3.5 rounded-3xl bg-zinc-800 hover:bg-zinc-700 active:scale-[0.985] transition-all text-sm font-semibold">
+                        class="flex items-center justify-center gap-x-2 px-5 py-3.5 rounded-xl bg-slate-800 hover:bg-slate-700 active:scale-[0.985] transition-all text-sm font-semibold">
                     <i class="fa-solid fa-pause"></i>
                     <span>PAUSE</span>
                 </button>
                 
                 <button onclick="killSwitch()" 
-                        class="flex items-center justify-center gap-x-2 px-5 py-3.5 rounded-3xl bg-red-500/90 hover:bg-red-600 active:scale-[0.985] transition-all text-sm font-bold text-white">
+                        class="flex items-center justify-center gap-x-2 px-5 py-3.5 rounded-xl bg-red-500/90 hover:bg-red-600 active:scale-[0.985] transition-all text-sm font-bold text-white">
                     <i class="fa-solid fa-skull"></i>
                     <span>KILL SWITCH</span>
                 </button>
@@ -345,7 +366,7 @@
             
             <div class="mt-4 text-center">
                 <button onclick="refreshData()" 
-                        class="text-xs flex items-center justify-center gap-x-2 mx-auto text-zinc-400 hover:text-zinc-300">
+                        class="text-xs flex items-center justify-center gap-x-2 mx-auto text-slate-400 hover:text-slate-300">
                     <i class="fa-solid fa-sync fa-sm"></i>
                     <span>Actualiser les données</span>
                 </button>
@@ -353,7 +374,7 @@
             
             <!-- Walk-Forward Weights -->
             <div class="mt-6 px-1">
-                <div class="font-semibold text-xs mb-2 text-zinc-400">STRATÉGIES (Walk-Forward)</div>
+                <div class="font-semibold text-xs mb-2 text-slate-400">STRATÉGIES (Walk-Forward)</div>
                 <div id="strategy-weights" class="grid grid-cols-3 gap-1.5 text-[10px]">
                     <!-- Rempli dynamiquement -->
                 </div>
@@ -366,24 +387,24 @@
 
             <!-- Risk Dashboard -->
             <div class="mt-6 px-1">
-                <div class="font-semibold text-xs mb-2 text-zinc-400">RISK DASHBOARD</div>
-                <div id="risk-dashboard" class="glass rounded-3xl p-3 text-xs grid grid-cols-2 gap-3">
+                <div class="font-semibold text-xs mb-2 text-slate-400">RISK DASHBOARD</div>
+                <div id="risk-dashboard" class="glass rounded-xl p-3 text-xs grid grid-cols-2 gap-3">
                     <!-- Rempli dynamiquement -->
                 </div>
             </div>
 
             <!-- Strategy Attribution -->
             <div class="mt-6 px-1">
-                <div class="font-semibold text-xs mb-2 text-zinc-400">STRATEGY ATTRIBUTION (30 trades)</div>
-                <div id="strategy-attribution" class="glass rounded-3xl p-3 text-xs">
+                <div class="font-semibold text-xs mb-2 text-slate-400">STRATEGY ATTRIBUTION (30 trades)</div>
+                <div id="strategy-attribution" class="glass rounded-xl p-3 text-xs">
                     <!-- Rempli dynamiquement -->
                 </div>
             </div>
 
             <!-- Detailed Performance Attribution -->
             <div class="mt-6 px-1">
-                <div class="font-semibold text-xs mb-2 text-zinc-400">DETAILED ATTRIBUTION</div>
-                <div id="detailed-attribution" class="glass rounded-3xl p-3 text-xs space-y-1">
+                <div class="font-semibold text-xs mb-2 text-slate-400">DETAILED ATTRIBUTION</div>
+                <div id="detailed-attribution" class="glass rounded-xl p-3 text-xs space-y-1">
                     <!-- Rempli dynamiquement avec plus de détails -->
                 </div>
             </div>
@@ -395,7 +416,7 @@
     <script>
         // Tailwind script
         function initTailwind() {
-            document.documentElement.style.setProperty('--accent', '#00f5ff');
+            document.documentElement.style.setProperty('--accent', 'var(--accent)');
         }
         
         let equityChart = null;
@@ -446,10 +467,10 @@
             const statusText = document.getElementById('status-text');
             
             if (state.is_running) {
-                statusBadge.className = 'px-3 py-1 rounded-3xl text-xs font-bold flex items-center gap-x-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30';
+                statusBadge.className = 'px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-x-1.5 bg-emerald-500/10 text-emerald-400 border border-emerald-500/30';
                 statusText.innerHTML = 'LIVE';
             } else {
-                statusBadge.className = 'px-3 py-1 rounded-3xl text-xs font-bold flex items-center gap-x-1.5 bg-amber-500/10 text-amber-400 border border-amber-500/30';
+                statusBadge.className = 'px-3 py-1 rounded-xl text-xs font-bold flex items-center gap-x-1.5 bg-amber-500/10 text-amber-400 border border-amber-500/30';
                 statusText.innerHTML = 'PAUSE';
             }
             
@@ -537,8 +558,8 @@
                     var pct = Math.round(e[1] * 100);
                     var el = document.createElement('div');
                     el.className = 'flex items-center gap-2 text-[11px]';
-                    el.innerHTML = '<div class="w-24 text-zinc-400 truncate">' + e[0] + '</div>' +
-                        '<div class="flex-1 h-1.5 bg-zinc-800 rounded-full overflow-hidden"><div class="h-full bg-cyan-500" style="width:' + (e[1] / max * 100) + '%"></div></div>' +
+                    el.innerHTML = '<div class="w-24 text-slate-400 truncate">' + e[0] + '</div>' +
+                        '<div class="flex-1 h-1.5 bg-slate-800 rounded-full overflow-hidden"><div class="h-full bg-cyan-500" style="width:' + (e[1] / max * 100) + '%"></div></div>' +
                         '<div class="w-8 text-right font-mono">' + pct + '%</div>';
                     desk.appendChild(el);
                 });
@@ -605,11 +626,11 @@
                 const unrealized = ((pos.price - pos.avg) / pos.avg * 100).toFixed(1);
                 
                 const html = `
-                    <div class="glass rounded-3xl px-4 py-3 flex justify-between items-center">
+                    <div class="glass rounded-xl px-4 py-3 flex justify-between items-center">
                         <div class="flex items-center gap-x-3">
                             <div>
                                 <div class="font-bold">${pos.symbol}</div>
-                                <div class="text-xs text-zinc-400">${pos.qty} @ $${pos.avg}</div>
+                                <div class="text-xs text-slate-400">${pos.qty} @ $${pos.avg}</div>
                             </div>
                         </div>
                         
@@ -637,7 +658,7 @@
                     datasets: [{
                         label: 'Equity',
                         data: state.equity_history,
-                        borderColor: '#00f5ff',
+                        borderColor: 'var(--accent)',
                         borderWidth: 3,
                         fill: true,
                         backgroundColor: 'rgba(0, 245, 255, 0.08)',
@@ -717,6 +738,45 @@
             }
         }
 
+        // Contrôles avancés (parité dashboard)
+        const ADV_STATUS = () => document.getElementById('adv-status');
+        async function advCall(url, opts, okMsg) {
+            const st = ADV_STATUS(); if (st) st.textContent = '…';
+            try {
+                const resp = await fetch(url, opts || {method: 'POST'});
+                const d = await resp.json().catch(() => ({}));
+                if (!resp.ok) { if (st) st.textContent = '❌ ' + (d.detail || resp.status); return; }
+                if (st) st.textContent = '✅ ' + (okMsg || 'ok');
+                setTimeout(() => { if (st) st.textContent = ''; }, 3000);
+                loadTelemetry();
+            } catch (e) { if (st) st.textContent = '❌ ' + e.message; }
+        }
+        function advRetrain() { advCall('/api/retrain', {method: 'POST'}, 'retrain lancé'); }
+        function advMonteCarlo() { advCall('/api/monte-carlo', {method: 'POST'}, '10k simulations'); }
+        function advStress() { advCall('/api/v1/stress', {method: 'POST'}, 'stress OK'); }
+        function advReset() {
+            if (!confirm('⚠️ RESET du bot ? Toutes les positions seront liquidées.')) return;
+            advCall('/api/reset-bot', {method: 'POST'}, 'bot réinitialisé');
+        }
+        function toggleStrategy(name, enabled) {
+            advCall('/api/toggle-strategy', {
+                method: 'POST', headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({name: name, enabled: enabled})
+            }, (enabled ? 'activée' : 'désactivée') + ' ' + name);
+        }
+        // Remplir la liste des stratégies depuis la télémétrie (strategy_weights)
+        function renderAdvStrategies(telemetry) {
+            const box = document.getElementById('adv-strategies');
+            if (!box) return;
+            const w = (telemetry.strategy_weights || {});
+            const keys = Object.keys(w);
+            if (!keys.length) { box.innerHTML = '<span class="text-[10px] text-slate-500">aucune stratégie active</span>'; return; }
+            box.innerHTML = keys.map(name => {
+                const pct = Math.round((w[name] || 0) * 100);
+                return '<button onclick="toggleStrategy(\'' + name.replace(/'/g, "\\'") + '\', false)" class="px-2 py-1 rounded-lg bg-slate-800 hover:bg-rose-500/20 text-[10px] font-bold text-slate-300" title="Cliquer pour désactiver">' + name + ' ' + pct + '%</button>';
+            }).join('');
+        }
+
         // AUDIT B14-5: actions now AWAIT the server response, surface errors and
         // resynchronize from real telemetry instead of optimistic local state.
         async function pauseBot() {
@@ -787,6 +847,8 @@
                 state.pnl_pct = telemetry.live_pnl_pct ?? 0;
                 state.is_running = telemetry.is_running ?? state.is_running;
                 state.equity_history = telemetry.equity_history || state.equity_history;
+                // Contrôles avancés : stratégies (parité dashboard)
+                try { renderAdvStrategies(telemetry); } catch (e3) {}
                 
                 state.positions = (telemetry.positions || []).map(p => {
                     const price = (telemetry.assets_telemetry && telemetry.assets_telemetry[p.symbol]) 
@@ -814,47 +876,47 @@
             if (!container || !telemetry) return;
             container.innerHTML = `
                 <div>
-                    <div class="text-zinc-400">On-Chain Risk</div>
+                    <div class="text-slate-400">On-Chain Risk</div>
                     <div class="font-bold text-lg">${telemetry.onchain_available && telemetry.onchain_risk_score != null ? telemetry.onchain_risk_score.toFixed(2) : 'N/A'}</div>
                 </div>
                 <div>
-                    <div class="text-zinc-400">Sentiment</div>
+                    <div class="text-slate-400">Sentiment</div>
                     <div class="font-bold text-lg">${telemetry.sentiment_available && telemetry.sentiment_index != null ? telemetry.sentiment_index.toFixed(2) : 'N/A'}</div>
                 </div>
                 <div>
-                    <div class="text-zinc-400">Qualité données</div>
+                    <div class="text-slate-400">Qualité données</div>
                     <div class="font-bold text-sm">${telemetry.data_quality_status || 'n/a'}</div>
                 </div>
                 <div>
-                    <div class="text-zinc-400">Sources prix (BTC)</div>
+                    <div class="text-slate-400">Sources prix (BTC)</div>
                     <div class="font-bold text-sm">${(() => { const pc = (telemetry.price_consensus || {}).BTCUSDT; if (!pc || !pc.n_sources) return 'Aucune (UNAVAILABLE)'; return pc.n_sources + ' sources · écart ' + pc.divergence_pct + '%' + (pc.status === 'DIVERGENT' ? ' ⚠️ GEL' : ''); })()}</div>
                 </div>
                 <div>
-                    <div class="text-zinc-400">Order Flow (BTC)</div>
+                    <div class="text-slate-400">Order Flow (BTC)</div>
                     <div class="font-bold text-sm">${(() => { const of = (telemetry.order_flow || {}).BTCUSDT; if (!of) return 'N/A'; return 'Δ ' + (of.delta ?? 0) + ' · OFI ' + (of.ofi != null ? of.ofi.toFixed(2) : 'N/A') + (of.liquidation_cascade ? ' ⚠️ CASCADE' : '') + (of.absorption ? ' 🛡️ absorption' : ''); })()}</div>
                 </div>
                 <div>
-                    <div class="text-zinc-400">État Risque</div>
+                    <div class="text-slate-400">État Risque</div>
                     <div class="font-bold text-sm">${(() => { const rs = telemetry.risk_state || {}; const e = {NORMAL:'🟢', CAUTION:'🟠', HALT:'🔴'}[rs.state] || '⚪'; return e + ' ' + (rs.state || 'NORMAL') + ' · ' + Math.round((rs.scale_factor ?? 1) * 100) + '%' + (rs.reason ? ' (' + rs.reason + ')' : ''); })()}</div>
                 </div>
                 <div>
-                    <div class="text-zinc-400">Coûts réels</div>
+                    <div class="text-slate-400">Coûts réels</div>
                     <div class="font-bold text-sm">${(() => { const c = telemetry.cost_metrics || {}; return '$' + (c.total_costs_usd ?? 0).toFixed(2) + ' (' + (c.n_trades_costed ?? 0) + ' trades)'; })()}</div>
                 </div>
                 <div>
-                    <div class="text-zinc-400">Sharpe / Sortino</div>
+                    <div class="text-slate-400">Sharpe / Sortino</div>
                     <div class="font-bold text-sm">${(() => { const q = telemetry.quality_metrics || {}; return (q.sharpe ?? 'n/a') + ' / ' + (q.sortino ?? 'n/a'); })()}</div>
                 </div>
                 <div>
-                    <div class="text-zinc-400">Honnêteté modules</div>
+                    <div class="text-slate-400">Honnêteté modules</div>
                     <div class="font-bold text-sm">${(() => { const s = telemetry.module_honesty?.summary || {}; const t = (s.PRODUCTION||0)+(s.EXPÉRIMENTAL||0)+(s['EXPÉRIMENTAL']||0)+(s.ÉDUCATIF||0)+(s['ÉDUCATIF']||0); return (s.PRODUCTION||0) + ' prod · ' + (s.EXPÉRIMENTAL||s['EXPÉRIMENTAL']||0) + ' exp · ' + (s.ÉDUCATIF||s['ÉDUCATIF']||0) + ' éduc'; })()}</div>
                 </div>
                 <div>
-                    <div class="text-zinc-400">Stress crises</div>
+                    <div class="text-slate-400">Stress crises</div>
                     <div class="font-bold text-sm">${(() => { const s = telemetry.stress_test_report || {}; return s.status ? s.status + ' (pire: ' + s.worst_loss_pct + '%)' : 'n/a'; })()}</div>
                 </div>
                 <div>
-                    <div class="text-zinc-400">Regime</div>
+                    <div class="text-slate-400">Regime</div>
                     <div class="font-bold text-sm">${telemetry.regime_name || 'Unknown'}</div>
                 </div>
             `;
@@ -889,7 +951,7 @@
                 attribution.innerHTML = '';
                 Object.entries(weights).forEach(([name, w]) => {
                     const el = document.createElement('div');
-                    el.className = 'flex justify-between items-center py-1 border-b border-zinc-700 last:border-0';
+                    el.className = 'flex justify-between items-center py-1 border-b border-slate-700 last:border-0';
                     el.innerHTML = `<div class="font-medium">${name}</div>
                         <div class="text-right font-mono text-cyan-400">${(w * 100).toFixed(0)}%</div>`;
                     attribution.appendChild(el);
@@ -901,7 +963,7 @@
                 detailed.innerHTML = '';
                 Object.entries(weights).forEach(([name, weight]) => {
                     const pct = (weight * 100).toFixed(0);
-                    let status = 'Neutral'; let statusColor = 'zinc';
+                    let status = 'Neutral'; let statusColor = 'slate';
                     if (weight > 0.18) { status = 'Dominant'; statusColor = 'emerald'; }
                     else if (weight > 0.12) { status = 'Strong'; statusColor = 'blue'; }
                     else if (weight < 0.08) { status = 'Weak'; statusColor = 'red'; }
@@ -935,7 +997,7 @@
                 
                 Object.entries(data.strategy_weights).forEach(([name, weight]) => {
                     const pct = (weight * 100).toFixed(0);
-                    let colorClass = 'bg-zinc-700 text-zinc-400';
+                    let colorClass = 'bg-slate-700 text-slate-400';
                     let chartColor = '#52525b';
                     
                     if (weight > 0.15) {
@@ -1017,7 +1079,7 @@
                         try { Telegram.WebApp.HapticFeedback.impactOccurred('light'); } catch (e) {}
                     });
                 });
-                console.log('%c[Mini App] Telegram WebApp SDK ready (' + (tg.colorScheme || 'dark') + ')', 'color:#00f5ff');
+                console.log('%c[Mini App] Telegram WebApp SDK ready (' + (tg.colorScheme || 'dark') + ')', 'color:var(--accent)');
             }
         }
 
@@ -1033,7 +1095,7 @@
                 loadTelemetry();
             }, 4000);
             
-            console.log('%c[Mini App] Terminal connecté aux données réelles', 'color:#00f5ff');
+            console.log('%c[Mini App] Terminal connecté aux données réelles', 'color:var(--accent)');
         }
         
         // ===== AUTHENTICATION (roadmap #4): JWT bearer + login modal =====
