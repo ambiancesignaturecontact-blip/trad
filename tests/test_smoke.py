@@ -3,7 +3,6 @@ CI smoke tests (roadmap ops #6): verify the FastAPI app imports and its core
 endpoints respond, without triggering the startup event (no network needed).
 Also covers the institutional JWT auth gate (roadmap #4).
 """
-import os
 
 import pytest
 from fastapi.testclient import TestClient

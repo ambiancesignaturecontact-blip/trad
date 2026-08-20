@@ -2,10 +2,9 @@
 LOT 55: RLHF (Reinforcement Learning from Human Feedback) for Trading
 """
 
-import numpy as np
 import logging
-from typing import List, Dict, Tuple, Optional
-from collections import deque
+
+import numpy as np
 
 # PyTorch is a heavy OPTIONAL dependency. Without it, the RLHF reward model
 # degrades gracefully (returns neutral scores) so the platform still boots.
@@ -47,7 +46,7 @@ class RLHFRewardModel:
     """
 
     def __init__(self, input_dim: int = 10):
-        self.feedback_buffer: List[Tuple[np.ndarray, float]] = []
+        self.feedback_buffer: list[tuple[np.ndarray, float]] = []
         self.max_buffer_size = 1000
         self.is_trained = False
         self.input_dim = input_dim
@@ -75,7 +74,7 @@ class RLHFRewardModel:
             return
 
         self.feedback_buffer.append((features, human_preference_score))
-        
+
         if len(self.feedback_buffer) > self.max_buffer_size:
             self.feedback_buffer.pop(0)
 
@@ -123,7 +122,7 @@ class RLHFRewardModel:
             reward = self.model(x).item()
         return float(np.clip(reward, -1.0, 1.0))
 
-    def get_status(self) -> Dict:
+    def get_status(self) -> dict:
         return {
             "feedback_count": len(self.feedback_buffer),
             "is_trained": self.is_trained,

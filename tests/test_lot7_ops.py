@@ -65,8 +65,9 @@ class TestWatchdog:
         assert len(main.TASK_FACTORIES) >= 10
 
     def test_launch_named_names_tasks(self):
-        import main
         import asyncio
+
+        import main
         async def dummy():
             await asyncio.sleep(60)
         async def run():
@@ -89,7 +90,6 @@ class TestWatchdog:
 # --------------------------------------------------------------------------- #
 class TestSupervisorExtended:
     def test_supervisor_checks_multiple_flows(self):
-        import inspect
         from core import robustness
         src = inspect.getsource(robustness.Supervisor.check)
         assert "heartbeat" in src

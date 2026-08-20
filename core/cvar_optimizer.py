@@ -2,10 +2,10 @@
 Live CVaR-Constrained Portfolio Optimization (LOT 33)
 Constrains new trades so that the portfolio Conditional Value at Risk stays within limits.
 """
+import logging
+
 import numpy as np
 import pandas as pd
-import logging
-from typing import Dict, List
 
 from core.config import settings
 
@@ -17,7 +17,7 @@ class CVaRPortfolioOptimizer:
     Uses the existing covariance engine to compute portfolio CVaR
     and limits position sizing accordingly.
     """
-    
+
     def __init__(self, covariance_engine,
                  cvar_limit_pct: float = None):
         self.covariance_engine = covariance_engine
@@ -26,8 +26,8 @@ class CVaRPortfolioOptimizer:
             cvar_limit_pct = settings.get_float("execution", "cvar_limit_pct", 0.025)
         self.cvar_limit_pct = cvar_limit_pct  # e.g. 2.5% daily CVaR limit
 
-    def calculate_current_cvar(self, positions: List[Dict], 
-                               returns_dict: Dict[str, np.ndarray],
+    def calculate_current_cvar(self, positions: list[dict],
+                               returns_dict: dict[str, np.ndarray],
                                corr_matrix: pd.DataFrame) -> float:
         """
         Calculates current portfolio CVaR using the covariance engine.
@@ -43,7 +43,7 @@ class CVaRPortfolioOptimizer:
             logger.warning(f"CVaR calculation failed: {e}")
             return 0.02
 
-    def get_cvar_constrained_size(self, current_cvar: float, 
+    def get_cvar_constrained_size(self, current_cvar: float,
                                   proposed_size: float,
                                   symbol: str) -> float:
         """
@@ -55,16 +55,16 @@ class CVaRPortfolioOptimizer:
             constrained = proposed_size * 0.25
             logger.info(f"CVaR limit reached ({current_cvar:.2%}). Reducing {symbol} size to 25%.")
             return constrained
-        
+
         # Room left
         headroom = (self.cvar_limit_pct - current_cvar) / self.cvar_limit_pct
         multiplier = max(0.3, min(1.0, headroom * 1.5))
-        
+
         constrained_size = proposed_size * multiplier
-        
+
         if multiplier < 0.9:
             logger.info(f"CVaR constraint applied on {symbol}: {multiplier:.2f}x size (current CVaR={current_cvar:.2%})")
-        
+
         return constrained_size
 
     def should_block_trade(self, current_cvar: float) -> bool:

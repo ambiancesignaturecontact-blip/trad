@@ -4,15 +4,17 @@ Corps STRICTEMENT inchangés ; les symboles partagés viennent de main via
 `from main import *` (main est complet quand ce module est importé, en fin
 de main.py).
 """
-import json
+import asyncio
 import os
 import time
-import asyncio
 
 import main  # noqa: F401
 from main import *  # noqa: F401,F403
+
 # helpers _privés de main utilisés par ces schedulers (non couverts par `*`)
 from main import _final_scale_report, _load_final_scale_samples, _mark_paper_validation_day  # noqa: F401
+
+
 async def final_scale_stats_loop():
     """P0-4 : loggue la distribution réelle de final_scale (p10/p50/p90).
     Au démarrage : rechargement de l'échantillon persisté + premier rapport

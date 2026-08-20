@@ -1,9 +1,10 @@
 """
 LOT 46: Adaptive Ensemble Agent with Online Model Selection
 """
-import numpy as np
 import logging
-from typing import Dict, Any
+from typing import Any
+
+import numpy as np
 
 logger = logging.getLogger("AdaptiveEnsembleAgent")
 
@@ -13,11 +14,11 @@ class AdaptiveEnsembleAgent:
         self.base_ensemble = base_ensemble
         self.decision_count = 0
 
-    def decide(self, symbol: str, market_data: dict, 
-               model_signals: Dict[str, float]) -> Dict[str, Any]:
-        
+    def decide(self, symbol: str, market_data: dict,
+               model_signals: dict[str, float]) -> dict[str, Any]:
+
         active_weights = self.selector.get_active_weights()
-        
+
         if not active_weights:
             final_signal = 0.0
         else:
@@ -26,9 +27,9 @@ class AdaptiveEnsembleAgent:
                 model_signals.get(name, 0.0) * (w / total_w)
                 for name, w in active_weights.items()
             )
-        
+
         final_signal = float(np.clip(final_signal, -1.0, 1.0))
-        
+
         self.decision_count += 1
         if self.decision_count % 25 == 0:
             logger.info(f"LOT 46 [{symbol}] | Active: {list(active_weights.keys())} | Signal: {final_signal:.3f}")

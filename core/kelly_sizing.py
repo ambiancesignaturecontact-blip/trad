@@ -2,9 +2,7 @@
 Dynamic Kelly Fraction Sizing (LOT 27)
 Kelly fractionnel dynamique **par stratégie + par régime de marché**.
 """
-import numpy as np
 import logging
-from typing import Dict
 
 logger = logging.getLogger("KellySizing")
 
@@ -13,11 +11,11 @@ class DynamicKellySizer:
     Kelly Criterion Fractionnel Dynamique (amélioré LOT 27).
     Prend en compte à la fois les performances récentes **et** le régime de marché.
     """
-    
+
     def __init__(self, base_fraction: float = 0.15):
         self.base_fraction = base_fraction
         self.strategy_kelly = {}
-        
+
         # Kelly base par régime (plus agressif en bull, plus conservateur en bear/high vol)
         self.regime_base = {
             0: 0.18,   # Bull Trend (Low Vol)     → plus agressif
@@ -26,7 +24,7 @@ class DynamicKellySizer:
             3: 0.08    # Erratic High Volatility  → très conservateur
         }
 
-    def calculate_kelly_fraction(self, strategy_name: str, recent_scores: list, 
+    def calculate_kelly_fraction(self, strategy_name: str, recent_scores: list,
                                  regime_id: int = 2) -> float:
         """
         Calcule le Kelly fractionnel en tenant compte du régime.
@@ -49,12 +47,12 @@ class DynamicKellySizer:
         self.strategy_kelly[strategy_name] = fractional_kelly
         return fractional_kelly
 
-    def get_position_size_multiplier(self, strategy_name: str, recent_scores: list, 
+    def get_position_size_multiplier(self, strategy_name: str, recent_scores: list,
                                      regime_id: int = 2) -> float:
         """Retourne le multiplicateur de taille (Kelly + Régime)"""
         kelly = self.calculate_kelly_fraction(strategy_name, recent_scores, regime_id)
         base = self.regime_base.get(regime_id, self.base_fraction)
         return kelly / base
 
-    def get_all_kelly_fractions(self) -> Dict:
+    def get_all_kelly_fractions(self) -> dict:
         return self.strategy_kelly.copy()

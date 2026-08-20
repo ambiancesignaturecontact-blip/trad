@@ -20,7 +20,6 @@ import json
 import logging
 import os
 import time
-from typing import Dict, List, Optional
 
 logger = logging.getLogger("MacroCalendar")
 
@@ -52,12 +51,12 @@ class MacroeconomicCalendarEngine:
     `check_upcoming_macro_shocks()` renvoie UNAVAILABLE et ne réduit rien.
     """
 
-    def __init__(self, calendar_file: Optional[str] = None):
+    def __init__(self, calendar_file: str | None = None):
         # Fichier de calendrier : variable d'env documentée, défaut sûr
         self.calendar_file = calendar_file or os.getenv(
             "MACRO_CALENDAR_FILE", "data/macro_events.json"
         )
-        self.scheduled_events: List[dict] = []
+        self.scheduled_events: list[dict] = []
         self.source_status = "UNAVAILABLE"
         self._finnhub_cache_ts = 0.0
         self._finnhub_cache = None
@@ -78,7 +77,7 @@ class MacroeconomicCalendarEngine:
                 self.source_status = "UNAVAILABLE"
                 return
 
-            with open(self.calendar_file, "r", encoding="utf-8") as f:
+            with open(self.calendar_file, encoding="utf-8") as f:
                 payload = json.load(f)
             raw = payload.get("events", []) if isinstance(payload, dict) else payload
 
@@ -140,7 +139,7 @@ class MacroeconomicCalendarEngine:
                     import datetime as _dt
                     parsed = _dt.datetime.strptime(
                         f"{date_str} {time_str}", "%Y-%m-%d %H:%M"
-                    ).replace(tzinfo=_dt.timezone.utc)
+                    ).replace(tzinfo=_dt.UTC)
                     ts = parsed.timestamp()
                 except Exception:
                     continue

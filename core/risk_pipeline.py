@@ -16,7 +16,6 @@ Ce module est la SOURCE UNIQUE DE VÉRITÉ du risque. Il corrige :
 """
 import logging
 import time
-from typing import Dict, List, Optional, Tuple
 
 from core.config import settings
 
@@ -56,7 +55,7 @@ HALT_COOLDOWN_MINUTES: float = settings.get_float("risk", "halt_cooldown_minutes
 # = 0.0 : HALT, choc extrême...) restent intégralement respectés.
 FINAL_SCALE_FLOOR: float = settings.get_float("risk", "final_scale_floor", 0.15)
 # Étapes de redémarrage : (facteur de taille, minutes depuis le début du restart)
-RESTART_STAGES: List[Tuple[float, float]] = [
+RESTART_STAGES: list[tuple[float, float]] = [
     (0.25, 0.0),    # 25 % immédiatement après le cool-down
     (0.50, 30.0),   # 50 % après 30 min
     (0.75, 60.0),   # 75 % après 1 h
@@ -65,7 +64,7 @@ RESTART_STAGES: List[Tuple[float, float]] = [
 
 # Ordre OFFICIEL des multiplicateurs du pipeline (Pilier G, exigence 1).
 # Les plafonds DURS (min) passent en premier, puis les overlays (mul).
-RISK_PIPELINE_ORDER: List[str] = [
+RISK_PIPELINE_ORDER: list[str] = [
     "cvar_cap",        # 1. CVaR portfolio (max perte 2 %)          [min]
     "max_asset_cap",   # 2. Plafond dur 25 %/actif                   [min]
     "conviction",      # 3. Intensité du signal (0..1)               [mul]
@@ -95,7 +94,7 @@ def clamp(value: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, value))
 
 
-def smoothed_win_rate(previous: Optional[float], outcome: float, alpha: float = 0.25) -> float:
+def smoothed_win_rate(previous: float | None, outcome: float, alpha: float = 0.25) -> float:
     """
     Lissage EMA du win rate (Pilier F : éviter les oscillations dues au faible
     échantillon). Sans historique, on part d'un a priori NEUTRE de 0.50
@@ -105,7 +104,7 @@ def smoothed_win_rate(previous: Optional[float], outcome: float, alpha: float = 
     return alpha * outcome + (1.0 - alpha) * prior
 
 
-def kelly_dynamic(win_rate: Optional[float],
+def kelly_dynamic(win_rate: float | None,
                   reward_risk: float = REWARD_RISK_RATIO,
                   fraction: float = KELLY_FRACTION) -> float:
     """
@@ -124,8 +123,8 @@ def kelly_dynamic(win_rate: Optional[float],
 # --------------------------------------------------------------------------- #
 # RR ADAPTATIF + ASYMÉTRIE VS COÛTS (Pilier F, exigences 4 & 5)
 # --------------------------------------------------------------------------- #
-def rr_requirement(regime_id: Optional[int] = None,
-                   vol_mean: Optional[float] = None) -> float:
+def rr_requirement(regime_id: int | None = None,
+                   vol_mean: float | None = None) -> float:
     """
     RR minimal exigé, ADAPTATIF : en forte volatilité (régime bear high vol
     (1), erratic (3), ou écart-type récent élevé), on exige un RR SUPÉRIEUR —
@@ -151,10 +150,10 @@ def rr_net_positive(reward_risk: float, sl_distance_pct: float,
     return (reward_risk - 1.0) * sl_distance_pct > cost_pct
 
 
-def entry_rr_filter(reward_risk: float, regime_id: Optional[int] = None,
-                    vol_mean: Optional[float] = None,
-                    sl_distance_pct: Optional[float] = None,
-                    cost_pct: float = ROUND_TRIP_COST_PCT) -> Tuple[bool, str]:
+def entry_rr_filter(reward_risk: float, regime_id: int | None = None,
+                    vol_mean: float | None = None,
+                    sl_distance_pct: float | None = None,
+                    cost_pct: float = ROUND_TRIP_COST_PCT) -> tuple[bool, str]:
     """
     Filtre d'entrée « RR minimal » (exigence 3) :
      1. RR configuré >= RR requis (adaptatif au régime/volatilité)
@@ -192,7 +191,7 @@ class RiskStateMachine:
     HALT = "HALT"
 
     def __init__(self, cooldown_minutes: float = HALT_COOLDOWN_MINUTES,
-                 restart_stages: List[Tuple[float, float]] = None):
+                 restart_stages: list[tuple[float, float]] = None):
         self.cooldown_seconds = cooldown_minutes * 60.0
         self.restart_stages = restart_stages or RESTART_STAGES
         self.state = self.NORMAL
@@ -267,7 +266,7 @@ class RiskStateMachine:
                 self.state = self.CAUTION
                 self.reason = f"redémarrage progressif (après HALT: {self.reason})"
                 self.restart_ts = now
-                logger.warning(f"🟠 RISK STATE -> CAUTION (cool-down écoulé, redémarrage progressif)")
+                logger.warning("🟠 RISK STATE -> CAUTION (cool-down écoulé, redémarrage progressif)")
                 changed = True
         elif self.state == self.CAUTION and self.restart_ts > 0:
             elapsed = (now - self.restart_ts) / 60.0
@@ -356,7 +355,7 @@ def apply_risk_pipeline(base_qty: float,
     (RISK_PIPELINE_ORDER). Chaque étape est tracée pour l'audit et la
     télémétrie. Comportement par défaut PRUDENT : en cas de doute, réduire.
     """
-    steps: List[Dict] = []
+    steps: list[dict] = []
     qty = float(base_qty)
 
     # -- plafonds durs (min) -- #

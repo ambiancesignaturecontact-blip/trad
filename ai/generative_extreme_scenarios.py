@@ -11,10 +11,9 @@ LIMITES (LOT 4, PDF Pilier C) : module EXPÉRIMENTAL / ÉDUCATIF.
   et reste hors du sizing live (mentalité n°13 : le risque de modèle est réel).
 """
 
-import numpy as np
-import pandas as pd
 import logging
-from typing import Dict, List, Optional
+
+import numpy as np
 
 # PyTorch is a heavy optional dependency. The module degrades gracefully to
 # fallback random-noise scenarios when torch is not installed, so the platform
@@ -148,7 +147,7 @@ class ExtremeScenarioGenerator:
         logger.info(f"LOT 54: Generated {n_scenarios} extreme scenarios (stress={stress_factor})")
         return scenarios
 
-    def generate_stress_paths(self, initial_price: float, n_paths: int = 100, 
+    def generate_stress_paths(self, initial_price: float, n_paths: int = 100,
                               horizon: int = 20, stress: float = 2.0) -> np.ndarray:
         """Generate full price paths under stress"""
         returns = self.generate_extreme_scenarios(n_paths * horizon, stress_factor=stress)

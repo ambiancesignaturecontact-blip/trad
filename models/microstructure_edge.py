@@ -1,6 +1,7 @@
+import logging
+
 import numpy as np
 import pandas as pd
-import logging
 
 logger = logging.getLogger("MicrostructureEdge")
 
@@ -91,13 +92,13 @@ class MicrostructureEdgeEngine:
         """
         if len(df_bars) < 10:
             return 1e-5 # Tiny default
-            
+
         price_changes = df_bars['close'].diff().dropna().values
         volumes = df_bars['volume'].values[-len(price_changes):]
-        
+
         # Simple proxy: imbalance volume is signed volume based on price changes
         imbalances = np.sign(price_changes) * volumes
-        
+
         cov = np.cov(price_changes, imbalances)
         if cov.ndim > 1:
             cov_val = cov[0, 1]
@@ -105,5 +106,5 @@ class MicrostructureEdgeEngine:
             kyles_lambda = cov_val / var_val
         else:
             kyles_lambda = 1e-5
-            
+
         return max(1e-9, float(kyles_lambda))

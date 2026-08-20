@@ -1,5 +1,4 @@
 import logging
-import time
 
 logger = logging.getLogger("FundingArbitrage")
 
@@ -37,7 +36,7 @@ class FundingRateArbitrageEngine:
             spot_bid = spot_bid if spot_bid is not None else spot_price
             spot_ask = spot_ask if spot_ask is not None else spot_price
             index_price = index_price if index_price is not None else spot_price
-            
+
         if perp_price is not None:
             perp_bid = perp_bid if perp_bid is not None else perp_price
             perp_ask = perp_ask if perp_ask is not None else perp_price
@@ -46,20 +45,20 @@ class FundingRateArbitrageEngine:
         # Ensure all required real-world parameters are fully loaded and present
         if None in [spot_bid, spot_ask, perp_bid, perp_ask, mark_price, index_price, funding_rate_8h]:
             return {"action": "HOLD", "reason": "Data incomplete. Missing required real-world market parameter."}
-            
+
         is_already_open = symbol in self.active_arbitrages
-        
+
         # 1. Evaluate ENTRY conditions
         # To enter cash-and-carry, we Buy Spot at spot_ask, and Short Perp at perp_bid
         # Real Executable Spread = (perp_bid - spot_ask) / spot_ask
         real_spread_pct = (perp_bid - spot_ask) / spot_ask
-        
+
         # Total transaction fees (spot taker + perp taker fees)
         entry_fees_pct = self.transaction_fee_pct * 2.0
-        
+
         # Expected daily yield (3 funding payments of 8h)
         expected_daily_yield_pct = funding_rate_8h * 3.0
-        
+
         if funding_rate_8h >= self.min_funding_threshold and not is_already_open:
             # Only enter if the expected daily yield covers the transaction entry fees and meets profitability!
             if expected_daily_yield_pct > entry_fees_pct:
@@ -77,7 +76,7 @@ class FundingRateArbitrageEngine:
                     "mark_price": mark_price,
                     "index_price": index_price
                 }
-                
+
         # 2. Evaluate EXIT conditions
         elif is_already_open:
             active_pos = self.active_arbitrages[symbol]
@@ -94,7 +93,7 @@ class FundingRateArbitrageEngine:
                     "perp_action": "BUY_COVER",
                     "accumulated_funding": active_pos.get("accumulated_funding", 0.0)
                 }
-                
+
         return {"action": "HOLD", "reason": "No actionable funding arbitrage spread detected."}
 
     def simulate_funding_payment_tick(self, symbol: str, current_price: float, funding_rate_8h: float) -> float:

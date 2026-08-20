@@ -1,5 +1,6 @@
-import numpy as np
 import logging
+
+import numpy as np
 
 logger = logging.getLogger("MonteCarlo")
 
@@ -19,53 +20,53 @@ class MonteCarloStressTester:
         applying our fractional Kelly and risk limits to count structural ruins (drawdown > 25%).
         """
         logger.info(f"Executing {self.num_simulations} Monte Carlo simulations...")
-        
+
         # Simulated parameters
         dt = 1.0 / self.horizon_steps
         mu = 0.00015 # assumed drift
         sigma = historical_volatility
-        
+
         ruin_count = 0
         final_equities = []
-        
+
         for _ in range(self.num_simulations):
             capital = initial_capital
             price = current_price
             peak_capital = initial_capital
-            
+
             for step in range(self.horizon_steps):
                 # Geometric Brownian Motion step
                 epsilon = np.random.normal(0, 1.0)
                 price *= np.exp((mu - 0.5 * sigma**2) * dt + sigma * np.sqrt(dt) * epsilon)
-                
+
                 # Simulate trade returns (assuming a 55% win rate consensus and 2% Kelly size)
                 # If step price is positive, win return, otherwise loss
                 ret = 0.015 if epsilon > -0.12 else -0.015
                 trade_size = capital * 0.15 # 15% size allocation
                 capital += trade_size * ret
-                
+
                 if capital > peak_capital:
                     peak_capital = capital
-                    
+
                 # Evaluate drawdown
                 drawdown = (peak_capital - capital) / peak_capital
                 if drawdown >= 0.25: # 25% drawdown counts as a structural risk breach
                     ruin_count += 1
                     break
-                    
+
             final_equities.append(capital)
-            
+
         final_equities = np.array(final_equities)
         survival_probability = (1.0 - (ruin_count / self.num_simulations)) * 100.0
-        
+
         # Calculate Value at Risk (VaR) at 95% and 99% confidence
         var_95 = float(np.percentile(final_equities, 5))
         var_99 = float(np.percentile(final_equities, 1))
-        
+
         avg_final_equity = float(np.mean(final_equities))
         max_outcome = float(np.max(final_equities))
         min_outcome = float(np.min(final_equities))
-        
+
         logger.info(f"Monte Carlo stress-test complete. Survival Probability: {survival_probability:.2f}%")
         return {
             "num_simulations": self.num_simulations,

@@ -3,11 +3,8 @@ Online Learning / Continuous Model Update (LOT 32)
 Permet aux modèles (Meta-Labeling) de s'adapter continuellement aux nouvelles données de marché.
 Approche robuste : sliding window retraining avec validation.
 """
-import numpy as np
-import pandas as pd
 import logging
 import time
-from typing import Optional
 
 logger = logging.getLogger("OnlineLearning")
 
@@ -18,8 +15,8 @@ class ContinuousModelUpdater:
     - Ne met à jour que si la performance s'améliore.
     - Très utile en production pour s'adapter aux régimes changeants.
     """
-    
-    def __init__(self, meta_labeling_engine, window_size: int = 1200, 
+
+    def __init__(self, meta_labeling_engine, window_size: int = 1200,
                  update_interval_hours: int = 8):
         self.meta_labeling = meta_labeling_engine
         self.window_size = window_size
@@ -54,7 +51,7 @@ class ContinuousModelUpdater:
 
             # Entraînement
             success = self.meta_labeling.fit(recent_df, primary_signals, forward_returns)
-            
+
             if success:
                 self.last_update = time.time()
                 logger.info("Continuous Model Update: Meta-Labeling successfully updated with recent data")

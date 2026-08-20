@@ -11,7 +11,6 @@ VISION_FUTUR §3/§6 - LLM narrative & assistant via OpenRouter (OpenAI-compatib
 import json
 import logging
 import os
-from typing import Dict, List, Optional
 
 logger = logging.getLogger("LLMNarrative")
 
@@ -19,7 +18,7 @@ OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 DEFAULT_MODEL = "openai/gpt-4o-mini"
 
 
-def _api_key() -> Optional[str]:
+def _api_key() -> str | None:
     return os.getenv("OPENROUTER_API_KEY", "").strip() or None
 
 
@@ -81,7 +80,7 @@ def _narrative_fallback(report: dict, state: dict) -> str:
     pos = report.get("positions", [])
     lines = [
         f"📊 *Narratif du jour ({mode})*",
-        f"━━━━━━━━━━━━━━━━━━",
+        "━━━━━━━━━━━━━━━━━━",
         f"Régime : *{regime}* | Santé : {health}/100",
         f"Équité : ${equity:,.2f} | P&L : {pnl:+,.2f} $ ({pnl_pct:+.2f}%)",
         f"Ordres aujourd'hui : {orders} | Positions : {len(pos)}",

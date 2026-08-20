@@ -40,3 +40,4 @@ trading_platform.db-wal
 trading_platform.db-shm
 .coverage
 coverage.json
+test_trading.db

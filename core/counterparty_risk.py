@@ -15,7 +15,6 @@ Aucune donnée fictive : sans donnée réelle, les signaux sont neutres.
 """
 import logging
 import time
-from typing import Dict, Optional
 
 from core.config import settings
 
@@ -32,7 +31,7 @@ class CounterpartyRiskManager:
 
     def __init__(self, max_capital_per_exchange_pct: float = MAX_CAPITAL_PER_EXCHANGE_PCT):
         self.max_pct = max_capital_per_exchange_pct
-        self.alerts: Dict[str, dict] = {}   # exchange -> dernière alerte
+        self.alerts: dict[str, dict] = {}   # exchange -> dernière alerte
 
     # ------------------------------------------------------------------ #
     # 1. LIMITE DE CAPITAL PAR EXCHANGE
@@ -73,9 +72,9 @@ class CounterpartyRiskManager:
     # 2. SIGNAUX D'ALERTE (retraits suspendus, spreads, volume)
     # ------------------------------------------------------------------ #
     def evaluate_exchange_health(self, exchange: str,
-                                 spread_bps: Optional[float] = None,
-                                 volume_ratio: Optional[float] = None,
-                                 withdrawals_suspended: Optional[bool] = None) -> dict:
+                                 spread_bps: float | None = None,
+                                 volume_ratio: float | None = None,
+                                 withdrawals_suspended: bool | None = None) -> dict:
         """
         Évalue la santé d'un exchange à partir de signaux RÉELS :
           - retraits suspendus (si connu) -> ALERTE CRITIQUE

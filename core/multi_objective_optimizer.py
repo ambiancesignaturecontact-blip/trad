@@ -3,10 +3,10 @@ LOT 56: Multi-Objective Portfolio Optimizer
 Optimizes for Sharpe Ratio + CVaR + Maximum Drawdown
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
-from typing import Dict, List, Tuple, Optional
-import logging
 from scipy.optimize import minimize
 
 logger = logging.getLogger("MultiObjectiveOptimizer")
@@ -21,7 +21,7 @@ class MultiObjectivePortfolioOptimizer:
         self.last_weights = None
         self.last_objectives = None
 
-    def _portfolio_stats(self, weights: np.ndarray, returns: pd.DataFrame) -> Dict:
+    def _portfolio_stats(self, weights: np.ndarray, returns: pd.DataFrame) -> dict:
         """Calculate key portfolio metrics"""
         port_return = np.sum(returns.mean() * weights) * 252
         port_vol = np.sqrt(np.dot(weights.T, np.dot(returns.cov() * 252, weights)))
@@ -46,12 +46,12 @@ class MultiObjectivePortfolioOptimizer:
             "max_drawdown": max_dd
         }
 
-    def optimize(self, 
-                 returns: pd.DataFrame, 
-                 target_return: Optional[float] = None,
+    def optimize(self,
+                 returns: pd.DataFrame,
+                 target_return: float | None = None,
                  weights_sharpe: float = 0.4,
                  weights_cvar: float = 0.35,
-                 weights_drawdown: float = 0.25) -> Dict:
+                 weights_drawdown: float = 0.25) -> dict:
         """
         Multi-objective optimization using weighted sum.
         """
@@ -61,7 +61,7 @@ class MultiObjectivePortfolioOptimizer:
 
         def objective(weights):
             stats = self._portfolio_stats(weights, returns)
-            
+
             # Normalize objectives (lower is better for risk, higher for return)
             sharpe_score = -stats["sharpe"] * weights_sharpe
             cvar_score = stats["cvar"] * weights_cvar * 10   # scale
@@ -102,5 +102,5 @@ class MultiObjectivePortfolioOptimizer:
             logger.warning("LOT 56: Optimization failed")
             return {"error": "Optimization failed"}
 
-    def get_last_weights(self) -> Optional[np.ndarray]:
+    def get_last_weights(self) -> np.ndarray | None:
         return self.last_weights

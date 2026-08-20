@@ -60,7 +60,10 @@ def test_ci_pip_audit_is_blocking_on_high_critical():
         if "pip-audit" in line:
             assert "|| true" not in line, \
                 f"pip-audit ne doit plus être non bloquant : {line}"
-    assert "|| true   # report" in ci  # seul ruff reste explicitement non bloquant
+    # aucun step du CI ne doit être non bloquant (ruff est passé au crible aussi)
+    assert "|| true" not in ci
+    # ruff est BLOQUANT (nettoyage fait : ruff check . passe sur tout le repo)
+    assert "ruff check ." in ci
 
 
 def test_ci_has_coverage_step():
@@ -74,7 +77,7 @@ def test_requirements_lock_is_fully_pinned():
     for line in _lock_lines():
         assert "==" in line, f"dépendance non épinglée dans le lock : {line}"
         assert ">=" not in line, f"contrainte >= interdite dans le lock : {line}"
-    names = [re.split(r"[=<>]", l)[0] for l in _lock_lines()]
+    names = [re.split(r"[=<>]", line)[0] for line in _lock_lines()]
     assert "fastapi" in names and "uvicorn" in names and "ccxt" in names
     assert "numpy" in names and "pandas" in names and "web3" in names
 
@@ -87,7 +90,7 @@ def test_requirements_dev_has_ci_tools():
 
 
 def test_lock_has_no_duplicate_packages():
-    names = [re.split(r"[=<>]", l)[0] for l in _lock_lines()]
+    names = [re.split(r"[=<>]", line)[0] for line in _lock_lines()]
     dupes = {n for n in names if names.count(n) > 1}
     assert not dupes, f"paquets dupliqués dans le lock : {dupes}"
 
@@ -170,3 +173,16 @@ def test_vuln_script_help_runs():
         capture_output=True, text=True, timeout=30)
     assert proc.returncode == 0
     assert "usage:" in proc.stdout
+
+
+def test_ruff_passes_on_whole_repo():
+    """Garde-fou local : ruff check . doit passer (le CI est bloquant)."""
+    proc = subprocess.run(["ruff", "check", "."], capture_output=True,
+                          text=True, timeout=120, cwd=str(ROOT))
+    assert proc.returncode == 0, f"ruff échoue:\n{proc.stdout[-1500:]}"
+
+
+def test_ruff_config_has_no_deprecated_rule():
+    """W503 (retiré de ruff) ne doit pas revenir dans la config."""
+    cfg = (ROOT / ".ruff.toml").read_text(encoding="utf-8")
+    assert "W503" not in cfg

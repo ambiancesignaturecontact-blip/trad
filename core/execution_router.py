@@ -8,7 +8,6 @@ Execution router (VISION §3.1) and per-venue slippage model (VISION §3.2, §7)
 import logging
 import time
 from collections import defaultdict
-from typing import Dict, Optional
 
 logger = logging.getLogger("ExecutionRouter")
 
@@ -56,7 +55,7 @@ class ExecutionAlpha:
             self.samples = self.samples[-2000:]
         return float(slip)
 
-    def avg_slippage_bps(self, style: Optional[str] = None) -> float:
+    def avg_slippage_bps(self, style: str | None = None) -> float:
         pool = [s["slippage_bps"] for s in self.samples if (style is None or s["style"] == style)]
         return float(sum(pool) / len(pool)) if pool else 0.0
 
@@ -65,7 +64,7 @@ class SlippageModel:
     """Per-venue/per-symbol slippage stats, recalibrated from real fills (VISION §3.2)."""
 
     def __init__(self):
-        self.stats: Dict[str, dict] = defaultdict(lambda: {"n": 0, "sum_bps": 0.0, "last": 0.0})
+        self.stats: dict[str, dict] = defaultdict(lambda: {"n": 0, "sum_bps": 0.0, "last": 0.0})
 
     MAX_SANE_SLIPPAGE_BPS = 1000.0
 

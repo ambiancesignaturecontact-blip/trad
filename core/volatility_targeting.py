@@ -6,6 +6,7 @@ target instead of a fixed notional. Scale = target_vol / realized_vol, clipped.
 Works on per-tick vol so it is independent of the loop frequency.
 """
 import logging
+
 import numpy as np
 
 from core.config import settings

@@ -2,13 +2,13 @@
 LOT 58: Tax & Compliance Reporting Engine (FIFO, Cost Basis, Realized PnL)
 """
 
-import pandas as pd
-from collections import deque
-from typing import Dict, List, Optional
-from datetime import datetime
-import logging
 import json
+import logging
 import os
+from collections import deque
+from datetime import datetime
+
+import pandas as pd
 
 logger = logging.getLogger("TaxCompliance")
 
@@ -20,14 +20,14 @@ class TaxComplianceEngine:
 
     def __init__(self, journal_path: str = "tax_journal.json"):
         self.journal_path = journal_path
-        self.positions: Dict[str, deque] = {}          # symbol -> FIFO queue
-        self.realized_trades: List[Dict] = []
+        self.positions: dict[str, deque] = {}          # symbol -> FIFO queue
+        self.realized_trades: list[dict] = []
         self._load()
 
     def _load(self):
         if os.path.exists(self.journal_path):
             try:
-                with open(self.journal_path, "r") as f:
+                with open(self.journal_path) as f:
                     data = json.load(f)
                     self.realized_trades = data.get("realized_trades", [])
                     # Rebuild positions from trades if needed (simplified)
@@ -106,12 +106,12 @@ class TaxComplianceEngine:
             return 0.0
         return sum(lot["qty"] * lot["price"] for lot in self.positions[symbol])
 
-    def get_realized_pnl(self, symbol: Optional[str] = None) -> float:
+    def get_realized_pnl(self, symbol: str | None = None) -> float:
         if symbol:
             return sum(t["realized_pnl"] for t in self.realized_trades if t["symbol"] == symbol)
         return sum(t["realized_pnl"] for t in self.realized_trades)
 
-    def generate_tax_report(self, year: Optional[int] = None) -> pd.DataFrame:
+    def generate_tax_report(self, year: int | None = None) -> pd.DataFrame:
         if not self.realized_trades:
             return pd.DataFrame()
 
@@ -127,7 +127,7 @@ class TaxComplianceEngine:
 
         return df[["id", "symbol", "qty", "price", "cost_basis", "realized_pnl", "tax_category", "timestamp"]]
 
-    def get_summary(self) -> Dict:
+    def get_summary(self) -> dict:
         if not self.realized_trades:
             return {"total_realized_pnl": 0, "total_trades": 0}
 

@@ -1,101 +1,125 @@
 from dotenv import load_dotenv
+
 load_dotenv()  # .env (secrets) before any env consumers
 
-from core.config import settings
-
 import asyncio
-import uuid
-import httpx
 import json
 import logging
-import random
+import os
 import time
+import uuid
+from pathlib import Path
+
+import ccxt
+import httpx
 import numpy as np
 import pandas as pd
-import ccxt
-import os
 import websockets
-import base64
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, HTTPException, Depends
-from fastapi.responses import HTMLResponse, JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
+from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
-from typing import List, Dict
-from pathlib import Path
-from core.middleware import (RequestLoggingMiddleware, SecurityHeadersMiddleware,
-                             IPRateLimitMiddleware, LoginRateLimitMiddleware, install_cors)
-from core.position_manager import (PositionProtection, PositionProtectionStore,
-                                     evaluate_protection, evaluate_time_stop,
-                                     apply_breakeven_stop, partial_take_profit,
-                                     can_pyramid, position_age_hours)
-from core.portfolio_allocator import PortfolioAllocator
-from core.counterparty_risk import CounterpartyRiskManager
-from core.cost_accounting import CostAccounting
-from core.module_honesty import get_module_status, status_summary
-from core.attribution import PerformanceAttribution, quality_metrics
-from models.scenario_stress import ScenarioStressTester, CRISIS_SCENARIOS
-from backtester.bias_audit import audit_backtest
-from core.volatility_targeting import volatility_scale_factor
-from core.signal_library import SIGNAL_LIBRARY, evaluate_all_signals, evaluate_signal
-from core.execution_router import ExecutionAlpha, SlippageModel, decide_style
-from core.copy_mirror import fetch_trader_positions, build_mirror_orders, mirror_status_text
-from core.paper_execution import simulate_paper_fill, estimate_slippage_bps_from_book
-from core.world_model import (compute_regime_probs, compute_market_state,
-                              discover_causal_parents, build_causal_feature_df, counterfactual_alpha)
-from core.mixture_experts import MixtureOfExperts, risk_adjusted_reward, curriculum_sort
-from core.hypothesis_generator import HypothesisGenerator
-from core.meta_cognition import (adaptive_conviction_threshold, decide_no_trade, hedging_decision)
-from core.execution_agent import ExecutionStyleBandit, tradability_factor, StrategyExecutionAttribution
-from core.risk_committee import RiskCommittee, daily_risk_budget
-from core.self_assessment import simulation_divergence, honesty_factor, meta_attribution, health_honesty_component, reason_weight_from_attribution
-from core.llm_narrative import (daily_market_narrative, explain_decision, answer_question,
-                                 daily_market_narrative_async, answer_question_async)
-from core.organization import Organization
-from core.research_discipline import (pre_register_hypothesis, double_validation, live_p_value, meta_label_filter)
-from core.robustness import (save_state_snapshot, restore_state_snapshot, Supervisor, chaos_cut_feed,
-                             audit_deterministic, seed_audit_rng)
-from core.confidence_index import compute_confidence_index
-from core.risk_pipeline import (REWARD_RISK_RATIO, MIN_REWARD_RISK, kelly_dynamic,
-                                rr_requirement, rr_net_positive, entry_rr_filter,
-                                RiskStateMachine, StrategyWinRateTracker,
-                                apply_risk_pipeline, ROUND_TRIP_COST_PCT,
-                                STOP_LOSS_PCT, ATR_MULT_SL)
-from core.world_model import compute_structural_regimes, cross_asset_bias
-from core.reporting import build_daily_report, compute_health_score, build_concierge_message
 
-# Import our quant models
-from models.regime_detector import MarketRegimeDetector, compute_order_book_imbalance
-from models.price_predictor import LSTMLikePredictor, PPOTRAgent
-from strategies.engine import (
-    TrendFollowingStrategy, MeanReversionStrategy, MarketMakingStrategy,
-    StatisticalArbitrageStrategy, ArbitrageInterExchangeStrategy, GridTradingStrategy,
-    ScalpingStrategy, MetaAllocationEngine
-)
+from bot.telegram_bot import TelegramBotManager
 from copytrading.manager import CopyTradingManager
-from risk.risk_manager import RiskManager
+from core.attribution import PerformanceAttribution, quality_metrics
+from core.confidence_index import compute_confidence_index
+from core.config import settings
+from core.cost_accounting import CostAccounting
+from core.counterparty_risk import CounterpartyRiskManager
+from core.execution_agent import ExecutionStyleBandit, StrategyExecutionAttribution, tradability_factor
+from core.execution_router import ExecutionAlpha, SlippageModel, decide_style
+from core.hypothesis_generator import HypothesisGenerator
+from core.meta_cognition import adaptive_conviction_threshold, decide_no_trade, hedging_decision
+from core.middleware import (
+    IPRateLimitMiddleware,
+    LoginRateLimitMiddleware,
+    RequestLoggingMiddleware,
+    SecurityHeadersMiddleware,
+    install_cors,
+)
+from core.mixture_experts import MixtureOfExperts, curriculum_sort, risk_adjusted_reward
+from core.organization import Organization
+from core.paper_execution import estimate_slippage_bps_from_book, simulate_paper_fill
+from core.portfolio_allocator import PortfolioAllocator
+from core.position_manager import (
+    PositionProtection,
+    PositionProtectionStore,
+    apply_breakeven_stop,
+    can_pyramid,
+    evaluate_protection,
+    evaluate_time_stop,
+    partial_take_profit,
+    position_age_hours,
+)
+from core.research_discipline import live_p_value, meta_label_filter
+from core.risk_committee import RiskCommittee, daily_risk_budget
+from core.risk_pipeline import (
+    ATR_MULT_SL,
+    REWARD_RISK_RATIO,
+    ROUND_TRIP_COST_PCT,
+    STOP_LOSS_PCT,
+    RiskStateMachine,
+    StrategyWinRateTracker,
+    apply_risk_pipeline,
+    entry_rr_filter,
+)
+from core.robustness import (
+    Supervisor,
+    restore_state_snapshot,
+    save_state_snapshot,
+)
+from core.self_assessment import (
+    meta_attribution,
+    reason_weight_from_attribution,
+    simulation_divergence,
+)
+from core.volatility_targeting import volatility_scale_factor
+from core.world_model import (
+    build_causal_feature_df,
+    compute_market_state,
+    compute_regime_probs,
+    compute_structural_regimes,
+    counterfactual_alpha,
+    cross_asset_bias,
+    discover_causal_parents,
+)
 from database.db_manager import DBManager
-from backtester.engine import EventDrivenBacktester
-
-# NEW ADVANCED MODELS
-from models.sentiment_analyzer import NewsSentimentAnalyzer, SOURCE_WEIGHTS as SOURCE_WEIGHTS_REF
-from models.onchain_tracker import OnChainTracker
-from models.defi_wallet import NonCustodialDeFiWallet
-from models.mlops_pipeline import MLOpsAutoTrainer
-from models.risk_covariance import RiskCovarianceEngine
 from market_data.multi_source import MultiSourcePriceEngine
 from market_data.order_flow import OrderFlowEngine
-from models.volatility_arbitrage import OptionsVolatilityArbitrageEngine
-from bot.telegram_bot import TelegramBotManager
-from models.funding_arbitrage import FundingRateArbitrageEngine
-from models.dex_cex_arbitrage import DexCexArbitrageEngine
-from models.monte_carlo import MonteCarloStressTester
-from models.execution_slicer import SmartOrderSlicer
-from models.microstructure_edge import MicrostructureEdgeEngine
-from models.lopez_de_prado import MetaLabelingTripleBarrier, calculate_deflated_sharpe_ratio, PurgedKFoldEmbargo
 from models.almgren_chriss import AlmgrenChrissExecutionOptimizer, calculate_cvar_constrained_sizing
+from models.defi_wallet import NonCustodialDeFiWallet
+from models.dex_cex_arbitrage import DexCexArbitrageEngine
+from models.execution_slicer import SmartOrderSlicer
+from models.funding_arbitrage import FundingRateArbitrageEngine
+from models.lopez_de_prado import calculate_deflated_sharpe_ratio
 from models.macro_calendar import MacroeconomicCalendarEngine
-from models.oms_ems import OrderManagementSystem, ReconciliationEngine, OrderStatus
+from models.microstructure_edge import MicrostructureEdgeEngine
+from models.mlops_pipeline import MLOpsAutoTrainer
+from models.monte_carlo import MonteCarloStressTester
+from models.oms_ems import OrderManagementSystem, ReconciliationEngine
+from models.onchain_tracker import OnChainTracker
+from models.price_predictor import LSTMLikePredictor, PPOTRAgent
+
+# Import our quant models
+from models.regime_detector import MarketRegimeDetector
+from models.risk_covariance import RiskCovarianceEngine
+from models.scenario_stress import ScenarioStressTester
+
+# NEW ADVANCED MODELS
+from models.sentiment_analyzer import NewsSentimentAnalyzer
+from models.volatility_arbitrage import OptionsVolatilityArbitrageEngine
+from risk.risk_manager import RiskManager
+from strategies.engine import (
+    ArbitrageInterExchangeStrategy,
+    GridTradingStrategy,
+    MarketMakingStrategy,
+    MeanReversionStrategy,
+    MetaAllocationEngine,
+    ScalpingStrategy,
+    StatisticalArbitrageStrategy,
+    TrendFollowingStrategy,
+)
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -121,7 +145,6 @@ async def _global_exception_handler(request, exc):
     """LOT 8 : handler global — loggue le traceback complet (diagnostic)."""
     import traceback
     logger.error(f"⚠️ EXCEPTION GLOBALE sur {request.method} {request.url.path}: {exc}\n{traceback.format_exc()}")
-    from fastapi.responses import JSONResponse
     return JSONResponse(status_code=500, content={"detail": f"Internal error: {exc}"})
 # Institutional middleware (audit B2/B3): request logging, security headers, rate limits, CORS
 app.add_middleware(LoginRateLimitMiddleware)
@@ -173,10 +196,10 @@ reconciler = ReconciliationEngine(db)
 # Instantiate strategies
 # VISION §5: institutional strategy suite - now includes the previously-dead
 # modules (momentum, volatility_breakout, multi_timeframe) + carry + cross-sectional.
-from strategies.momentum import MomentumStrategy
-from strategies.volatility_breakout import VolatilityBreakoutStrategy
 from strategies.institutional import CarryStrategy, CrossSectionalMomentumStrategy, MultiTimeframeWrapperStrategy
+from strategies.momentum import MomentumStrategy
 from strategies.regime_switching import RegimeSwitchingAllocator
+from strategies.volatility_breakout import VolatilityBreakoutStrategy
 
 strategies_list = [
     TrendFollowingStrategy(),
@@ -205,6 +228,7 @@ mlops_trainer = MLOpsAutoTrainer(regime_detector, price_predictor, db)
 
 # === LOT 46: Online Model Selection & Adaptive Ensemble Pruning ===
 from core.lot46_integration import create_lot46_components
+
 # Honest functional model names (audit B9-1): each selector slot is a real,
 # distinct strategy family instead of aspirational "transformer/gnn" labels.
 model_names_lot46 = ["trend_lstm", "meanrev_net", "volatility_net", "correlation_net", "regime_net"]
@@ -249,21 +273,25 @@ async def lot46_model_selection_scheduler():
 
 # === LOT 47++: Complete Multi-Exchange Smart Order Router ===
 from core.multi_exchange_sor import MultiExchangeSmartOrderRouter
+
 multi_exchange_sor = MultiExchangeSmartOrderRouter()
 logger.info("✅ LOT 47++: Complete Multi-Exchange SOR initialized (Binance + Bybit + Real metrics)")
 
 # === LOT 48+: Robust Feature Store with Versioning ===
 from core.feature_store import FeatureStore
+
 feature_store = FeatureStore()
 logger.info("✅ LOT 48+: Robust Feature Store with Versioning initialized")
 
 # === LOT 49: Realistic Execution Simulator (Slippage + Latency) ===
 from core.execution_simulator import ExecutionSimulator
+
 execution_simulator = ExecutionSimulator(base_slippage_bps=6.0, base_latency_ms=75)
 logger.info("✅ LOT 49: Execution Simulator (Slippage + Latency) initialized")
 
 # === LOT 50: Dynamic Capital Allocator (Kelly + Risk Parity) ===
 from core.dynamic_capital_allocator import DynamicCapitalAllocator
+
 capital_allocator = DynamicCapitalAllocator(base_exposure=0.68, max_exposure=0.92, min_exposure=0.28)
 portfolio_allocator = PortfolioAllocator()  # LOT 6: allocation top-down en cascade (PDF Pilier L)
 counterparty_risk = CounterpartyRiskManager()  # LOT 7: risque de contrepartie par exchange (PDF Pilier P)
@@ -274,16 +302,19 @@ logger.info("✅ LOT 50: Dynamic Capital Allocator initialized")
 
 # === LOT 52: Trade Journal (with Notes + Screenshots) ===
 from core.trade_journal import TradeJournal
+
 trade_journal = TradeJournal()
 logger.info("✅ LOT 52: Trade Journal initialized")
 
 # === LOT 53: Advanced Causal Discovery Engine ===
 from ai.causal_discovery import CausalDiscoveryEngine
+
 causal_engine = CausalDiscoveryEngine()
 logger.info("✅ LOT 53: Advanced Causal Discovery Engine initialized")
 
 # === LOT 54: Generative Models for Extreme Scenarios ===
 from ai.generative_extreme_scenarios import ExtremeScenarioGenerator
+
 generative_engine = ExtremeScenarioGenerator()
 logger.info("✅ LOT 54: Generative Extreme Scenario Engine initialized")
 
@@ -295,39 +326,44 @@ logger.info("✅ LOT 54: Generative Extreme Scenario Engine initialized")
 
 # === LOT 56: Multi-Objective Portfolio Optimizer (Sharpe + CVaR + Max Drawdown) ===
 from core.multi_objective_optimizer import MultiObjectivePortfolioOptimizer
+
 multi_objective_optimizer = MultiObjectivePortfolioOptimizer()
 logger.info("✅ LOT 56: Multi-Objective Portfolio Optimizer initialized")
 
 # === LOT 57: Advanced Almgren-Chriss Market Impact & Liquidity Model ===
 from core.almgren_chriss_advanced import AdvancedAlmgrenChrissModel
+
 almgren_chriss_model = AdvancedAlmgrenChrissModel(gamma=0.12, eta=0.06, lambda_risk=0.45)
 logger.info("✅ LOT 57: Advanced Almgren-Chriss Model initialized")
 
 # === LOT 58: Tax & Compliance Reporting (FIFO, Cost Basis, PnL Fiscal) ===
 from core.tax_compliance import TaxComplianceEngine
+
 tax_engine = TaxComplianceEngine()
 logger.info("✅ LOT 58: Tax & Compliance Engine initialized")
 
 # === LOT 59: Advanced Model Explainability (SHAP + LIME) ===
-from ai.model_explainability import ModelExplainer
 # Note: ModelExplainer needs to be initialized with a trained model and feature names
 # Example: explainer = ModelExplainer(model=some_model, feature_names=feature_list)
 logger.info("✅ LOT 59: Model Explainability module initialized (SHAP + LIME ready)")
 
 # === LOT 60: Advanced Monitoring & Auto-Scaling System ===
 from core.advanced_monitoring import AdvancedMonitoringSystem
+
 monitoring_system = AdvancedMonitoringSystem()
 logger.info("✅ LOT 60: Advanced Monitoring & Auto-Scaling System initialized")
 
 # === LOT 61: Prometheus /metrics exposition (for the bundled Grafana stack) ===
 from core import metrics as platform_metrics
+
 platform_metrics.mark_startup()
 logger.info("✅ LOT 61: Prometheus /metrics registry initialized")
 
 # === LOT 63: Centralized outbound API rate limiting ===
-from core.rate_limits import bybit_limiter, binance_limiter, yahoo_limiter, news_limiter, rpc_limiter
-from database.auth import AuthManager, Roles, security as auth_security
 from fastapi.security import HTTPBearer
+
+from core.rate_limits import bybit_limiter, yahoo_limiter
+from database.auth import AuthManager, Roles
 
 # Optional bearer: when no Authorization header is present, credentials is None
 # and require_auth() decides whether auth is needed (DEMO vs REAL / AUTH_ENABLED).
@@ -336,6 +372,8 @@ logger.info("✅ LOT 63: Outbound API rate limiters initialized")
 
 # React dashboard served at /app when built (audit B14-1: one modern UI, one classic)
 import os as _os
+from datetime import UTC
+
 if _os.path.isdir(_os.path.join(_os.getcwd(), "frontend", "dist")):
     try:
         from fastapi.staticfiles import StaticFiles as _SF
@@ -419,7 +457,7 @@ STATE = {
     "equity_history_demo": [100000.0],
     "equity_history_real": [0.0],
     "historical_bars": None,         # Infilled during training (données réelles)
-    
+
     # MULTI-ASSET telemetry mapping — prix RÉELS uniquement (None = source absente)
     "assets": {
         "BTCUSDT": {"price": None, "qty": 0.0, "pnl": 0.0, "class": "Crypto",
@@ -437,7 +475,7 @@ STATE = {
         "TSLA": {"price": None, "qty": 0.0, "pnl": 0.0, "class": "Stock (Tesla)",
                  "has_real_price": False, "data_status": "UNAVAILABLE", "volume_24h": None}
     },
-    
+
     # Advanced Signals Cache — disponibilité honnête (None = indisponible)
     "sentiment_index": None,
     "sentiment_available": False,
@@ -1123,8 +1161,8 @@ def _mark_paper_validation_day() -> None:
     """Marque le jour UTC courant comme jour de paper-trading actif (le bot
     tourne réellement). Persisté en DB : la série survit aux redémarrages."""
     try:
-        from datetime import datetime, timezone
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        from datetime import datetime
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         days = json.loads(db.get_setting("paper_validation_days") or "[]")
         if not isinstance(days, list):
             days = []
@@ -1189,16 +1227,16 @@ ccxt_client = None
 
 def get_ccxt_client():
     """
-    Dynamically loads and instantiates the CCXT Binance/Bybit client 
+    Dynamically loads and instantiates the CCXT Binance/Bybit client
     using securely encrypted keys from the database.
     """
     global ccxt_client
     if ccxt_client is not None:
         return ccxt_client
-        
+
     api_key = db.get_setting("binance_api_key", decrypt=True)
     secret_key = db.get_setting("binance_secret_key", decrypt=True)
-    
+
     if api_key and secret_key:
         try:
             ccxt_client = ccxt.binance({
@@ -1220,21 +1258,21 @@ def get_ccxt_client():
 
 def format_exchange_size(symbol, quantity, price):
     """
-    Formats the order size according to the exact lot size filters 
+    Formats the order size according to the exact lot size filters
     and precision limits of the exchange to avoid API execution rejections.
     """
     client = get_ccxt_client()
     if not client:
         return round(quantity, 5) # Safe fallback
-        
+
     try:
         if symbol not in client.markets:
             client.load_markets()
-            
+
         market = client.market(symbol)
         min_qty = market['limits']['amount']['min'] or 0.0001
         max_qty = market['limits']['amount']['max'] or 999999.0
-        
+
         formatted_qty = client.amount_to_precision(symbol, quantity)
         formatted_qty = float(formatted_qty)
         formatted_qty = max(min_qty, min(formatted_qty, max_qty))
@@ -1274,15 +1312,15 @@ async def fetch_yahoo_finance_candles(ticker: str, interval="1h", range_str="5d"
             if timestamps is None:
                 logger.info(f"Yahoo Finance: Market for {ticker} is currently closed or has no active trades (Weekend/Closed).")
                 return pd.DataFrame()
-                
+
             indicators = result.get("indicators", {}).get("quote", [])[0]
-            
+
             opens = indicators.get("open", [])
             highs = indicators.get("high", [])
             lows = indicators.get("low", [])
             closes = indicators.get("close", [])
             volumes = indicators.get("volume", [])
-            
+
             data = []
             for idx, t in enumerate(timestamps):
                 if opens[idx] is not None and closes[idx] is not None:
@@ -1402,20 +1440,20 @@ def train_ai_models(df):
     returns = df['close'].pct_change().dropna().values
     volatilities = df['close'].pct_change().rolling(10).std().dropna().values
     min_len = min(len(returns), len(volatilities))
-    
+
     X_train = np.column_stack((returns[-min_len:], volatilities[-min_len:]))
     regime_detector.fit(X_train)
-    
+
     features_seq = []
     labels = []
     pct_df = df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0)
-    
+
     for i in range(5, len(pct_df) - 1):
         features_seq.append(pct_df.iloc[i-5:i].values)
         labels.append(pct_df['close'].iloc[i])
-        
+
     price_predictor.fit(features_seq, np.array(labels))
-    
+
     STATE["historical_bars"] = df
     logger.info("AI Models successfully fitted and deployed in-memory.")
 
@@ -1438,24 +1476,24 @@ def evaluate_real_safety_gate(symbol: str) -> bool:
     if not client:
         logger.error("SAFETY GATE: CCXT Exchange client offline or unauthenticated.")
         return False
-        
+
     # 2. Market Data Quality Check
     if STATE["data_quality_status"] == DataQualityStatus.UNAVAILABLE:
         logger.error("SAFETY GATE: Market data quality is UNAVAILABLE.")
         return False
-        
+
     # 3. Database Health Check
     try:
         db.get_connection().close()
     except Exception as e:
         logger.error(f"SAFETY GATE: Database connection is unhealthy: {str(e)}")
         return False
-        
+
     # 4. Risk Circuit Breakers Check
     if risk_manager.circuit_breaker_active:
         logger.error("SAFETY GATE: Risk circuit breaker is ACTIVE.")
         return False
-        
+
     # 4bis. Multi-Source Divergence Check (PDF : « divergence anormale entre 2
     # sources = alarme et gel du trading » — mentalité n°5)
     if STATE.get("price_divergent", {}).get(symbol):
@@ -1465,13 +1503,13 @@ def evaluate_real_safety_gate(symbol: str) -> bool:
             f"(seuil {cons.get('threshold_pct')}%) sur {symbol} -> ordre réel BLOQUÉ."
         )
         return False
-        
+
     # 5. Model Registry Approval Check
     from models.mlops_pipeline import ModelStatus
     if mlops_trainer.active_model_status != ModelStatus.DEPLOYED:
         logger.error("SAFETY GATE: Active model in registry is frozen or not APPROVED.")
         return False
-            
+
     logger.info(f"SAFETY GATE PASSED: All validations successful for {symbol}!")
     return True
 
@@ -1952,6 +1990,7 @@ def _ensure_auth_secrets(creds_path: str = None) -> None:
     admin auto-généré est livré via _deliver_admin_password_once() uniquement.
     """
     import secrets as _secrets
+
     import bcrypt as _bcrypt
 
     # ---- JWT secret: reuse persisted or generate strong ----
@@ -2159,10 +2198,14 @@ async def autonomous_ai_scheduler():
                     _qm = quality_metrics(_eq, _trades)
                     STATE["quality_metrics"] = _qm
                     # Stress test : crises réelles sur le portefeuille complet
+                    # FIX (ruff F821) : active_balance_key n'était PAS défini
+                    # dans cette fonction — le bloc levait NameError attrapée
+                    # silencieusement, le stress test ne s'exécutait JAMAIS ici.
                     _positions = db.get_positions()
                     _prices = STATE.get("last_known_prices", {})
+                    _bal_key = "balance_demo" if STATE["mode"] == "DEMO" else "balance_real"
                     STATE["stress_test_report"] = scenario_tester.run_stress(
-                        _positions, STATE[active_balance_key], _prices)
+                        _positions, STATE[_bal_key], _prices)
                     # Bootstrap : le Sharpe observé est-il dû à la chance ?
                     if len(_eq) >= 30:
                         STATE["bootstrap_sharpe"] = monte_carlo_tester.bootstrap_sharpe_significance(
@@ -2521,10 +2564,10 @@ async def startup_event():
 
     # Update CCXT client inside our Binance Adapter once authenticated!
     binance_adapter.client = get_ccxt_client()
-    
+
     # Load default copytrade allocations
     global STATE
-    
+
     # VISION_FUTUR §5a: rebuild state from the last snapshot (event-sourcing lite)
     restore_state_snapshot(db, STATE, max_age_seconds=7200)
     logger.info(f"🩺 Supervisor: {supervisor.check(force=True) or 'all vital signs OK'}")
@@ -2546,12 +2589,12 @@ async def startup_event():
             logger.info(f"Loaded persisted demo balance from database: ${val:,.2f} USD")
         except Exception as e:
             logger.error(f"Failed to load persisted demo balance: {str(e)}")
-            
+
     allocations = db.get_copy_allocations()
     for trader_id, data in allocations.items():
         if data['active']:
             copy_manager.start_copying(trader_id, data['allocated_capital'])
-            
+
     # Initial historical load from persistent database cache first!
     # Fallback to fetching REAL data (Binance -> Bybit -> Yahoo) per asset.
     # HONNÊTETÉ (faille 1) : jamais de barres fabriquées ; un actif sans
@@ -2599,14 +2642,14 @@ async def startup_event():
                               for k, v in list(_hmm_val.items())[:4]) + "...")
     except Exception as _hv:
         logger.debug(f"HMM validation failed: {_hv}")
-    
+
     # Sync Web3 non-custodial EVM balance details
     STATE["defi_wallet_address"] = defi_wallet.get_wallet_address()
     STATE["eth_defi_balance"] = defi_wallet.fetch_native_balance()
-    
+
     # Start the continuous WebSockets trading execution background process
     launch_named(live_trading_loop(), "live_trading_loop")
-    
+
     # Start the multi-source price consensus engine (PDF: redondance 2+ sources)
     launch_named(price_consensus_loop(), "price_consensus_loop")
 
@@ -2614,13 +2657,13 @@ async def startup_event():
     launch_named(order_flow_websocket_listener(), "order_flow_websocket_listener")
     logger.info("✅ OrderFlow WS listener started (trades réels + liquidations)")
     logger.info("✅ Multi-source price consensus loop started (Binance/Bybit/Coinbase/Kraken/OKX/CoinGecko/CryptoCompare/Yahoo...)")
-    
+
     # Start the official Dual-Exchange WebSockets Stream
     launch_named(multi_exchange_websocket_listener(), "multi_exchange_websocket_listener")
-    
+
     # Send the startup push notification safely within the running loop
     asyncio.create_task(telegram_bot.send_startup_message())
-    
+
     # Start the tactile Telegram remote control worker
     launch_named(telegram_bot.poll_telegram_commands_loop(), "telegram_poll")
 
@@ -2682,13 +2725,13 @@ async def live_trading_loop():
     """
     global STATE
     logger.info("Resilient Multi-Asset Live Trading Engine active and polling...")
-    
+
     loop_count = 0
     while True:
         if not STATE["is_running"] or STATE["kill_switch_active"]:
             await asyncio.sleep(1)
             continue
-            
+
         loop_count += 1
 
         # LOT 2 (PDF Pilier G) : tick de la machine à états NORMAL/CAUTION/HALT
@@ -2741,11 +2784,11 @@ async def live_trading_loop():
                 "Multi-Timeframe": {"signal": 0.0, "weight": 0.06, "confidence": 0.5}
             }
         }
-        
+
         # 1. Periodically fetch Advanced External Indicators (to avoid API rate-limits)
         news_scale_factor = 1.0
         macro_scale_factor = 1.0
-        
+
         if loop_count % 3 == 1:
             try:
                 res_sent = await news_analyzer.get_market_sentiment_index()
@@ -2767,7 +2810,7 @@ async def live_trading_loop():
                     STATE["sentiment_available"] = False
                     STATE["sentiment_confidence"] = 0.0
                     logger.warning("Sentiment UNAVAILABLE (aucune source réelle) -> aucune influence sur les trades.")
-                
+
                 # HIÉRARCHIE DE L'INFORMATION (LOT 5, PDF Pilier I) : un choc
                 # SYSTÉMIQUE (hack, insolvabilité, ban...) ≠ bruit. Seuls les
                 # tokens systémiques du détecteur déclenchent une action forte.
@@ -2788,7 +2831,7 @@ async def live_trading_loop():
                             risk_state.cooldown_seconds = 15.0 * 60.0
                         try:
                             asyncio.create_task(telegram_bot.send_push_notification(
-                                f"🔴 *HALT MÉDIA* — choc systémique détecté. Nouveaux ordres bloqués."))
+                                "🔴 *HALT MÉDIA* — choc systémique détecté. Nouveaux ordres bloqués."))
                         except Exception:
                             pass
                     else:
@@ -2797,7 +2840,7 @@ async def live_trading_loop():
                 logger.warning(f"Failed to fetch sentiment index: {str(e)}")
                 STATE["sentiment_available"] = False
                 STATE["sentiment_index"] = None
-                
+
         # Check scheduled macroeconomic calendar for approaching shocks
         # LOT 5 (PDF Pilier I) : gestion des phases AVANT / PENDANT / APRÈS
         # (mentalité n°4 : on ne trade pas l'événement, on trade la réaction)
@@ -2809,14 +2852,14 @@ async def live_trading_loop():
                 event_name = macro_res["event"]
                 time_left = macro_res["time_to_event_minutes"]
                 phase = macro_res.get("phase", "APPROACHING")
-                
+
                 # Check if we have already sent this alert (par phase)
                 last_sent_event = STATE.get("last_sent_macro_event")
                 if last_sent_event != f"{event_name}|{phase}":
                     # Send the newly implemented INTERACTIVE TACTILE mobile alert!
                     await telegram_bot.send_interactive_macro_alert(event_name, time_left)
                     STATE["last_sent_macro_event"] = f"{event_name}|{phase}"
-                    
+
                 macro_scale_factor = macro_res["scale_reduction_factor"]
                 # Machine à états selon la PHASE (LOT 5) :
                 #  - ACTIVE (HIGH) : l'événement EST EN COURS -> HALT réel
@@ -2837,10 +2880,10 @@ async def live_trading_loop():
                 STATE["last_sent_macro_event"] = None
         except Exception as e:
             logger.warning(f"Failed to parse macroeconomic calendar: {str(e)}")
-            
+
         # Apply tactile mobile buttons override if they clicked 'REDUCE EXPO'!
         macro_scale_factor *= STATE.get("macro_scale_factor_tactile", 1.0)
-                
+
         if loop_count % 5 == 1:
             try:
                 onchain_data = await onchain_tracker.get_exchange_netflows()
@@ -2855,10 +2898,10 @@ async def live_trading_loop():
                 logger.warning(f"Failed to fetch onchain data: {str(e)}")
                 STATE["onchain_available"] = False
                 STATE["onchain_risk_score"] = None
-                
+
             # Periodically verify non-custodial wallet balances
             STATE["eth_defi_balance"] = defi_wallet.fetch_native_balance()
-            
+
             # Formulate options volatility structures from REAL implied volatility
             # (faille 1 corrigée : plus d'iv_map codé en dur — mentalité n°5)
             try:
@@ -2882,7 +2925,7 @@ async def live_trading_loop():
                     STATE["options_strategy"]["iv_source"] = "deribit_dvol"
             except Exception as e:
                 logger.warning(f"Options strategy evaluation failed: {e}")
-            
+
         # 2. Calculate rolling Correlation Matrix across all multi-assets using actual cached historical return series!
         try:
             real_returns_dict = {}
@@ -2893,7 +2936,7 @@ async def live_trading_loop():
                 else:
                     logger.warning(f"No historical candles available for {asset} to calculate covariance. Initializing with flat zeros.")
                     real_returns_dict[asset] = np.zeros(30)
-                    
+
             corr_df = covariance_engine.calculate_correlation_matrix(real_returns_dict)
             STATE["covariance_matrix"] = corr_df.to_dict()
             active_returns_dict = real_returns_dict
@@ -2901,7 +2944,7 @@ async def live_trading_loop():
             logger.error(f"Failed to calculate covariance matrix: {str(e)}")
             corr_df = pd.DataFrame()
             active_returns_dict = {asset: np.zeros(30) for asset in STATE["assets"]}
-            
+
         # Calculate daily Portfolio VaR/CVaR dynamically before the asset loop!
         positions = db.get_positions()
         var_metrics = covariance_engine.calculate_portfolio_var_cvar(
@@ -2912,14 +2955,14 @@ async def live_trading_loop():
         portfolio_cvar_pct = var_metrics.get("portfolio_cvar_pct", 0.02)
         if portfolio_cvar_pct <= 0:
             portfolio_cvar_pct = 0.02 # Safe floor
-            
+
         # 3. Loop and trade through each active Asset (Crypto, Gold, Forex, Stocks)
         active_assets = list(STATE["assets"].keys())
         active_mode = STATE["mode"]
         client = get_ccxt_client() if active_mode == "REAL" else None
         active_balance_key = "balance_demo" if active_mode == "DEMO" else "balance_real"
         active_equity_history_key = "equity_history_demo" if active_mode == "DEMO" else "equity_history_real"
-        
+
         # Sync real exchange wallet balance once per loop iteration
         if active_mode == "REAL" and client:
             try:
@@ -2927,12 +2970,11 @@ async def live_trading_loop():
                 STATE["balance_real"] = float(bal['free'].get('USDT', bal['total'].get('USDT', 0.0)))
             except Exception as e:
                 logger.error(f"Failed to sync real wallet balance: {str(e)}")
-                
+
         for symbol in active_assets:
             try:
                 # Fetch 100% real-world price ticks for Gold, Forex, Stocks, and Cryptos!
                 # (faille 1 corrigée : plus de prix inventé — mark_real_price uniquement)
-                price_fetched = False
                 try:
                     # ===== PRIX CONSENSUS MULTI-SOURCES (PDF : redondance 2+ sources croisées) =====
                     # Crypto : Binance + Bybit + Coinbase + Kraken + OKX (+ CoinGecko/CryptoCompare 60s)
@@ -2943,7 +2985,6 @@ async def live_trading_loop():
                         if cons.get("price") and cons["price"] > 0:
                             mark_real_price(symbol, cons["price"],
                                             volume_24h=STATE["assets"][symbol].get("volume_24h"))
-                            price_fetched = True
                             if cons["status"] == "DIVERGENT":
                                 # GEL DU TRADING (PDF) : divergence anormale entre sources
                                 STATE.setdefault("price_divergent", {})[symbol] = True
@@ -2975,7 +3016,6 @@ async def live_trading_loop():
                         STATE.setdefault("price_consensus", {})[symbol] = cons
                         if cons.get("price") and cons["price"] > 0:
                             mark_real_price(symbol, cons["price"])
-                            price_fetched = True
                             if cons["status"] == "DIVERGENT":
                                 STATE.setdefault("price_divergent", {})[symbol] = True
                                 logger.critical(
@@ -3152,7 +3192,7 @@ async def live_trading_loop():
                         f"💵 Intérêts perçus : *+${acc_funding:.2f} USD*\n"
                         f"⚖️ Statut : *Positions spot/perp clôturées*"
                     )
-                    
+
                 # EVALUATE GENUINE DEX-CEX CROSS-VENUE ARBITRAGE (100% Real-World spreads Bybit vs Binance!)
                 bybit_p = None # Starts as None (Unavailable)
                 if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
@@ -3167,7 +3207,7 @@ async def live_trading_loop():
                             bybit_p = float(resp.json().get("result", {}).get("list", [{}])[0].get("lastPrice"))
                     except Exception as e:
                         logger.error(f"Failed to fetch real-world secondary exchange price from Bybit for {symbol}: {str(e)}")
-                    
+
                     if bybit_p is not None:
                         arb_opp = dex_cex_arb_engine.detect_arbitrage_opportunities(
                             symbol=symbol,
@@ -3238,7 +3278,7 @@ async def live_trading_loop():
                             )
                     else:
                         logger.warning(f"Skipping arbitrage check for {symbol} due to unavailable Bybit secondary price feed.")
-                    
+
                 # 4. Formulate signal and sizing
                 # Query the asset's own genuine price series from persistent DB cache!
                 # HONNÊTETÉ (faille 1 corrigée) : plus AUCUNE bougie synthétique
@@ -3255,7 +3295,7 @@ async def live_trading_loop():
                     )
                     continue
                 STATE["using_fallback_data"] = False
-                
+
                 if df is not None:
                     # Predict Regime HMM
                     recent_returns = df['close'].pct_change().dropna().values[-10:]
@@ -3279,11 +3319,11 @@ async def live_trading_loop():
                                 "confidence": 0.5, "regime_id": STATE.get("regime_id", 2)}
                     except Exception:
                         pass
-                
+
                     # Predict temporal change using our true pure NumPy LSTM Deep Neural Network!
                     seq_features = df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0).values[-5:]
                     STATE["ml_prediction_pct"] = float(price_predictor.predict(seq_features))
-                
+
                     # MLOPS CONCEPT DRIFT DETECTOR:
                     # Track prediction error, and automatically trigger retraining on the fly if CUSUM drift occurs!
                     actual_return = recent_returns[-1] if len(recent_returns) > 0 else 0.0
@@ -3296,7 +3336,7 @@ async def live_trading_loop():
                     if mlops_trainer.track_prediction_error_and_detect_drift(STATE["ml_prediction_pct"], actual_return):
                         logger.warning("MLOPS DETECTED CONCEPT DRIFT. TRIGGERING AUTOMATIC RETRAINING PIPELINE!")
                         mlops_trainer.execute_pipeline(df)
-                
+
                     # Check Active position for this specific asset
                     positions = db.get_positions()
                     asset_position = next((p for p in positions if p['symbol'] == symbol), None)
@@ -3486,7 +3526,7 @@ async def live_trading_loop():
                             protection_store.remove(symbol)  # flat -> no stale protection
                     except Exception as pe:
                         logger.warning(f"Position protection check failed for {symbol}: {pe}")
-                
+
                     norm_pos = pos_qty * current_price / STATE[active_balance_key] if STATE[active_balance_key] > 0 else 0.0
                     ppo_state = np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], 0.0])
 
@@ -3519,7 +3559,7 @@ async def live_trading_loop():
                             STATE["ppo_buffer"] = STATE["ppo_buffer"][-2000:]
                     except Exception as e:
                         logger.warning(f"PPO experience collection failed: {e}")
-                
+
                     # Setup genuine order book parameters from the WebSockets stream (No fake fallback allowed!)
                     ob_bids = STATE["order_book"].get("bids") if STATE["order_book"] is not None else None
                     ob_asks = STATE["order_book"].get("asks") if STATE["order_book"] is not None else None
@@ -3529,7 +3569,7 @@ async def live_trading_loop():
                     vpin_val = microstructure_engine.calculate_vpin(df)
                     kyles_lambda_val = microstructure_engine.calculate_kyles_lambda(df)
                     logger.info(f"MICROSTRUCTURE ({symbol}) | VPIN: {vpin_val:.3f} | Kyle's Lambda: {kyles_lambda_val:.3e}")
-                
+
                     # VISION_FUTUR §3/§4: market-average return + cross-asset bias
                     try:
                         _mkt_rets = [a.get("price") for a in STATE.get("assets", {}).values()
@@ -3559,7 +3599,7 @@ async def live_trading_loop():
                         'market_avg_return': float(_avg),
                         'cross_asset_bias': cross_asset_bias(symbol, STATE),
                     }
-                
+
                     consensus = meta_engine.allocate(market_data, STATE["regime_id"], STATE["ml_prediction_pct"], STATE["ppo_action"])
                     final_signal = consensus["final_signal"]
                     # VISION_FUTUR §1: derive the dominant strategy early (desk capital mapping)
@@ -3572,10 +3612,10 @@ async def live_trading_loop():
                         pass
                     STATE["last_reasoning"] = explain_last_decision(consensus)
                     STATE["last_reasoning_symbol"] = symbol
-                
+
                     # Feed trade feedback to Thompson Sampling strategy re-allocator!
                     meta_engine.update_bandit_feedback(symbol, consensus["contributions"], actual_return)
-                
+
                     # Incorporate sentiment index — UNIQUEMENT si le sentiment est
                     # réel et disponible (faille 1 corrigée : jamais de sentiment
                     # inventé ou absent dans la décision)
@@ -3584,7 +3624,7 @@ async def live_trading_loop():
                     # VISION_FUTUR §3/§4: cross-asset bias (BTC regime informs others, soft)
                     final_signal = float(np.clip(final_signal + cross_asset_bias(symbol, STATE), -1.0, 1.0))
                     final_signal = max(-1.0, min(1.0, final_signal))
-                
+
                     # ===== RISK SIZING — PIPELINE UNIFIÉ (LOT 2, PDF Pilier F & G) =====
                     atr = df['high'].values[-1] - df['low'].values[-1]
                     if atr == 0:
@@ -3908,11 +3948,24 @@ async def live_trading_loop():
 
                     desired_qty = target_direction * target_qty
                     trade_qty = desired_qty - pos_qty
-                
+
                     # 5. Execute order
                     if abs(trade_qty) > (current_price * 0.0001):
                         side = "BUY" if trade_qty > 0 else "SELL"
                         execution_price = current_price * (1.0 + 0.0003) if side == "BUY" else current_price * (1.0 - 0.0003)
+                        # FIX (ruff F821) : dominant_strategy était utilisé dans le
+                        # bloc consultative_mode AVANT sa définition (NameError au
+                        # premier passage). Initialisée ici, dès l'entrée.
+                        dominant_strategy = "META_MODEL"
+                        try:
+                            contribs = consensus.get("contributions", {})
+                            if contribs:
+                                dominant_strategy = max(
+                                    contribs,
+                                    key=lambda s: abs(contribs[s].get("signal", 0.0) * contribs[s].get("weight", 0.0))
+                                )
+                        except Exception:
+                            pass
 
                         # IDEMPOTENCE GATE (roadmap #1): prevent duplicate/rapid-fire orders per symbol
                         last_order_ts = STATE["last_order_times"].get(symbol, 0.0)
@@ -3923,9 +3976,9 @@ async def live_trading_loop():
                                 f"(<{cooldown_s:.0f}s). Skipping duplicate order."
                             )
                             continue
-                    
+
                         trade_qty_formatted = format_exchange_size(symbol, abs(trade_qty), execution_price)
-                    
+
                         # Enforce pre-flight safety limits
                         ok, reason = risk_manager.validate_order_safety(
                             order_price=execution_price,
@@ -3933,7 +3986,7 @@ async def live_trading_loop():
                             order_qty=trade_qty_formatted,
                             capital_available=STATE[active_balance_key]
                         )
-                    
+
                         if ok:
                             # VISION_FUTUR §6: consultative mode - the bot proposes, the human approves
                             if STATE.get("consultative_mode", False):
@@ -3964,18 +4017,9 @@ async def live_trading_loop():
                             if active_mode == "REAL" and not evaluate_real_safety_gate(symbol):
                                 logger.critical(f"REAL SAFETY GATE REJECTED: Real order blocked for {symbol} due to safety gate checks.")
                                 continue
-                            
-                            # PER-MODEL ATTRIBUTION (roadmap precision #1): dominant strategy label
-                            dominant_strategy = "META_MODEL"
-                            try:
-                                contribs = consensus.get("contributions", {})
-                                if contribs:
-                                    dominant_strategy = max(
-                                        contribs,
-                                        key=lambda s: abs(contribs[s].get("signal", 0.0) * contribs[s].get("weight", 0.0))
-                                    )
-                            except Exception:
-                                pass
+
+                            # PER-MODEL ATTRIBUTION : dominant_strategy est déjà
+                            # initialisée à l'entrée du bloc d'exécution (FIX F821).
 
                             try:
                                 # EVM NON-CUSTODIAL EXECUTION ROUTER:
@@ -3987,7 +4031,7 @@ async def live_trading_loop():
                                         amount_in_eth=trade_qty_formatted
                                     )
                                     logger.info(f"DEX Swap signed successfully. Transaction Hash: {signed_dex_res.get('tx_hash')}")
-                                
+
                                 elif active_mode == "REAL" and client:
                                     # LOT 3 (PDF Pilier H-3) : SOR — choisir la venue au
                                     # coût NET (prix + frais + slippage), audité.
@@ -4079,10 +4123,10 @@ async def live_trading_loop():
                                             except Exception as fe:
                                                 logger.warning(f"Fill confirmation poll error: {fe}")
                                                 break
-                                
+
                                 # Record order timestamp for the idempotence gate
                                 STATE["last_order_times"][symbol] = time.time()
-                                
+
                                 # PAPER EXECUTION (DEMO == REAL, high fidelity): book-walk the real
                                 # order book, apply per-venue fees, latency, impact and rejections
                                 # so paper validation is statistically meaningful.
@@ -4153,7 +4197,7 @@ async def live_trading_loop():
                                 # Ledger update
                                 order_cost = execution_price * trade_qty_formatted
                                 commission = _paper_fee if _paper_fee is not None else order_cost * 0.001
-                            
+
                                 if side == "BUY":
                                     STATE[active_balance_key] -= (order_cost + commission)
                                     new_qty = pos_qty + trade_qty_formatted
@@ -4162,7 +4206,7 @@ async def live_trading_loop():
                                     STATE[active_balance_key] += (order_cost - commission)
                                     new_qty = pos_qty - trade_qty_formatted
                                     new_avg = asset_position['avg_price'] if asset_position and new_qty > 0 else 0.0
-                                
+
                                 db.update_position(symbol, new_qty, new_avg, active_mode)
                                 db.add_order(
                                     symbol=symbol,
@@ -4228,10 +4272,10 @@ async def live_trading_loop():
                                     )
                                 except Exception as je:
                                     logger.warning(f"Trade journal write failed: {je}")
-                            
+
                                 db.add_audit_log(
-                                    "REAL_ORDER" if active_mode == "REAL" else "DEMO_ORDER", 
-                                    audit_ip(), 
+                                    "REAL_ORDER" if active_mode == "REAL" else "DEMO_ORDER",
+                                    audit_ip(),
                                     f"Executed {side} order of {trade_qty_formatted:.5f} {symbol} at {execution_price:.2f} USD."
                                 )
                                 # VISION_FUTUR §1: attribute PnL to the responsible desk
@@ -4250,7 +4294,7 @@ async def live_trading_loop():
                                     }, default=str))
                                 except Exception:
                                     pass
-                            
+
                                 # Formulate a pedagogic and visual explanation of the trade!
                                 regime = STATE.get("regime_name", "Mean-Reverting Range")
                                 hmm_translation = {
@@ -4260,7 +4304,7 @@ async def live_trading_loop():
                                     "Erratic High Volatility": "Volatilité Erratique 🌪️ (Marché agité et imprévisible)"
                                 }
                                 translated_regime = hmm_translation.get(regime, regime)
-                            
+
                                 trade_reason = ""
                                 if side == "BUY":
                                     trade_reason = (
@@ -4274,7 +4318,7 @@ async def live_trading_loop():
                                         "un essoufflement ou un risque de retournement. Je vends pour sécuriser vos bénéfices "
                                         "au chaud et mettre notre capital à l'abri !"
                                     )
-                                
+
                                 telegram_msg = (
                                     f"🔔 *EXÉCUTION D'ORDRE ({active_mode})*\n"
                                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -4288,7 +4332,7 @@ async def live_trading_loop():
                                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                                     f"🖥️ _Terminal Web mis à jour. Cliquez ci-dessous pour piloter :_"
                                 )
-                            
+
                                 # Standard buttons layout (Like a Telegram Web App)
                                 keyboard = {
                                     "inline_keyboard": [
@@ -4302,17 +4346,17 @@ async def live_trading_loop():
                                         ]
                                     ]
                                 }
-                            
+
                                 await telegram_bot.send_push_notification(telegram_msg, reply_markup=keyboard)
                             except Exception as exc:
                                 logger.error(f"DEX / CEX ORDER REJECTION: {str(exc)}")
                                 platform_metrics.ORDERS_FAILED.labels(mode=active_mode).inc()
                                 db.add_audit_log(
-                                    "ORDER_REJECTED", 
-                                    audit_ip(), 
+                                    "ORDER_REJECTED",
+                                    audit_ip(),
                                     f"Order {side} of {trade_qty_formatted:.5f} {symbol} failed/rejected: {str(exc)}"
                                 )
-                            
+
             except Exception as exc:
                 logger.error(f"Trading tick failed for {symbol}: {str(exc)}")
                 platform_metrics.ERRORS_TOTAL.labels(component="trading_loop").inc()
@@ -4327,7 +4371,7 @@ async def live_trading_loop():
             if asset_price is None:
                 asset_price = 0.0
             net_equity += p['qty'] * asset_price
-            
+
         STATE["current_equity"] = net_equity
         STATE[active_equity_history_key].append(net_equity)
         if len(STATE[active_equity_history_key]) > 100:
@@ -4393,18 +4437,18 @@ async def live_trading_loop():
             update_metrics_from_state()
         except Exception as exc:
             logger.warning(f"Metrics update failed: {str(exc)}")
-            
+
         # Circuit Breakers evaluation
         tripped = var_metrics.get("tripped", False)
         msg = var_metrics.get("reason", "")
-        
+
         if not tripped:
             tripped, msg = risk_manager.check_circuit_breaker(net_equity)
-            
+
         if tripped:
             STATE["kill_switch_active"] = True
             STATE["is_running"] = False
-            
+
             # Flat close exposures (prix réel connu uniquement)
             for p in updated_positions:
                 try:
@@ -4435,42 +4479,18 @@ async def live_trading_loop():
             # LOT 2 (PDF Pilier G) : le circuit breaker déclenche la machine à
             # états -> HALT (cool-down + redémarrage progressif ensuite).
             risk_state.enter(RiskStateMachine.HALT, f"CIRCUIT_BREAKER:{msg[:80]}")
-            
+
         # 6. MLOps Automated Training schedule checks
         if mlops_trainer.check_retrain_schedule() and STATE["historical_bars"] is not None:
             try:
                 mlops_trainer.execute_pipeline(STATE["historical_bars"])
             except Exception as e:
                 logger.error(f"MLOps pipeline failed execution: {str(e)}")
-                
+
         # Telemetry broadcast
         await broadcast_telemetry(consensus)
-        
+
         await asyncio.sleep(settings.get_float("trading", "loop_sleep_seconds", 2.5))  # config-driven tick
-
-
-def serialize_helper(obj):
-    """
-    Safely converts any datetime or non-serializable database object into standard string/types
-    before sending over WebSockets or JSON responses.
-    Also strips NaN/Infinity floats which are not valid JSON (would crash the endpoint with
-    "ValueError: Out of range float values are not JSON compliant").
-    """
-    if isinstance(obj, dict):
-        return {k: serialize_helper(v) for k, v in obj.items()}
-    elif isinstance(obj, list):
-        return [serialize_helper(i) for i in obj]
-    elif isinstance(obj, tuple):
-        return [serialize_helper(i) for i in obj]
-    elif isinstance(obj, float):
-        if obj != obj or obj in (float("inf"), float("-inf")):
-            return None
-        return obj
-    elif isinstance(obj, int):
-        return obj
-    elif hasattr(obj, "isoformat"):  # Matches datetime.datetime, date, etc.
-        return obj.isoformat()
-    return obj
 
 
 def explain_last_decision(consensus) -> list:
@@ -4527,206 +4547,6 @@ def update_metrics_from_state():
     platform_metrics.SENTIMENT_INDEX.set(_neutral(STATE.get("sentiment_index")))
     platform_metrics.ONCHAIN_RISK.set(_neutral(STATE.get("onchain_risk_score"), 0.5))
     platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
-
-
-def compile_telemetry_data(consensus_signals=None) -> dict:
-    """
-    Compiles and returns the unified telemetry payload.
-    Caches database queries for 3.0 seconds to avoid blocking the event loop on high-frequency ticks.
-    """
-    now = time.time()
-    if now - STATE.get("last_db_query_time", 0.0) >= 3.0 or consensus_signals is not None:
-        STATE["last_db_query_time"] = now
-        try:
-            STATE["cached_positions"] = db.get_positions()
-            STATE["cached_orders"] = db.get_all_orders()
-            STATE["cached_audit_logs"] = db.get_audit_logs()
-        except Exception as e:
-            logger.error(f"Failed to fetch telemetry data from database: {str(e)}")
-            
-    positions = STATE.get("cached_positions", [])
-    orders = STATE.get("cached_orders", [])
-    audit_logs = STATE.get("cached_audit_logs", [])
-    
-    # Calculate live P&L
-    active_mode = STATE["mode"]
-    initial_cap = STATE["initial_capital_demo"] if active_mode == "DEMO" else STATE["initial_capital_real"]
-    current_eq = STATE["current_equity"]
-    
-    live_pnl_usd = current_eq - initial_cap if initial_cap > 0 else 0.0
-    # LOT 8 (PDF Pilier O) : PnL NET — les coûts RÉELS (frais + slippage +
-    # impact + gas + funding) sont retranchés du PnL affiché. Mentalité n°2 :
-    # l'edge est net des coûts.
-    try:
-        _costs = float(cost_accounting.total_costs_usd)
-        live_pnl_usd -= _costs
-    except Exception:
-        pass
-    live_pnl_pct = (live_pnl_usd / initial_cap) * 100.0 if initial_cap > 0 else 0.0
-    
-    # Packaged JSON (Passed through serialize_helper to resolve any PostgreSQL datetime serialization mismatches!)
-    telemetry = {
-        "mode": STATE["mode"],
-        "is_running": STATE["is_running"],
-        "kill_switch_active": STATE["kill_switch_active"],
-        "last_price": STATE["last_price"],
-        "price_history": STATE["price_history"],
-        "order_book": STATE["order_book"],
-        "balance": STATE["balance_demo"] if STATE["mode"] == "DEMO" else STATE["balance_real"],
-        "current_equity": STATE["current_equity"],
-        "equity_history": STATE["equity_history_demo"] if STATE["mode"] == "DEMO" else STATE["equity_history_real"],
-        "live_pnl_usd": live_pnl_usd,
-        "live_pnl_pct": live_pnl_pct,
-        "regime_id": STATE["regime_id"],
-        "regime_name": STATE["regime_name"],
-        "ml_prediction_pct": STATE["ml_prediction_pct"],
-        "ppo_action": STATE["ppo_action"],
-        "consensus": consensus_signals,
-        "positions": serialize_helper(positions),
-        "orders": serialize_helper(orders[:15]),
-        "audit_logs": serialize_helper(audit_logs[:15]),
-        
-        # ADVANCED TELEMETRY EXPOSURE
-        "sentiment_index": STATE["sentiment_index"],
-        "sentiment_available": STATE.get("sentiment_available", False),
-        "sentiment_confidence": STATE.get("sentiment_confidence", 0.0),
-        "recent_headlines": STATE.get("recent_headlines", [])[:10],
-        "news_shock": STATE.get("news_shock", {"shock_detected": False}),
-        "macro_phase": STATE.get("macro_phase", "NONE"),
-        "macro_event": STATE.get("macro_event", ""),
-        "onchain_risk_score": STATE["onchain_risk_score"],
-        "onchain_available": STATE.get("onchain_available", False),
-        "eth_defi_balance": STATE["eth_defi_balance"],
-        "defi_wallet_address": STATE["defi_wallet_address"],
-        "assets_telemetry": STATE["assets"],
-        "asset_data_status": STATE.get("asset_data_status", {}),
-        "order_books": {k: {kk: vv for kk, vv in v.items() if kk != "_ts"} for k, v in STATE.get("order_books", {}).items()},
-        "price_consensus": STATE.get("price_consensus", {}),
-        "price_divergent": STATE.get("price_divergent", {}),
-        "macro_calendar": macro_calendar.get_calendar(limit=5),
-        "options_strategy": STATE["options_strategy"],
-        "real_iv": STATE.get("real_iv", {}),
-        
-        "using_fallback_data": STATE.get("using_fallback_data", False),
-        "data_quality_status": STATE["data_quality_status"],
-        "vol_target_scale": STATE.get("vol_target_scale", 1.0),
-        "last_reasoning": STATE.get("last_reasoning", []),
-        "last_reasoning_symbol": STATE.get("last_reasoning_symbol", ""),
-        "regime_probs": STATE.get("regime_probs", {}),
-        "conviction_threshold": STATE.get("conviction_threshold", 0.15),
-        "no_trade_count": STATE.get("no_trade_stats", {}).get("count", 0),
-        "moe_gate": STATE.get("moe_gate", {}),
-        "risk_budget": STATE.get("risk_budget", {}),
-        "risk_state": STATE.get("risk_state", {}),
-        "last_kelly": STATE.get("last_kelly", {}),
-        "last_rr_check": STATE.get("last_rr_check", {}),
-        "strategy_win_rates": STATE.get("strategy_win_rates", {}),
-        "strategy_trade_counts": STATE.get("strategy_trade_counts", {}),
-        "risk_pipeline_steps": STATE.get("risk_pipeline_steps", [])[-12:],
-        # P0-4 (audit §2.1) : distribution observée de final_scale (p10/p50/p90)
-        "final_scale_stats": STATE.get("final_scale_stats"),
-        "final_scale_samples_count": len(STATE.get("final_scale_samples", [])),
-        # P0-6 (audit §5) : paper-trading daté et continu avant REAL
-        "paper_validation": _paper_validation_stats(),
-        "regime_confidence": STATE.get("regime_confidence", {}),
-        "hmm_validation": STATE.get("hmm_validation", {}),
-        "expert_contribution": mixture_of_experts.expert_contribution_report(),
-        "sleeping_experts": list(mixture_of_experts.sleeping),
-        "causal_parents": STATE.get("causal_parents", []),
-        "causal_analyzed": STATE.get("causal_analyzed", False),
-        "research_gate": hypothesis_generator.can_run_research(),
-        "order_flow": {s: order_flow.status(s) for s in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]},
-        "last_sor_choice": STATE.get("last_sor_choice", {}),
-        "sim_divergence": STATE.get("sim_divergence", 0.0),
-        "confidence_index": STATE.get("confidence_index", 100),
-        "confidence_factor": STATE.get("confidence_factor", 1.0),
-        "live_p_value": STATE.get("live_p_value", 0.5),
-        "structural_regimes": STATE.get("structural_regimes", {}),
-        "cross_asset_bias": STATE.get("cross_asset_bias", 0.0),
-        "desk_allocations": STATE.get("desk_allocations", {}),
-        "pending_approvals": len(STATE.get("pending_approvals", [])),
-        "consultative_mode": STATE.get("consultative_mode", False),
-        "last_narrative": STATE.get("last_narrative", ""),
-        "ppo_buffer_size": len(STATE.get("ppo_buffer", [])),
-        "strategy_weights": meta_engine.get_strategy_weights(),
-        "active_models": model_selector.get_status().get("active_models", []),
-        "admitted_signals": list(hypothesis_generator.admitted.keys()),
-        "capital_exposure": capital_allocator.get_current_exposure(),
-        "portfolio_allocation": STATE.get("portfolio_allocation", {}),
-        "strategy_diversification": STATE.get("strategy_diversification", {}),
-        "position_pyramids": STATE.get("position_pyramids", {}),
-        "counterparty": counterparty_risk.to_dict(),
-        "reason_weights": STATE.get("reason_weights", {}),
-        "reason_weights_factor": STATE.get("reason_weights_factor", 1.0),
-        "cost_metrics": STATE.get("cost_metrics", {}),
-        "attribution_report": STATE.get("attribution_report", {}),
-        "quality_metrics": STATE.get("quality_metrics", {}),
-        "stress_test_report": STATE.get("stress_test_report", {}),
-        "bootstrap_sharpe": STATE.get("bootstrap_sharpe", {}),
-        "module_honesty": {
-            "registry": get_module_status(),
-            "summary": status_summary(),
-            "note": "Un module ÉDUCATIF n'influence JAMAIS le sizing réel (Faille 7 PDF).",
-        },
-        "watchdog": {
-            "tasks_monitored": list(_BG_TASKS.keys()),
-            "tasks_alive": sum(1 for t in _BG_TASKS.values() if t and not t.done()),
-            "supervisor_issues": supervisor.last_issues,
-            "running": True,
-        },
-        
-        "copy_traders": [
-            {
-                "trader_id": t.trader_id,
-                "name": t.name,
-                "roi_annual": t.roi_annual * 100.0,
-                "win_rate": t.win_rate * 100.0,
-                "max_drawdown": t.max_drawdown * 100.0,
-                "sharpe": t.sharpe,
-                "seq_score": t.seq_score,
-                "pnl_month": getattr(t, "pnl_month", 0.0),
-                "account_value": getattr(t, "account_value", 0.0),
-                "active_copied": t.trader_id in copy_manager.copied_traders,
-                "allocated_capital": copy_manager.copied_traders[t.trader_id]["allocated_capital"] if t.trader_id in copy_manager.copied_traders else 0.0,
-                "follow_mode": copy_manager.copied_traders[t.trader_id].get("mode", "-") if t.trader_id in copy_manager.copied_traders else "-",
-                "pnl_estimate_usd": copy_manager.copied_traders[t.trader_id].get("pnl_estimate_usd", 0.0) if t.trader_id in copy_manager.copied_traders else 0.0
-            }
-            for t in copy_manager.get_ranked_traders()
-        ]
-    }
-    # Sanitize the full payload: strips NaN/Inf (invalid JSON) and datetimes
-    return serialize_helper(telemetry)
-
-
-async def broadcast_telemetry(consensus_signals):
-    """
-    Broadcasts real-time trading metrics to all active dashboard connections.
-    Audit B5-1: payload is serialized ONCE, each client send is isolated with
-    try/except and slow/failed clients are dropped immediately.
-    """
-    if not STATE["connected_websockets"]:
-        return
-
-    payload = compile_telemetry_data(consensus_signals)
-    try:
-        text = json.dumps(payload, default=str)
-    except Exception as e:
-        logger.warning(f"Telemetry serialization failed: {e}")
-        return
-
-    dead_sockets = []
-    for ws in list(STATE["connected_websockets"]):
-        try:
-            await ws.send_text(text)
-        except Exception:
-            dead_sockets.append(ws)
-
-    for ws in dead_sockets:
-        try:
-            STATE["connected_websockets"].remove(ws)
-            platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
-        except Exception:
-            pass
 
 
 async def task_watchdog_loop():
@@ -4808,8 +4628,8 @@ async def shutdown_event():
 @app.get("/", response_class=HTMLResponse)
 async def get_dashboard(request: Request):
     return templates.TemplateResponse(
-        request=request, 
-        name="dashboard.html", 
+        request=request,
+        name="dashboard.html",
         context={"request": request}
     )
 
@@ -4856,10 +4676,21 @@ async def websocket_endpoint(websocket: WebSocket):
             STATE["connected_websockets"].remove(websocket)
             platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
 
+# ============ étape 2 du découpage (LOT 7) : télémétrie ============
 # ============ LOT 7 (P1-7 audit §4.1) : modules extraits ============
 # Les définitions ont été déplacées vers api/routes.py et schedulers.py ;
 # on ré-exporte les noms pour préserver l'espace de noms de main (les
 # tests et TASK_FACTORIES y accèdent) et on monte le router des routes API.
-from schedulers import (final_scale_stats_loop, reconciliation_scheduler, concierge_scheduler, db_backup_scheduler, copy_trading_refresh_scheduler, copy_mirror_scheduler)  # noqa: F401,E402
 from api.routes import router as _api_router  # noqa: E402
+from schedulers import (  # noqa: F401,E402
+    concierge_scheduler,
+    copy_mirror_scheduler,
+    copy_trading_refresh_scheduler,
+    db_backup_scheduler,
+    final_scale_stats_loop,
+    reconciliation_scheduler,
+)
+from telemetry import broadcast_telemetry, compile_telemetry_data, serialize_helper  # noqa: F401,E402
+
 app.include_router(_api_router)
+

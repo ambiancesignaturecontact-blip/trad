@@ -1,8 +1,9 @@
 # Deep Automated Production Safety & Edge-Case Vulnerability Scan
-import numpy as np
-import pandas as pd
 import logging
 import sys
+
+import numpy as np
+import pandas as pd
 
 # Configure logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(levelname)s - %(message)s")
@@ -27,15 +28,14 @@ def run_test(name, func):
 def test_hmm():
     from ai.regime_detector import MarketRegimeDetector
     detector = MarketRegimeDetector()
-    
+
     # Stress with absolute flatline returns
     flat_X = np.zeros((100, 2))
     detector.fit(flat_X)
     pred = detector.predict(flat_X)
     assert len(pred) == 100
-    
+
     # Stress with extreme NaN and infinite values to ensure division-by-zero protection holds
-    nan_X = np.array([[np.nan, np.nan], [np.inf, -np.inf]])
     # Ensure helper function handles NaN gracefully or doesn't crash on standard predictions
     prob = detector._gaussian_probability(np.array([0.0, 0.0]), np.array([0.0, 0.0]), np.array([0.0, 0.0]))
     assert prob > 0.0
@@ -44,12 +44,12 @@ def test_hmm():
 def test_covariance():
     from models.risk_covariance import RiskCovarianceEngine
     engine = RiskCovarianceEngine()
-    
+
     # Empty positions
     res_empty = engine.calculate_portfolio_var_cvar([], pd.DataFrame(), {})
     assert res_empty["portfolio_var_pct"] == 0.0
     assert res_empty["portfolio_cvar_pct"] == 0.0
-    
+
     # Degenerate single asset with zero return series
     returns_dict = {"BTCUSDT": np.zeros(30)}
     corr_df = engine.calculate_correlation_matrix(returns_dict)
@@ -59,28 +59,28 @@ def test_covariance():
 def test_almgren_chriss():
     from models.almgren_chriss import AlmgrenChrissExecutionOptimizer, calculate_cvar_constrained_sizing
     optimizer = AlmgrenChrissExecutionOptimizer()
-    
+
     # 0 shares or 0 steps or zero volatility
     traj = optimizer.calculate_optimal_trajectory(0.0, time_steps=0, volatility=0.0)
     assert len(traj) >= 1
     assert sum(traj) == 0.0
-    
+
     # Sizing with zero price
     qty = calculate_cvar_constrained_sizing(100000.0, current_price=0.0, cvar_pct=0.05, max_loss_usd=1000.0)
     assert qty == 0.0
-    
+
     # Sizing with zero CVaR
     qty_zero_cvar = calculate_cvar_constrained_sizing(100000.0, current_price=60000.0, cvar_pct=0.0, max_loss_usd=1000.0)
     assert qty_zero_cvar == 0.0 # should trigger safe floor check or division protection
 
 # Test 4: Lopez de Prado Meta Labeling and Cross Validation
 def test_lopez_de_prado():
-    from models.lopez_de_prado import PurgedKFoldEmbargo, calculate_deflated_sharpe_ratio, MetaLabelingTripleBarrier
-    
+    from models.lopez_de_prado import PurgedKFoldEmbargo, calculate_deflated_sharpe_ratio
+
     # Deflated Sharpe with 1 trial or extremely low trials
     dsr = calculate_deflated_sharpe_ratio(1.5, num_trials=0, trials_variance_sharpe=0.1, sample_length=100)
     assert dsr == 1.5
-    
+
     # Purged K-Fold with extremely small data
     cv = PurgedKFoldEmbargo(n_splits=5)
     splits = cv.get_train_test_splits(pd.DataFrame(np.zeros((10, 5))))
@@ -97,12 +97,12 @@ def test_risk_manager():
         'max_correlation_threshold': 0.75,
         'deviation_limit_pct': 0.05,
     })
-    
+
     # Order safety with giant quantity (exceeding capital)
     ok, reason = rm.validate_order_safety(60000.0, 60000.0, 100.0, 10000.0)
     assert ok is False
     assert "Insufficient" in reason or "exposure" in reason
-    
+
     # Balance below total drawdown threshold (circuit breaker trip)
     tripped, msg = rm.check_circuit_breaker(90000.0) # original capital is 100k, so 90k is 10% drawdown (exceeds 5%)
     assert tripped is True
@@ -110,18 +110,18 @@ def test_risk_manager():
 
 # Test 6: Order Management System state updates
 def test_oms():
-    from oms.manager import OrderManagementSystem, OrderStatus
-    from ems.manager import ExecutionManagementSystem
     from database.db_manager import DBManager
-    
+    from ems.manager import ExecutionManagementSystem
+    from oms.manager import OrderManagementSystem, OrderStatus
+
     db = DBManager()
     ems = ExecutionManagementSystem(None, None)
     oms = OrderManagementSystem(db, ems)
-    
+
     # Invalid negative order qty validation rejection
     order = oms.submit_new_order("BTCUSDT", "BUY", -1.0, 60000.0, "DEMO", "STRAT", "client_1")
     assert order.status == OrderStatus.CREATED # local created, but execution checks should reject or validate
-    
+
     # Rejection processing of untracked order ID should not crash
     oms.process_order_rejection("non_existent_id", "test_rejection")
 

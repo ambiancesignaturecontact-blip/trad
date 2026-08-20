@@ -8,7 +8,6 @@ VISION_FUTUR §1 - L'ORGANISATION AUTONOME (desks + marché interne du capital).
 - crisis tightening: when stress correlation is high, total exposure shrinks
 """
 import logging
-from typing import Dict, List
 
 import numpy as np
 
@@ -39,7 +38,7 @@ DESK_MAP = {
 class Desk:
     def __init__(self, name: str):
         self.name = name
-        self.pnl: List[float] = []
+        self.pnl: list[float] = []
         self.orders = 0
         self.capital_share = 1.0
 
@@ -84,7 +83,7 @@ class Organization:
         self.state["desk_pnl"][desk] = self.desks[desk].recent_return()
 
     def reallocate(self, stress_correlation: float = 0.5, min_share: float = 0.03,
-                   max_share: float = 0.35) -> Dict[str, float]:
+                   max_share: float = 0.35) -> dict[str, float]:
         """
         INTERNAL CAPITAL MARKET: Thompson sampling over desk recent P&L.
         Good desks get more capital; bad desks lose it. Crisis dampening.

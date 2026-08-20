@@ -1,5 +1,5 @@
-import pytest
 from copytrading.manager import CopyTradingManager
+
 
 def test_copytrading_never_simulates_data():
     """

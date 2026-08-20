@@ -1,7 +1,8 @@
 import logging
+import time
+
 import httpx
 from web3 import Web3
-import time
 
 logger = logging.getLogger("OnChainTracker")
 
@@ -30,7 +31,7 @@ class OnChainTracker:
         self._connect_to_rpc()
         self._eth_price = None
         self._eth_price_ts = 0.0
-        
+
         # Real major exchange + whale addresses
         self.tracked_addresses = {
             "binance": "0x3f5CE5FBFe3E9af3971dD833D26bA9b5C936f0bE",
@@ -39,7 +40,7 @@ class OnChainTracker:
             "vitalik": "0xAb5801a7D398351b8bE11C439e05C5B3259aeC9B",
             "arbitrum_bridge": "0x8315177ab297ba92a060e2b3d2b3e8c5c7f8e3e5"
         }
-        
+
         self.last_balances = {}
         self.last_check = 0
 
@@ -51,7 +52,7 @@ class OnChainTracker:
                     self.w3 = temp_w3
                     logger.info(f"OnChainTracker connected to {self.current_chain} via {url}")
                     return
-            except:
+            except Exception:
                 continue
         logger.warning("OnChainTracker: No RPC available")
 
@@ -168,14 +169,14 @@ class OnChainTracker:
 
         # Base risk
         risk = 0.5
-        
+
         if status == "ACCUMULATING":
             risk -= 0.25
         elif status == "DISTRIBUTING":
             risk += 0.30
-            
+
         # Flow magnitude
         magnitude = min(abs(net_flow) / 50000000, 0.4)
         risk += magnitude if net_flow < 0 else -magnitude * 0.5
-        
+
         return float(max(0.1, min(0.95, risk)))

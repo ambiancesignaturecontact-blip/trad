@@ -5,7 +5,6 @@ Règle vérifiée ici : AUCUNE donnée inventée ne doit exister ni influencer u
 décision de trading. Toute source indisponible -> UNAVAILABLE (mentalité n°5).
 """
 import json
-import os
 import time
 
 import pytest
@@ -50,7 +49,7 @@ class TestMacroCalendarReal:
 
     def test_upcoming_shock_uses_real_event(self):
         """Un vrai événement proche déclenche la réduction avec le bon facteur."""
-        from models.macro_calendar import MacroeconomicCalendarEngine, IMPACT_REDUCTION
+        from models.macro_calendar import IMPACT_REDUCTION, MacroeconomicCalendarEngine
         eng = MacroeconomicCalendarEngine(calendar_file="data/macro_events.json")
         res = eng.check_upcoming_macro_shocks(warning_window_seconds=30 * 86400)
         if res["upcoming_shock"]:
@@ -103,6 +102,7 @@ class TestSentimentNoFakeFallback:
 
     def test_no_fake_headlines_in_source(self):
         import inspect
+
         from models import sentiment_analyzer
         src = inspect.getsource(sentiment_analyzer)
         assert "BTC consolidates support as retail accumulation surges" not in src, \
@@ -140,6 +140,7 @@ class TestVolatilityRealIV:
 
     def test_no_hardcoded_iv_map(self):
         import inspect
+
         from models import volatility_arbitrage
         src = inspect.getsource(volatility_arbitrage)
         assert "0.35" not in src or "iv_map" not in src
@@ -164,6 +165,7 @@ class TestOnchainReal:
 
     def test_no_volume_fabrication(self):
         import inspect
+
         from models import onchain_tracker
         src = inspect.getsource(onchain_tracker)
         assert "vol * 0.0008" not in src

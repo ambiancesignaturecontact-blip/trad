@@ -16,12 +16,11 @@ Règle absolue (PDF) : « ne jamais laisser un module expérimental influencer
 le sizing réel » — chaque module EXPÉRIMENTAL est associé à une GARDE qui le
 borne (facteur neutre 1.0 si indisponible, bornes serrées sinon).
 """
-from typing import Dict
 
 # --------------------------------------------------------------------------- #
 # REGISTRE CENTRAL — source unique de vérité de l'étiquetage
 # --------------------------------------------------------------------------- #
-MODULE_STATUS: Dict[str, Dict] = {
+MODULE_STATUS: dict[str, dict] = {
     # --- PRODUCTION (utilisés dans la décision, données réelles) ---
     "multi_source_price": {"status": "PRODUCTION",
                            "detail": "Consensus prix multi-exchange (médiane, divergence -> gel)."},
@@ -86,7 +85,7 @@ MODULE_STATUS: Dict[str, Dict] = {
 }
 
 
-def get_module_status() -> Dict:
+def get_module_status() -> dict:
     """Registre complet pour la télémétrie et l'UI."""
     return {name: dict(info) for name, info in MODULE_STATUS.items()}
 
@@ -99,7 +98,7 @@ def is_educational(name: str) -> bool:
     return MODULE_STATUS.get(name, {}).get("status") == "ÉDUCATIF"
 
 
-def status_summary() -> Dict:
+def status_summary() -> dict:
     """Comptage par statut (pour l'UI : X modules PRODUCTION, Y EXPÉRIMENTAL, Z ÉDUCATIF)."""
     counts = {"PRODUCTION": 0, "EXPÉRIMENTAL": 0, "ÉDUCATIF": 0}
     for info in MODULE_STATUS.values():

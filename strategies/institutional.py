@@ -5,9 +5,8 @@ Institutional signal strategies (VISION_NIVEAU_MONDIAL §5).
 - CrossSectionalMomentum   : rank assets against each other (long strong / short weak)
 - MultiTimeframeWrapper    : adapts MultiTimeframeConsensus to the BaseStrategy API
 """
+
 import numpy as np
-import pandas as pd
-from typing import Dict, List, Optional
 
 from strategies.engine import BaseStrategy
 

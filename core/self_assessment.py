@@ -8,10 +8,6 @@ VISION §7 - SE CONNAÎTRE: honest self-assessment.
 - honesty component for the health score
 """
 import logging
-import time
-from typing import Dict, List, Optional
-
-import numpy as np
 
 logger = logging.getLogger("SelfAssessment")
 
@@ -36,13 +32,13 @@ def honesty_factor(divergence: float, max_divergence: float = 1.0) -> float:
     return float(max(0.3, 1.0 - divergence / max_divergence))
 
 
-def meta_attribution(decision_log: List[dict]) -> Dict[str, Dict]:
+def meta_attribution(decision_log: list[dict]) -> dict[str, dict]:
     """
     VISION §7b: analyze logged decisions (top-5 reasons + realized PnL) and
     compute per-reason effectiveness (win rate + avg contribution).
     decision_log: [{reasons: [str], pnl: float}]
     """
-    stats: Dict[str, Dict] = {}
+    stats: dict[str, dict] = {}
     for d in decision_log:
         pnl = float(d.get("pnl", 0.0))
         for reason in d.get("reasons", []):
@@ -59,10 +55,10 @@ def meta_attribution(decision_log: List[dict]) -> Dict[str, Dict]:
 
 
 
-def reason_weight_from_attribution(attribution: Dict[str, Dict],
+def reason_weight_from_attribution(attribution: dict[str, dict],
                                    base_weight: float = 1.0,
                                    min_weight: float = 0.3,
-                                   min_samples: int = 5) -> Dict[str, float]:
+                                   min_samples: int = 5) -> dict[str, float]:
     """
     LOT 7 (PDF Pilier K) : boucle la méta-attribution (quelles raisons
     gagnent ?) vers une RÉDUCTION AUTOMATIQUE du poids des mauvaises raisons.
@@ -74,7 +70,7 @@ def reason_weight_from_attribution(attribution: Dict[str, Dict],
 
     Retourne {reason: weight_factor}.
     """
-    weights: Dict[str, float] = {}
+    weights: dict[str, float] = {}
     for reason, stats in attribution.items():
         n = int(stats.get("n", 0))
         if n < min_samples:

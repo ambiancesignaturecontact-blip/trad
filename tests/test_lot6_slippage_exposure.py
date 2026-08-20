@@ -11,7 +11,6 @@ P1-14 : max_exposure_normal (total) nettement supérieur à max_per_asset_pct
 """
 from pathlib import Path
 
-import numpy as np
 import pytest
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -62,8 +61,10 @@ def test_main_uses_book_walk_for_tradability():
     src = (ROOT / "main.py").read_text(encoding="utf-8")
     assert "estimate_slippage_bps_from_book" in src
     assert "book_slippage_bps" in src
-    # l'import est présent
-    assert "from core.paper_execution import simulate_paper_fill, estimate_slippage_bps_from_book" in src
+    # l'import est présent (l'ordre des noms peut varier après tri ruff I001)
+    assert "from core.paper_execution import" in src
+    assert "estimate_slippage_bps_from_book" in src.split("from core.paper_execution import")[1][:120]
+    assert "simulate_paper_fill" in src.split("from core.paper_execution import")[1][:120]
 
 
 def test_sor_accepts_qty_and_book_walks_per_venue():

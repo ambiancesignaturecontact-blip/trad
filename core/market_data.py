@@ -3,9 +3,9 @@ Market Data Module - Extrait de live_trading_loop
 Gère la récupération des prix en temps réel (Bybit + Yahoo)
 """
 import asyncio
-import httpx
 import logging
-from typing import Optional, Dict
+
+import httpx
 
 logger = logging.getLogger("MarketData")
 
@@ -13,7 +13,7 @@ class MarketDataFetcher:
     def __init__(self, state: dict):
         self.state = state
 
-    async def fetch_crypto_price(self, symbol: str) -> Optional[float]:
+    async def fetch_crypto_price(self, symbol: str) -> float | None:
         """Récupère le prix crypto via Bybit (rapide et fiable)"""
         try:
             async with httpx.AsyncClient(timeout=6.0) as client:
@@ -30,7 +30,7 @@ class MarketDataFetcher:
             logger.warning(f"Bybit price fetch failed for {symbol}: {e}")
         return None
 
-    async def fetch_yahoo_price(self, symbol: str) -> Optional[float]:
+    async def fetch_yahoo_price(self, symbol: str) -> float | None:
         """Récupère les prix Yahoo Finance (Gold, Forex, Stocks)"""
         ticker_map = {
             "XAUUSD": "GC=F",
@@ -39,7 +39,7 @@ class MarketDataFetcher:
             "TSLA": "TSLA"
         }
         y_ticker = ticker_map.get(symbol, symbol)
-        
+
         try:
             from main import fetch_yahoo_finance_candles
             df = await fetch_yahoo_finance_candles(y_ticker, interval="1m", range_str="1d")
@@ -59,5 +59,5 @@ class MarketDataFetcher:
                 tasks.append(self.fetch_crypto_price(symbol))
             else:
                 tasks.append(self.fetch_yahoo_price(symbol))
-        
+
         await asyncio.gather(*tasks, return_exceptions=True)

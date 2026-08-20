@@ -11,11 +11,7 @@ Vérifie :
 """
 import inspect
 
-import pytest
-
-from core.module_honesty import (MODULE_STATUS, get_module_status,
-                                 status_summary, is_experimental,
-                                 is_educational)
+from core.module_honesty import MODULE_STATUS, is_educational, is_experimental, status_summary
 
 
 # --------------------------------------------------------------------------- #
@@ -67,8 +63,9 @@ class TestModuleHonesty:
 class TestNoEducationalInSizing:
     def test_rlhf_neutral_without_torch(self):
         """RLHF (ÉDUCATIF) renvoie None sans torch -> facteur 1.0 (neutre)."""
-        from rl.rlhf_reward_model import RLHFRewardModel
         import numpy as np
+
+        from rl.rlhf_reward_model import RLHFRewardModel
         m = RLHFRewardModel()
         assert m.predict_reward(np.zeros(10)) is None
 
@@ -115,6 +112,7 @@ class TestTelemetryHonesty:
 
     def test_endpoint_response(self):
         from fastapi.testclient import TestClient
+
         from main import app
         with TestClient(app) as c:
             r = c.get("/api/v1/honesty")
@@ -153,14 +151,12 @@ class TestTelegramBot:
 class TestTechnicalConstraints:
     def test_no_blocking_calls_in_loop(self):
         """La boucle de trading ne contient pas de sleep bloquant > 30s."""
-        import inspect
         src = inspect.getsource(__import__("main", fromlist=["x"]))
         # le seul sleep de boucle est config-driven (2.5s)
         assert "asyncio.sleep(settings.get_float" in src
 
     def test_real_data_rule_kept(self):
         """Aucune donnée fictive ne doit influencer une décision (règle absolue)."""
-        import inspect
         src = inspect.getsource(__import__("main", fromlist=["x"]))
         assert "AUCUNE DONNÉE -> AUCUN ORDRE" in src or "AUCUNE DONNÉE" in src
         # plus de titres d'actualité fictifs
@@ -169,8 +165,9 @@ class TestTechnicalConstraints:
 
     def test_signatures_preserved(self):
         """Les signatures clés appelées par main.py sont intactes."""
-        from risk.risk_manager import RiskManager
         import inspect as i
+
+        from risk.risk_manager import RiskManager
         sig = i.signature(RiskManager.calculate_position_size)
         params = list(sig.parameters.keys())
         assert "capital" in params and "atr" in params and "current_price" in params
@@ -181,8 +178,7 @@ class TestTechnicalConstraints:
 
     def test_defaults_are_prudent(self):
         """Les défauts par défaut sont prudents (facteurs <= 1.0)."""
-        from core.risk_pipeline import (REWARD_RISK_RATIO, MIN_REWARD_RISK,
-                                        ROUND_TRIP_COST_PCT)
+        from core.risk_pipeline import MIN_REWARD_RISK, REWARD_RISK_RATIO, ROUND_TRIP_COST_PCT
         assert MIN_REWARD_RISK >= 1.5
         assert REWARD_RISK_RATIO >= MIN_REWARD_RISK
         assert ROUND_TRIP_COST_PCT > 0

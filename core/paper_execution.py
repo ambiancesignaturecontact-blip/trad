@@ -12,8 +12,6 @@ mid price:
 This makes paper validation statistically meaningful before going REAL.
 """
 import logging
-import time
-from typing import Dict, Optional
 
 import numpy as np
 
@@ -50,7 +48,7 @@ def min_notional_for_capital(capital: float) -> float:
         return 3.0 if capital < 200.0 else (5.0 if capital < 1000.0 else 10.0)
 
 
-def _book_walk_price(side: str, qty: float, order_book: Optional[dict]):
+def _book_walk_price(side: str, qty: float, order_book: dict | None):
     """
     Walks the real order book to compute the actual fill price (VWAP of the levels
     consumed) AND the quantity actually filled (partial fills when the book is thin).
@@ -81,8 +79,8 @@ def _book_walk_price(side: str, qty: float, order_book: Optional[dict]):
     return cost / filled, filled  # VWAP fill price + filled qty
 
 
-def estimate_slippage_bps_from_book(side: str, qty: float, order_book: Optional[dict],
-                                    arrival_price: float) -> Optional[float]:
+def estimate_slippage_bps_from_book(side: str, qty: float, order_book: dict | None,
+                                    arrival_price: float) -> float | None:
     """
     P1-13 (audit §4.6) : estimation du slippage RÉEL par book-walking du carnet
     consolidé live. Réutilise _book_walk_price (le book-walking existait déjà
@@ -103,9 +101,9 @@ def estimate_slippage_bps_from_book(side: str, qty: float, order_book: Optional[
 
 
 def simulate_paper_fill(symbol: str, side: str, qty: float, arrival_price: float,
-                        order_book: Optional[dict], venue: str = "Binance",
+                        order_book: dict | None, venue: str = "Binance",
                         volatility: float = 0.002, liquidity_score: float = 1.0,
-                        balance: float = 0.0, slippage_model=None) -> Dict:
+                        balance: float = 0.0, slippage_model=None) -> dict:
     """
     Simulates a REAL-quality fill in DEMO/paper mode.
 
@@ -113,7 +111,6 @@ def simulate_paper_fill(symbol: str, side: str, qty: float, arrival_price: float
       {status, fill_price, fill_qty, fee, fee_asset, slippage_bps, latency_ms,
        rejected, reason}
     """
-    now = time.time()
 
     # ---- 1. Real exchange-style REJECTIONS ----
     if qty <= 0:

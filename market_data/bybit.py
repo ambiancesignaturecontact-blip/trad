@@ -1,9 +1,10 @@
-import time
-import httpx
 import logging
+import time
+
+import httpx
+
 from market_data.base import MarketDataProvider
 from market_data.models import MarketTick
-from market_data.quality import MarketDataQuality
 
 logger = logging.getLogger("BybitDataProvider")
 
@@ -26,7 +27,7 @@ class BybitDataProvider(MarketDataProvider):
                     bid = float(data.get("bid1Price", last * 0.9995))
                     ask = float(data.get("ask1Price", last * 1.0005))
                     volume = float(data.get("volume24h", 1.0))
-                    
+
                     tick = MarketTick(
                         symbol=symbol,
                         exchange="Bybit",
@@ -39,6 +40,6 @@ class BybitDataProvider(MarketDataProvider):
                     return tick
         except Exception as e:
             logger.error(f"BybitDataProvider: Failed to fetch ticker for {symbol}: {str(e)}")
-            
+
         # Return none if API is down - STRICTLY NO FAKE FALLBACKS
         return None

@@ -7,9 +7,10 @@ ONLY if its Deflated Sharpe Ratio (corrected for data-snooping across the
 catalogue) exceeds a threshold - the same discipline used by top quant funds.
 """
 import logging
+from collections.abc import Callable
+
 import numpy as np
 import pandas as pd
-from typing import Callable, Dict, List, Tuple
 
 from models.lopez_de_prado import calculate_deflated_sharpe_ratio
 
@@ -62,10 +63,10 @@ def sig_bollinger_revert(df, md, period=20, std=2.0):
 
 
 def sig_vol_breakout(df, md, period=20):
-    c, h, l = df["close"].values, df["high"].values, df["low"].values
+    c, h, lo = df["close"].values, df["high"].values, df["low"].values
     if len(c) < period + 5:
         return 0.0
-    tr = np.maximum(h[1:] - l[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(l[1:] - c[:-1])))
+    tr = np.maximum(h[1:] - lo[1:], np.maximum(np.abs(h[1:] - c[:-1]), np.abs(lo[1:] - c[:-1])))
     atr = pd.Series(tr).rolling(period).mean().iloc[-1]
     recent_vol = float(np.std(c[-period:]))
     if recent_vol <= 1e-9:
@@ -128,7 +129,7 @@ def sig_volume_confirmation(df, md, period=20):
     return float(np.clip(direction * (vol_ratio - 1.0) * 2.0, -1.0, 1.0))
 
 
-SIGNAL_LIBRARY: Dict[str, Callable] = {
+SIGNAL_LIBRARY: dict[str, Callable] = {
     "momentum_roc": sig_momentum_roc,
     "momentum_cross": sig_momentum_cross,
     "rsi_meanrev": sig_rsi_meanrev,
@@ -144,7 +145,7 @@ SIGNAL_LIBRARY: Dict[str, Callable] = {
 
 
 def evaluate_signal(df: pd.DataFrame, signal_fn: Callable,
-                    market_data: dict = None, fee_pct: float = 0.001) -> Dict:
+                    market_data: dict = None, fee_pct: float = 0.001) -> dict:
     """
     Batch evaluation of one signal over the full history (VISION §2.1):
     signal series -> hypothetical PnL (net of round-trip fee) -> Sharpe + DSR.
@@ -194,7 +195,7 @@ def evaluate_signal(df: pd.DataFrame, signal_fn: Callable,
     }
 
 
-def evaluate_all_signals(df: pd.DataFrame, market_data: dict = None) -> Dict[str, Dict]:
+def evaluate_all_signals(df: pd.DataFrame, market_data: dict = None) -> dict[str, dict]:
     """Evaluates the whole catalogue and returns ranked results (admission gate)."""
     results = {}
     for name, fn in SIGNAL_LIBRARY.items():

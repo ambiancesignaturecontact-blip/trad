@@ -13,7 +13,7 @@ import time
 import uuid
 from collections import defaultdict, deque
 
-from fastapi import Request, Response
+from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import JSONResponse
 

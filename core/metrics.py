@@ -9,7 +9,7 @@ All gauges/counters are updated from the trading loop via update_* helpers.
 """
 import time
 
-from prometheus_client import Counter, Gauge, Histogram, generate_latest, REGISTRY
+from prometheus_client import REGISTRY, Counter, Gauge, Histogram, generate_latest
 
 # --- Core runtime gauges ---
 UPTIME_SECONDS = Gauge("quant_uptime_seconds", "Seconds since platform start")

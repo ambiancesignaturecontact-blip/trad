@@ -14,7 +14,6 @@ Vérifie :
  9. MetaAllocationEngine : pondération par contribution PnL réelle
 """
 import inspect
-import time
 
 import numpy as np
 import pandas as pd
@@ -97,8 +96,8 @@ class TestRegimeConfidence:
 class TestMLOpsOOS:
     def test_evaluate_oos_walkforward(self):
         from models.mlops_pipeline import MLOpsAutoTrainer
-        from models.regime_detector import MarketRegimeDetector
         from models.price_predictor import LSTMLikePredictor
+        from models.regime_detector import MarketRegimeDetector
 
         class FakeDB:
             def __init__(self):
@@ -124,8 +123,8 @@ class TestMLOpsOOS:
 
     def test_deploy_only_if_beats_champion(self):
         from models.mlops_pipeline import MLOpsAutoTrainer
-        from models.regime_detector import MarketRegimeDetector
         from models.price_predictor import LSTMLikePredictor
+        from models.regime_detector import MarketRegimeDetector
 
         class FakeDB:
             def __init__(self):
@@ -209,7 +208,6 @@ class TestCausalGate:
 class TestCounterfactualAlpha:
     def test_record_closed_trade_logs_alpha(self):
         import main
-        before = len(main.STATE.get("position_strategies", {}))
         main.record_open_position("CAUSALTEST", "Momentum", 100.0)
         main.record_closed_trade("CAUSALTEST", 103.0, "SELL")
         # le trade a été consommé (position supprimée)
@@ -223,7 +221,7 @@ class TestCounterfactualAlpha:
 # --------------------------------------------------------------------------- #
 class TestRLHFandGAN:
     def test_rlhf_fallback_neutral(self):
-        from rl.rlhf_reward_model import RLHFRewardModel, TORCH_AVAILABLE
+        from rl.rlhf_reward_model import RLHFRewardModel
         model = RLHFRewardModel()
         # sans torch ou sans entraînement -> None (neutre)
         assert model.predict_reward(np.zeros(10)) is None
@@ -274,7 +272,7 @@ class TestHypothesisBudget:
 # --------------------------------------------------------------------------- #
 class TestMetaAllocationPnL:
     def test_update_pnl_attribution(self):
-        from strategies.engine import MetaAllocationEngine, BaseStrategy
+        from strategies.engine import BaseStrategy, MetaAllocationEngine
         s1 = BaseStrategy("Alpha")
         s2 = BaseStrategy("Beta")
         meta = MetaAllocationEngine(strategies=[s1, s2])

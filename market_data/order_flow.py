@@ -23,7 +23,6 @@ renvoient leur valeur NEUTRE (1.0 / False) — jamais un signal fabriqué.
 import logging
 import time
 from collections import deque
-from typing import Dict, List, Optional, Tuple
 
 from core.config import settings
 
@@ -48,15 +47,15 @@ class OrderFlowEngine:
 
     def __init__(self):
         # symbol -> deque de (ts, side(+1 buy/-1 sell), qty, price)
-        self.trades: Dict[str, deque] = {}
+        self.trades: dict[str, deque] = {}
         # symbol -> dict de liquidations récentes
-        self.liquidations: Dict[str, deque] = {}
+        self.liquidations: dict[str, deque] = {}
         # symbol -> CVD cumulé (départ à 0, delta signé)
-        self.cvd: Dict[str, float] = {}
+        self.cvd: dict[str, float] = {}
         # symbol -> (book_bid_qty, book_ask_qty, ts)
-        self.book: Dict[str, Tuple[float, float, float]] = {}
+        self.book: dict[str, tuple[float, float, float]] = {}
         # symbol -> snapshot prix pour l'absorption
-        self.price_ref: Dict[str, Tuple[float, float]] = {}  # (prix, ts)
+        self.price_ref: dict[str, tuple[float, float]] = {}  # (prix, ts)
 
     # ------------------------------------------------------------------ #
     # INGESTION DES DONNÉES RÉELLES
@@ -78,7 +77,7 @@ class OrderFlowEngine:
         self.cvd[symbol] = self.cvd.get(symbol, 0.0) + (qty if side == "buy" else -qty)
 
     def update_trade_unknown_side(self, symbol: str, price: float, qty: float,
-                                  prev_price: Optional[float] = None) -> None:
+                                  prev_price: float | None = None) -> None:
         """
         Trade sans indication de côté (certains flux) : on applique la tick rule
         (le prix montait -> acheteur agressif). Sans prix précédent, NEUTRE.
@@ -106,7 +105,7 @@ class OrderFlowEngine:
     # ------------------------------------------------------------------ #
     # INDICATEURS (tous neutres si pas de données réelles)
     # ------------------------------------------------------------------ #
-    def get_delta(self, symbol: str, window: float = DELTA_WINDOW) -> Tuple[float, float]:
+    def get_delta(self, symbol: str, window: float = DELTA_WINDOW) -> tuple[float, float]:
         """
         Delta agressif (volume achat - volume vente) et volume total sur la
         fenêtre. Retourne (delta, volume_total) ; (0,0) si aucune donnée.
@@ -127,7 +126,7 @@ class OrderFlowEngine:
         """Cumulative Volume Delta signé (accumulation/distribution)."""
         return float(self.cvd.get(symbol, 0.0))
 
-    def compute_ofi(self, symbol: str) -> Optional[float]:
+    def compute_ofi(self, symbol: str) -> float | None:
         """
         Order Flow Imbalance du carnet : (bid_qty - ask_qty)/(bid_qty + ask_qty).
         +1 = pression achat massive, -1 = pression vente, None = pas de carnet.
@@ -178,7 +177,7 @@ class OrderFlowEngine:
     # ------------------------------------------------------------------ #
     # EXPLOITATION DANS LA DÉCISION (Pilier H a/b/c/d)
     # ------------------------------------------------------------------ #
-    def toxicity_factor(self, symbol: str, vpin: Optional[float] = None) -> float:
+    def toxicity_factor(self, symbol: str, vpin: float | None = None) -> float:
         """
         Facteur de taille (0..1) quand le flux est TOXIQUE (informed trading) :
           - delta agressif extrême dans UNE direction (déséquilibre > 35 %)
@@ -218,7 +217,7 @@ class OrderFlowEngine:
             factor *= 0.8
         return max(0.2, min(1.0, factor))
 
-    def should_avoid_entry(self, symbol: str, side: str) -> Tuple[bool, str]:
+    def should_avoid_entry(self, symbol: str, side: str) -> tuple[bool, str]:
         """
         (a) Refuser d'entrer CONTRE un flux agressif dominant.
         BUY alors que le delta est fortement négatif (vente agressive) ->
@@ -245,7 +244,7 @@ class OrderFlowEngine:
                           f"du volume) -> pas de vente contre le flux")
         return False, ""
 
-    def wait_cascade_end(self, symbol: str) -> Tuple[bool, str]:
+    def wait_cascade_end(self, symbol: str) -> tuple[bool, str]:
         """
         (b) Cascade de liquidations active -> ne pas entrer (surtout pas
         « acheter la panique ») ; attendre la fin de la cascade.
@@ -255,7 +254,7 @@ class OrderFlowEngine:
         return False, ""
 
     def stop_hunting_zone(self, symbol: str, recent_high: float,
-                          recent_low: float, atr: float) -> Tuple[Optional[float], Optional[float]]:
+                          recent_low: float, atr: float) -> tuple[float | None, float | None]:
         """
         (c) Zones de stops évidentes (stop hunting) : les stops longs se
         concentrent SOUS le plus bas récent, les stops shorts AU-DESSUS du

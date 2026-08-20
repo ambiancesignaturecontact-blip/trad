@@ -4,11 +4,11 @@ Real latency + Real liquidity (order book depth) + Volume + Fees
 """
 
 import asyncio
-import time
-import httpx
 import logging
-from typing import Dict, List, Optional
-from dataclasses import dataclass, field
+import time
+from dataclasses import dataclass
+
+import httpx
 
 logger = logging.getLogger("MultiExchangeSOR")
 
@@ -42,7 +42,7 @@ class MultiExchangeSmartOrderRouter:
         }
         self.timeout = 4.0
 
-    async def get_all_quotes(self, symbol: str) -> List[ExchangeQuote]:
+    async def get_all_quotes(self, symbol: str) -> list[ExchangeQuote]:
         """Fetch real-time quotes from all exchanges"""
         tasks = [
             self._fetch_binance(symbol),
@@ -51,7 +51,7 @@ class MultiExchangeSmartOrderRouter:
         results = await asyncio.gather(*tasks, return_exceptions=True)
         return [r for r in results if isinstance(r, ExchangeQuote)]
 
-    async def _fetch_binance(self, symbol: str) -> Optional[ExchangeQuote]:
+    async def _fetch_binance(self, symbol: str) -> ExchangeQuote | None:
         start = time.time()
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -89,7 +89,7 @@ class MultiExchangeSmartOrderRouter:
             logger.warning(f"Binance fetch failed: {e}")
             return None
 
-    async def _fetch_bybit(self, symbol: str) -> Optional[ExchangeQuote]:
+    async def _fetch_bybit(self, symbol: str) -> ExchangeQuote | None:
         start = time.time()
         try:
             async with httpx.AsyncClient(timeout=self.timeout) as client:
@@ -123,7 +123,7 @@ class MultiExchangeSmartOrderRouter:
             logger.warning(f"Bybit fetch failed: {e}")
             return None
 
-    def select_best_venue(self, quotes: List[ExchangeQuote], side: str) -> Optional[ExchangeQuote]:
+    def select_best_venue(self, quotes: list[ExchangeQuote], side: str) -> ExchangeQuote | None:
         """Select the best exchange based on multiple real metrics"""
         if not quotes:
             return None
@@ -148,7 +148,7 @@ class MultiExchangeSmartOrderRouter:
         logger.info(f"[SOR] Best venue: {best.exchange} | Score: {best.final_score:.4f} | Liquidity: ${best.liquidity_usd:,.0f}")
         return best
 
-    async def route_order(self, symbol: str, side: str, quantity: float) -> Dict:
+    async def route_order(self, symbol: str, side: str, quantity: float) -> dict:
         """Main routing function"""
         quotes = await self.get_all_quotes(symbol)
         best = self.select_best_venue(quotes, side)

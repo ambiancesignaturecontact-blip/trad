@@ -2,12 +2,12 @@
 LOT 52: Complete Trade Journal with Notes + Screenshots
 """
 
-import pandas as pd
-from typing import Dict, List, Optional
-from datetime import datetime
-import logging
 import json
+import logging
 import os
+from datetime import datetime
+
+import pandas as pd
 
 logger = logging.getLogger("TradeJournal")
 
@@ -23,13 +23,13 @@ class TradeJournal:
 
     def __init__(self, db_path: str = "trade_journal.json"):
         self.db_path = db_path
-        self.trades: List[Dict] = []
+        self.trades: list[dict] = []
         self._load()
 
     def _load(self):
         if os.path.exists(self.db_path):
             try:
-                with open(self.db_path, "r") as f:
+                with open(self.db_path) as f:
                     self.trades = json.load(f)
                 logger.info(f"Trade Journal loaded: {len(self.trades)} trades")
             except Exception as e:
@@ -42,7 +42,7 @@ class TradeJournal:
         except Exception as e:
             logger.error(f"Failed to save trade journal: {e}")
 
-    def add_trade(self, 
+    def add_trade(self,
                   symbol: str,
                   side: str,
                   qty: float,
@@ -50,8 +50,8 @@ class TradeJournal:
                   mode: str,
                   strategy: str = "META_MODEL",
                   notes: str = "",
-                  screenshot_path: Optional[str] = None,
-                  realized_pnl: Optional[float] = None) -> Dict:
+                  screenshot_path: str | None = None,
+                  realized_pnl: float | None = None) -> dict:
 
         trade = {
             "id": len(self.trades) + 1,
@@ -73,13 +73,13 @@ class TradeJournal:
         logger.info(f"[JOURNAL] Trade #{trade['id']} logged: {side} {qty} {symbol} @ {price}")
         return trade
 
-    def get_trades(self, symbol: Optional[str] = None, limit: int = 50) -> List[Dict]:
+    def get_trades(self, symbol: str | None = None, limit: int = 50) -> list[dict]:
         filtered = self.trades
         if symbol:
             filtered = [t for t in filtered if t["symbol"] == symbol]
         return filtered[-limit:][::-1]
 
-    def search(self, keyword: str) -> List[Dict]:
+    def search(self, keyword: str) -> list[dict]:
         keyword = keyword.lower()
         return [t for t in self.trades if keyword in str(t).lower()]
 
@@ -91,7 +91,7 @@ class TradeJournal:
         logger.info(f"Trade Journal exported to {filepath}")
         return True
 
-    def get_summary(self) -> Dict:
+    def get_summary(self) -> dict:
         if not self.trades:
             return {"total_trades": 0}
 

@@ -1,10 +1,11 @@
-import logging
-import pandas as pd
-import numpy as np
-import time
-import random
-import pickle
 import base64
+import logging
+import pickle
+import random
+import time
+
+import numpy as np
+import pandas as pd
 
 logger = logging.getLogger("MLOpsPipeline")
 
@@ -29,11 +30,11 @@ class MLOpsAutoTrainer:
         self.regime_detector = regime_detector
         self.price_predictor = price_predictor
         self.db = db_manager
-        
+
         self.cusum_threshold = 0.05
         self.cusum_drift_accumulator = 0.0
         self.prediction_errors_history = []
-        
+
         # In-memory Model Registry state
         self.active_model_status = ModelStatus.DEPLOYED
 
@@ -56,15 +57,15 @@ class MLOpsAutoTrainer:
         self.prediction_errors_history.append(error)
         if len(self.prediction_errors_history) > 30:
             self.prediction_errors_history.pop(0)
-            
+
         avg_error = np.mean(self.prediction_errors_history)
         deviation = error - avg_error
         self.cusum_drift_accumulator = max(0.0, self.cusum_drift_accumulator + deviation)
-        
+
         if self.cusum_drift_accumulator >= self.cusum_threshold:
             logger.warning(f"MLOPS DRIFT WARNING: Cumulative drift {self.cusum_drift_accumulator:.4f} exceeded threshold!")
             self.cusum_drift_accumulator = 0.0
-            
+
             # FREEZE CURRENT MODEL: Set status to RETIRED or CANDIDATE, blocking automated trading!
             self.active_model_status = ModelStatus.RETIRED
             self.db.save_setting("active_model_status", ModelStatus.RETIRED)
@@ -74,7 +75,7 @@ class MLOpsAutoTrainer:
                 "Concept drift detected! Current deployed model frozen. Promoting a candidate for validation."
             )
             return True
-            
+
         return False
 
     def save_model_to_registry(self, symbol: str, model_type: str, model_object, performance_metric: float, status: str = ModelStatus.CANDIDATE):
@@ -85,12 +86,12 @@ class MLOpsAutoTrainer:
         try:
             serialized_weights = base64.b64encode(pickle.dumps(model_object)).decode('utf-8')
             version_id = f"v_{model_type}_{int(time.time())}"
-            
+
             # Save serialized weights
             self.db.save_setting(f"model_reg_{symbol}_{model_type}_{version_id}", serialized_weights)
             # Save status
             self.db.save_setting(f"model_status_{symbol}_{model_type}_{version_id}", status)
-            
+
             logger.info(f"MODEL REGISTRY: Registered version {version_id} for {symbol} ({model_type}) as {status} (Sharpe: {performance_metric:.2f}).")
             return version_id
         except Exception as e:
@@ -105,17 +106,17 @@ class MLOpsAutoTrainer:
         try:
             status_key = f"model_status_{symbol}_{model_type}_{version_id}"
             current_status = self.db.get_setting(status_key)
-            
+
             if not current_status:
                 logger.error(f"Model version {version_id} not found in registry.")
                 return False
-                
+
             # Update status to Deployed
             self.db.save_setting(status_key, ModelStatus.DEPLOYED)
             self.db.save_setting(f"active_model_{symbol}_{model_type}", version_id)
             self.db.save_setting(f"active_model_status_{symbol}_{model_type}", ModelStatus.DEPLOYED)
             self.active_model_status = ModelStatus.DEPLOYED
-            
+
             logger.info(f"MODEL REGISTRY: Successfully DEPLOYED model {version_id} for {symbol} ({model_type})!")
             return True
         except Exception as e:
@@ -128,9 +129,9 @@ class MLOpsAutoTrainer:
             if not serialized_weights:
                 logger.error(f"Model version {target_version_id} not found in database registry.")
                 return False
-                
+
             deserialized_model = pickle.loads(base64.b64decode(serialized_weights.encode('utf-8')))
-            
+
             if model_type == "hmm":
                 self.regime_detector.transition_matrix = deserialized_model.transition_matrix
                 self.regime_detector.means = deserialized_model.means
@@ -141,11 +142,11 @@ class MLOpsAutoTrainer:
                 self.price_predictor.W_c = deserialized_model.W_c
                 self.price_predictor.W_o = deserialized_model.W_o
                 self.price_predictor.W_out = deserialized_model.W_out
-                
+
             self.db.save_setting(f"active_model_{symbol}_{model_type}", target_version_id)
             self.db.save_setting(f"active_model_status_{symbol}_{model_type}", ModelStatus.DEPLOYED)
             self.active_model_status = ModelStatus.DEPLOYED
-            
+
             logger.info(f"MODEL REGISTRY ROLLBACK: Restored {symbol} ({model_type}) successfully to version {target_version_id}.")
             return True
         except Exception as e:
@@ -156,7 +157,7 @@ class MLOpsAutoTrainer:
         population_size = 20
         generations = 5
         mutation_rate = 0.15
-        
+
         population = []
         for _ in range(population_size):
             population.append([
@@ -165,10 +166,10 @@ class MLOpsAutoTrainer:
                 random.randint(8, 25),
                 random.randint(10, 30)
             ])
-            
+
         prices = df_bars['close'].values
         returns = df_bars['close'].pct_change().dropna().values
-        
+
         def evaluate_fitness(chromosome) -> float:
             fast, slow, rsi_p, bb_p = chromosome
             ema_f = pd.Series(prices).ewm(span=fast, adjust=False).mean().values
@@ -185,7 +186,7 @@ class MLOpsAutoTrainer:
             sorted_indices = np.argsort(fitness_scores)[::-1]
             population = [population[i] for i in sorted_indices]
             fitness_scores = [fitness_scores[i] for i in sorted_indices]
-            
+
             parents = population[:6]
             next_generation = list(parents)
             while len(next_generation) < population_size:
@@ -203,7 +204,7 @@ class MLOpsAutoTrainer:
                     child[3] = max(10, min(30, child[3] + random.choice([-2, 2])))
                 next_generation.append(child)
             population = next_generation
-            
+
         best_chromosome = population[0]
         best_sharpe = fitness_scores[0]
         return {
@@ -242,9 +243,11 @@ class MLOpsAutoTrainer:
                     seq = pct_df.iloc[i-5:i].values
                     lab = pct_df['close'].iloc[i]
                     if i in train_idx:
-                        train_feats.append(seq); train_labels.append(lab)
+                        train_feats.append(seq)
+                        train_labels.append(lab)
                     elif i in test_idx:
-                        test_feats.append(seq); test_labels.append(lab)
+                        test_feats.append(seq)
+                        test_labels.append(lab)
                 if len(train_feats) < 15 or len(test_feats) < 5:
                     continue
                 # Entraîner un CHALLENGER frais sur ce fold (pas le champion).
@@ -260,7 +263,6 @@ class MLOpsAutoTrainer:
                     preds.append(float(np.array(_p).flatten()[0]))
                 preds = np.array(preds)
                 actuals = np.array(test_labels)
-                errors = actuals - preds
                 mu = float(np.mean(preds * np.sign(actuals)))  # directionnalité
                 std = float(np.std(preds)) + 1e-9
                 sharpe_fold = mu / std
@@ -293,13 +295,15 @@ class MLOpsAutoTrainer:
             from models.lopez_de_prado import calculate_deflated_sharpe_ratio
             # FIX (logs prod) : la valeur DB peut être vide/None (première
             # exécution) — parsing robuste, jamais int('') (crash observé).
+            # NB : get_setting(key) n'a PAS de paramètre "default" — le 2e
+            # argument est user_id (int()). Passer "" plantait : int("").
             try:
-                _raw = self.db.get_setting("mlops_n_trials", "1")
+                _raw = self.db.get_setting("mlops_n_trials")
                 n_trials = int(str(_raw).strip()) if str(_raw).strip() else 1
             except (TypeError, ValueError):
                 n_trials = 1
             champion_key = f"mlops_champion_sharpe_{model_type}"
-            champion_raw = self.db.get_setting(champion_key, "")
+            champion_raw = self.db.get_setting(champion_key)
             champion_sharpe = float(champion_raw) if champion_raw else None
 
             # Sharpe déflaté du challenger (pénalise la fouille de données)
@@ -332,35 +336,35 @@ class MLOpsAutoTrainer:
         if df_bars is None or df_bars.empty or len(df_bars) < 30:
             logger.error("MLOPS TRAINING ABORTED: Insufficient or empty historical dataset.")
             return {"status": "Aborted", "reason": "Insufficient historical bar records."}
-            
+
         logger.info("Executing MLOps Auto-Retraining Pipeline...")
         start_time = time.time()
-        
+
         # 1. Re-fit Regime Detector HMM
         returns = df_bars['close'].pct_change().dropna().values
         vols = df_bars['close'].pct_change().rolling(10).std().dropna().values
         min_len = min(len(returns), len(vols))
-        
+
         X_train = np.column_stack((returns[-min_len:], vols[-min_len:]))
         self.regime_detector.fit(X_train)
-        
+
         # 2. Re-fit LSTM Price Predictor
         features_seq = []
         labels = []
         pct_df = df_bars[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0)
-        
+
         for i in range(5, len(pct_df) - 1):
             features_seq.append(pct_df.iloc[i-5:i].values)
             labels.append(pct_df['close'].iloc[i])
-            
+
         self.price_predictor.fit(features_seq, np.array(labels))
-        
+
         # 3. Execute Genetic Algorithm parameters tuning
         ga_results = self.execute_genetic_tuning(df_bars)
-        
+
         # Save training epoch to database
         self.db.save_setting("last_mlops_training_epoch", str(time.time()))
-        
+
         # 4. Save newly trained models to Registry as CANDIDATE!
         # LOT 4 (PDF Pilier C) : la promotion n'est PLUS automatique — le
         # challenger doit battre le champion HORS-ÉCHANTILLON (walk-forward
@@ -369,30 +373,30 @@ class MLOpsAutoTrainer:
         v_lstm = self.save_model_to_registry("BTCUSDT", "lstm", self.price_predictor, ga_results['sharpe_score'], status=ModelStatus.CANDIDATE)
 
         oos_eval = self.evaluate_oos_walkforward(df_bars, n_splits=3)
-        deployment_note = "champion conservé (aucune preuve OOS)"
+        # champion conservé (aucune preuve OOS)
         if oos_eval:
             _sharpe = oos_eval.get("oos_sharpe_mean", 0.0)
             # LSTM challenger vs champion
             if self.deploy_challenger_if_beats_champion(df_bars, "lstm", _sharpe):
                 self.approve_and_deploy_model("BTCUSDT", "lstm", v_lstm)
-                deployment_note = f"LSTM promu (OOS {_sharpe:.4f})"
+                pass  # (deployment_note retiré : jamais consommé)
             # HMM : promu si la validation de régime est stable (walk-forward honnête)
             if oos_eval.get("oos_sharpe_mean", 0.0) >= 0.0 and self.deploy_challenger_if_beats_champion(df_bars, "hmm", max(_sharpe, 0.01)):
                 self.approve_and_deploy_model("BTCUSDT", "hmm", v_hmm)
-                deployment_note = f"HMM promu (OOS {_sharpe:.4f})"
+                pass  # (deployment_note retiré : jamais consommé)
         else:
             logger.warning("MLOPS: évaluation OOS impossible (données insuffisantes) -> champion conservé.")
-        
+
         duration = time.time() - start_time
         logger.info(f"MLOps retrained models in {duration:.4f} seconds.")
-        
+
         # Log to audit trail
         self.db.add_audit_log(
-            "MLOPS_PIPELINE_EXECUTED", 
-            "127.0.0.1", 
+            "MLOPS_PIPELINE_EXECUTED",
+            "127.0.0.1",
             f"Successfully retrained models & executed Genetic Tuning (Best Sharpe: {ga_results['sharpe_score']:.2f})."
         )
-        
+
         return {
             "status": "Success",
             "training_duration_seconds": duration,

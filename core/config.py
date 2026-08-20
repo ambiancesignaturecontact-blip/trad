@@ -7,7 +7,7 @@ hard-coded constants. Every key falls back to a safe default if missing.
 """
 import os
 from dataclasses import dataclass, field
-from typing import Dict, Any
+from typing import Any
 
 import yaml
 
@@ -18,7 +18,7 @@ except Exception:
     _dotenv_loaded = False
 
 
-_DEFAULTS: Dict[str, Any] = {
+_DEFAULTS: dict[str, Any] = {
     "trading": {
         "min_notional_usd_micro": 3.0,
         "min_notional_usd_small": 5.0,
@@ -136,7 +136,7 @@ _DEFAULTS: Dict[str, Any] = {
 
 @dataclass
 class Settings:
-    raw: Dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
     def get(self, section: str, key: str, default: Any = None) -> Any:
         sec = self.raw.get(section, {})
@@ -163,7 +163,7 @@ class Settings:
             return default
 
 
-def _deep_merge(base: Dict, override: Dict) -> Dict:
+def _deep_merge(base: dict, override: dict) -> dict:
     out = dict(base)
     for k, v in override.items():
         if isinstance(v, dict) and isinstance(out.get(k), dict):
@@ -179,7 +179,7 @@ def load_settings() -> Settings:
     cfg_path = os.getenv("CONFIG_PATH", os.path.join(os.getcwd(), "config.yaml"))
     try:
         if os.path.exists(cfg_path):
-            with open(cfg_path, "r") as f:
+            with open(cfg_path) as f:
                 user_cfg = yaml.safe_load(f) or {}
             data = _deep_merge(data, user_cfg)
     except Exception as e:  # never block startup on a bad config file

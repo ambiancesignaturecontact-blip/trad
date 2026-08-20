@@ -8,8 +8,6 @@ VISION_FUTUR §2 - LA DISCIPLINE DE RECHERCHE ABSOLUE.
 - meta-labeling filter: only execute trades whose predicted success prob is high
 """
 import logging
-import time
-from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -56,7 +54,7 @@ def double_validation(evaluate_fn, df: object, market_data: dict,
         return {"train_dsr": 0.0, "test_dsr": 0.0, "promoted": False, "error": str(e)}
 
 
-def live_p_value(signals: List[float], returns: List[float]) -> float:
+def live_p_value(signals: list[float], returns: list[float]) -> float:
     """
     §2c: rolling probability the current directional accuracy is due to chance
     (binomial test). Low p-value = performance is NOT luck.
@@ -74,9 +72,9 @@ def live_p_value(signals: List[float], returns: List[float]) -> float:
     return round(min(p_value, 1.0), 4)
 
 
-def meta_label_filter(strategy: str, win_rates: Dict[str, float],
+def meta_label_filter(strategy: str, win_rates: dict[str, float],
                       threshold: float = 0.52,
-                      counts: Optional[Dict[str, int]] = None,
+                      counts: dict[str, int] | None = None,
                       min_samples: int = 0) -> bool:
     """
     §2d: meta-labeling - only trade when the strategy's recent win rate exceeds

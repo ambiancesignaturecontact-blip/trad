@@ -4,7 +4,6 @@ Performs periodic real reconciliation between DB and exchange in DEMO/REAL modes
 """
 import asyncio
 import logging
-from typing import Dict
 
 logger = logging.getLogger("LiveReconciler")
 
@@ -37,7 +36,7 @@ class LiveReconciler:
             internal_balance = self.db.get_setting("balance_demo") or 0
             try:
                 internal_balance = float(internal_balance)
-            except:
+            except Exception:
                 internal_balance = 0
 
             balance_ok = self.reconciler.reconcile_balances(actual_usdt, internal_balance)
@@ -61,7 +60,7 @@ class LiveReconciler:
                 open_orders = client.fetch_open_orders()
                 if open_orders:
                     logger.info(f"Open orders detected: {len(open_orders)}")
-            except:
+            except Exception:
                 pass
 
             logger.info("✅ Periodic reconciliation completed successfully.")

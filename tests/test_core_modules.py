@@ -11,7 +11,7 @@ import pytest
 
 # ---------------- strategies / meta allocation ----------------
 def test_meta_engine_allocate_returns_weights():
-    from strategies.engine import TrendFollowingStrategy, MeanReversionStrategy, MetaAllocationEngine
+    from strategies.engine import MeanReversionStrategy, MetaAllocationEngine, TrendFollowingStrategy
     meta = MetaAllocationEngine(strategies=[TrendFollowingStrategy(), MeanReversionStrategy()])
     df = pd.DataFrame({"close": np.linspace(100, 110, 80), "high": np.linspace(101, 111, 80),
                        "low": np.linspace(99, 109, 80), "volume": [1000] * 80})
@@ -25,7 +25,7 @@ def test_meta_engine_allocate_returns_weights():
 
 
 def test_meta_engine_vpin_modulates_signal():
-    from strategies.engine import TrendFollowingStrategy, MetaAllocationEngine
+    from strategies.engine import MetaAllocationEngine, TrendFollowingStrategy
     meta = MetaAllocationEngine(strategies=[TrendFollowingStrategy()])
     df = pd.DataFrame({"close": np.linspace(100, 110, 80), "high": np.linspace(101, 111, 80),
                        "low": np.linspace(99, 109, 80), "volume": [1000] * 80})
@@ -66,8 +66,8 @@ def test_circuit_breaker_trips_on_big_drawdown():
 
 # ---------------- OMS / EMS ----------------
 def test_oms_submit_and_partial_fill():
-    from oms.manager import Order, OrderManagementSystem, OrderStatus
     from ems.manager import Fill
+    from oms.manager import OrderManagementSystem, OrderStatus
 
     class FakeDB:
         def add_order(self, **kw):
@@ -99,7 +99,7 @@ def test_oms_submit_and_partial_fill():
 
 # ---------------- SOR ----------------
 def test_multi_exchange_sor_selects_best_venue():
-    from core.multi_exchange_sor import MultiExchangeSmartOrderRouter, ExchangeQuote
+    from core.multi_exchange_sor import ExchangeQuote, MultiExchangeSmartOrderRouter
     sor = MultiExchangeSmartOrderRouter()
     def q(exchange, bid, ask):
         return ExchangeQuote(exchange=exchange, price=(bid+ask)/2, bid=bid, ask=ask,
@@ -229,7 +229,6 @@ def test_real_execution_fill_confirmation_path():
 
 
 def test_real_execution_rejection_path():
-    from ems.manager import ExecutionManagementSystem
     from oms.manager import Order
 
     client = FakeCCXT(fail=True)
@@ -242,7 +241,7 @@ def test_real_execution_rejection_path():
 
 # ---------------- audit C3: price alerts ----------------
 def test_price_alerts_fire_once():
-    from main import check_price_alerts, STATE, db
+    from main import STATE, check_price_alerts
     STATE["price_alerts"] = [{
         "id": "a1", "symbol": "BTCUSDT", "direction": "above",
         "target_price": 70000.0, "note": "test", "triggered": False,
@@ -258,8 +257,9 @@ def test_price_alerts_fire_once():
 
 # ---------------- audit C7: user management ----------------
 def test_user_crud():
-    from main import db
     import bcrypt
+
+    from main import db
     uname = "test_trader_audit"
     db.delete_user(uname)  # clean
     hashed = bcrypt.hashpw(b"SuperSecure123", bcrypt.gensalt()).decode()
@@ -275,8 +275,9 @@ def test_user_crud():
 # ---------------- audit C10: market replay ----------------
 def test_market_replay_logic():
     import asyncio
-    import pytest
+
     from fastapi import HTTPException
+
     from main import run_market_replay
     # Use a symbol with a working public feed in CI/sandbox (Yahoo), fallback BTC
     last_err = None
@@ -297,8 +298,10 @@ def test_market_replay_logic():
 
 # ---------------- VISION: signal library + gates ----------------
 def test_signal_library_evaluates_and_ranks():
-    import numpy as np, pandas as pd
-    from core.signal_library import SIGNAL_LIBRARY, evaluate_all_signals
+    import numpy as np
+    import pandas as pd
+
+    from core.signal_library import evaluate_all_signals
     rng = np.random.default_rng(0)
     close = 100 * np.cumprod(1 + rng.normal(0, 0.01, 400))
     df = pd.DataFrame({"close": close, "high": close * 1.005, "low": close * 0.995,
@@ -327,10 +330,12 @@ def test_volatility_targeting_scales_exposure():
     lo, hi = [], []
     p = 1000.0
     for _ in range(80):
-        p *= (1 + 0.00005 * rng.normal()); lo.append(p)
+        p *= (1 + 0.00005 * rng.normal())
+        lo.append(p)
     p = 1000.0
     for _ in range(80):
-        p *= (1 + 0.002 * rng.normal()); hi.append(p)
+        p *= (1 + 0.002 * rng.normal())
+        hi.append(p)
     assert volatility_scale_factor(lo) > 1.0
     assert volatility_scale_factor(hi) < 1.0
     assert volatility_scale_factor([]) == 1.0
@@ -351,6 +356,7 @@ def test_execution_router_and_alpha():
 # ---------------- VISION: factor model + risk parity ----------------
 def test_factor_model_and_risk_parity():
     import numpy as np
+
     from core.factor_model import compute_factor_exposures, risk_parity_weights
     r = [0.001] * 60
     exp = compute_factor_exposures(r, [0.0005] * 60, [0.001] * 60, [0.0002] * 60, [0.0001] * 60)
@@ -365,8 +371,11 @@ def test_factor_model_and_risk_parity():
 def test_decision_pipeline_benchmark():
     """Simulates 100 decision ticks; must complete well under 5s (usually <1s)."""
     import time
-    import numpy as np, pandas as pd
-    from strategies.engine import TrendFollowingStrategy, MetaAllocationEngine
+
+    import numpy as np
+    import pandas as pd
+
+    from strategies.engine import MetaAllocationEngine, TrendFollowingStrategy
 
     meta = MetaAllocationEngine(strategies=[TrendFollowingStrategy()])
     rng = np.random.default_rng(0)
@@ -424,7 +433,6 @@ def test_copy_mirror_builds_scaled_delta_orders():
 
 
 def test_copy_mirror_fetch_public_positions():
-    import pytest
     from core.copy_mirror import fetch_trader_positions
     try:
         pos = fetch_trader_positions("0xf5d81a135f756ca16544e53c20fc20643ec3ad53")
@@ -488,8 +496,9 @@ def test_paper_execution_ignores_wrong_symbol_book():
 # ---- §1 PENSER ----
 def test_regime_probabilities_are_soft():
     import numpy as np
-    from models.regime_detector import MarketRegimeDetector
+
     from core.world_model import compute_regime_probs
+    from models.regime_detector import MarketRegimeDetector
     det = MarketRegimeDetector()
     det.fit(np.column_stack([np.random.randn(200) * 0.01, np.random.rand(200) * 0.02]))
     probs = compute_regime_probs(det, np.array([[0.0, 0.01]]))
@@ -498,7 +507,9 @@ def test_regime_probabilities_are_soft():
 
 
 def test_causal_parents_discovery():
-    import numpy as np, pandas as pd
+    import numpy as np
+    import pandas as pd
+
     from core.world_model import discover_causal_parents
     rng = np.random.default_rng(0)
     n = 200
@@ -520,6 +531,7 @@ def test_counterfactual_alpha():
 # ---- §2 APPRENDRE ----
 def test_mixture_of_experts_gate_and_decide():
     import numpy as np
+
     from core.mixture_experts import MixtureOfExperts, risk_adjusted_reward
     moe = MixtureOfExperts(state_dim=4)
     gate = moe.gate(regime_id=0, vol_mean=0.001)
@@ -535,7 +547,9 @@ def test_mixture_of_experts_gate_and_decide():
 
 # ---- §3 INVENTER ----
 def test_hypothesis_generator_cycle():
-    import numpy as np, pandas as pd
+    import numpy as np
+    import pandas as pd
+
     from core.hypothesis_generator import HypothesisGenerator
     gen = HypothesisGenerator(db=None)
     rng = np.random.default_rng(0)
@@ -565,7 +579,7 @@ def test_adaptive_conviction_and_hedging():
 
 # ---- §5 EXÉCUTER ----
 def test_execution_bandit_and_tradability():
-    from core.execution_agent import ExecutionStyleBandit, tradability_factor, StrategyExecutionAttribution
+    from core.execution_agent import ExecutionStyleBandit, StrategyExecutionAttribution, tradability_factor
     bandit = ExecutionStyleBandit(epsilon=0.0)
     for _ in range(20):
         style = bandit.choose_style("BTCUSDT", "normal", 2.0, 0.9)
@@ -580,8 +594,9 @@ def test_execution_bandit_and_tradability():
 
 # ---- §6 SE PROTÉGER ----
 def test_risk_committee_veto():
-    from core.risk_committee import RiskCommittee, strategy_risk_score, daily_risk_budget
     import numpy as np
+
+    from core.risk_committee import daily_risk_budget, strategy_risk_score
     high_vol = list(np.random.randn(40) * 0.05)
     low_vol = [0.0005] * 40
     assert strategy_risk_score("X", high_vol, 0.8, 0.05) > strategy_risk_score("Y", low_vol, 0.2, 0.0)
@@ -592,7 +607,7 @@ def test_risk_committee_veto():
 
 # ---- §7 SE CONNAÎTRE ----
 def test_self_assessment():
-    from core.self_assessment import simulation_divergence, honesty_factor, meta_attribution, health_honesty_component
+    from core.self_assessment import health_honesty_component, honesty_factor, meta_attribution, simulation_divergence
     d = simulation_divergence(3.0, 6.0)
     assert d > 0.5  # realized twice the modeled slippage
     assert honesty_factor(0.0) == 1.0
@@ -615,14 +630,15 @@ def test_organization_desks_and_capital_market():
     alloc = org.reallocate(stress_correlation=0.3)
     assert abs(sum(alloc.values()) - 1.0) < 0.01  # 4-decimal rounding
     assert org.status()["crisis_factor"] <= 1.0
-    alloc_crisis = org.reallocate(stress_correlation=0.9)
+    org.reallocate(stress_correlation=0.9)
     assert org.status()["crisis_factor"] < 0.9  # crisis tightening (18% at corr 0.9)
 
 
 # ---- §2 DISCIPLINE ----
 def test_research_discipline():
-    from core.research_discipline import live_p_value, meta_label_filter, double_validation
     import numpy as np
+
+    from core.research_discipline import double_validation, live_p_value, meta_label_filter
     # a perfect directional record -> tiny p-value
     pv = live_p_value([1.0] * 50, [0.01] * 50)
     assert pv < 0.05
@@ -638,7 +654,7 @@ def test_research_discipline():
     df = pd.DataFrame({"close": close, "high": close * 1.005, "low": close * 0.995,
                        "volume": rng.uniform(500, 2000, 400)})
     def fn(d, md):
-        from core.signal_library import evaluate_signal, SIGNAL_LIBRARY
+        from core.signal_library import SIGNAL_LIBRARY, evaluate_signal
         return evaluate_signal(d, SIGNAL_LIBRARY["momentum_roc"], md)
     res = double_validation(fn, df, {"vpin": 0.5}, promotion_threshold=0.0)
     assert "train_dsr" in res and "test_dsr" in res
@@ -647,7 +663,7 @@ def test_research_discipline():
 
 # ---- §5 ROBUSTNESS ----
 def test_robustness_snapshot_and_supervisor():
-    from core.robustness import save_state_snapshot, restore_state_snapshot, Supervisor
+    from core.robustness import Supervisor, restore_state_snapshot, save_state_snapshot
     from database.db_manager import DBManager
     db = DBManager()
     state = {"balance_demo": 12345.0, "mode": "DEMO", "last_tick_ts": 1e9}
@@ -701,20 +717,24 @@ def test_backup_and_restore_roundtrip(tmp_path):
     # source snapshot (the "backup")
     snap = tmp_path / "snap.db"
     c = sqlite3.connect(str(snap))
-    c.execute("CREATE TABLE t (x INTEGER)"); c.execute("INSERT INTO t VALUES (42)"); c.commit(); c.close()
+    c.execute("CREATE TABLE t (x INTEGER)")
+    c.execute("INSERT INTO t VALUES (42)")
+    c.commit()
+    c.close()
     # target = a SEPARATE temp file (never the live DB)
     target = tmp_path / "target.db"
     src = sqlite3.connect(str(snap))
     dst = sqlite3.connect(str(target))
     src.backup(dst)
-    dst.close(); src.close()
+    dst.close()
+    src.close()
     # verify the restored copy contains the data
     chk = sqlite3.connect(str(target))
     val = chk.execute("SELECT x FROM t").fetchone()[0]
     chk.close()
     assert val == 42
     # and the LIVE DB must be untouched (still has our tables)
-    from database.db_manager import DBManager, DB_PATH
+    from database.db_manager import DBManager
     db = DBManager()
     assert db.get_user("admin_quant") is not None
 
@@ -723,7 +743,7 @@ def test_backup_and_restore_roundtrip(tmp_path):
 def test_pg_pool_connections_are_returned():
     """Regression: get_connection() must putconn() every connection so the pool
     is never exhausted (was: psycopg2.pool.PoolError in production)."""
-    from database.db_manager import DBManager, _PooledPGConn
+    from database.db_manager import DBManager
 
     class FakeRaw:
         """Pretends to be a psycopg2 connection (context manager + cursor)."""

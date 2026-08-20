@@ -1,18 +1,18 @@
 import numpy as np
-import pandas as pd
+
+from backtester.bias_audit import audit_backtest
+from backtester.engine import EventDrivenBacktester
+from backtester.honest_verdict import print_honest_result
+from backtester.live_candles import fetch_real_candles
+from models.price_predictor import LSTMLikePredictor, PPOTRAgent
 
 # Import our quant models
 from models.regime_detector import MarketRegimeDetector
-from models.price_predictor import LSTMLikePredictor, PPOTRAgent
-from strategies.engine import (
-    MetaAllocationEngine, TrendFollowingStrategy, MeanReversionStrategy,
-    StatisticalArbitrageStrategy, GridTradingStrategy, ScalpingStrategy
-)
 from risk.risk_manager import RiskManager
-from backtester.engine import EventDrivenBacktester
-from backtester.bias_audit import audit_backtest
-from backtester.live_candles import fetch_real_candles
-from backtester.honest_verdict import print_honest_result
+from strategies.engine import (
+    MetaAllocationEngine,
+    TrendFollowingStrategy,
+)
 
 
 def prove_trend_profit():

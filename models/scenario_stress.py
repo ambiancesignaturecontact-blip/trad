@@ -22,12 +22,11 @@ Aucune donnée de trading fictive : ce sont des SCÉNARIOS DE CALCUL documentés
 réel — on se prépare au pire).
 """
 import logging
-from typing import Dict, List, Optional
 
 logger = logging.getLogger("ScenarioStress")
 
 # Chocs RÉELS observés (pct de baisse, négatif = perte)
-CRISIS_SCENARIOS: Dict[str, Dict] = {
+CRISIS_SCENARIOS: dict[str, dict] = {
     "COVID_2020": {
         "label": "COVID-19 (fév-mars 2020)",
         "horizon_days": 23,
@@ -68,13 +67,13 @@ MAX_LOSS_PCT = 0.15
 class ScenarioStressTester:
     """Rejoue les crises réelles sur le portefeuille complet."""
 
-    def __init__(self, scenarios: Optional[Dict] = None,
+    def __init__(self, scenarios: dict | None = None,
                  max_loss_pct: float = MAX_LOSS_PCT):
         self.scenarios = scenarios or CRISIS_SCENARIOS
         self.max_loss_pct = max_loss_pct
 
-    def run_stress(self, positions: List[dict], cash: float,
-                   prices: Dict[str, float]) -> Dict:
+    def run_stress(self, positions: list[dict], cash: float,
+                   prices: dict[str, float]) -> dict:
         """
         Applique chaque scénario au portefeuille complet (positions + cash).
         positions : [{symbol, qty}] ; prices : {symbol: prix courant}.

@@ -13,10 +13,9 @@ config.yaml.
 """
 from pathlib import Path
 
-import pytest
 import yaml
 
-from core.config import settings, load_settings
+from core.config import load_settings, settings
 
 # --------------------------------------------------------------------------- #
 # 1. Le config.yaml du repo est bien chargé et cohérent
@@ -84,9 +83,10 @@ def test_order_flow_branched():
 
 
 def test_vol_targeting_branched():
-    import core.volatility_targeting as m
     # les défauts de la fonction sont issus de settings
     import inspect
+
+    import core.volatility_targeting as m
     sig = inspect.signature(m.volatility_scale_factor)
     assert sig.parameters["target_tick_vol"].default == settings.get_float("vol_targeting", "target_tick_vol", 0.0004)
     assert sig.parameters["realized_window"].default == settings.get_int("vol_targeting", "realized_window", 40)

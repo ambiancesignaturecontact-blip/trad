@@ -3,10 +3,9 @@ LOT 59: Advanced Model Explainability (SHAP + LIME)
 Provides global and local explanations for trading models.
 """
 
-import numpy as np
-import pandas as pd
 import logging
-from typing import Dict, List, Optional, Any
+
+import numpy as np
 
 logger = logging.getLogger("ModelExplainability")
 
@@ -29,7 +28,7 @@ class ModelExplainer:
     Supports SHAP (preferred) and LIME as fallback.
     """
 
-    def __init__(self, model, feature_names: List[str], background_data: Optional[np.ndarray] = None):
+    def __init__(self, model, feature_names: list[str], background_data: np.ndarray | None = None):
         self.model = model
         self.feature_names = feature_names
         self.background_data = background_data
@@ -45,7 +44,7 @@ class ModelExplainer:
                 self.explainer = shap.TreeExplainer(self.model)
                 self.explainer_type = "shap_tree"
                 logger.info("LOT 59: Using SHAP TreeExplainer")
-            except:
+            except Exception:
                 try:
                     # Fallback to KernelExplainer
                     if self.background_data is not None:
@@ -70,7 +69,7 @@ class ModelExplainer:
         if self.explainer is None:
             logger.warning("LOT 59: No explainer available. Install shap or lime.")
 
-    def explain_prediction(self, features: np.ndarray, num_features: int = 8) -> Dict:
+    def explain_prediction(self, features: np.ndarray, num_features: int = 8) -> dict:
         """Explain a single prediction"""
         if self.explainer is None:
             return {"error": "No explainer available"}
@@ -91,8 +90,8 @@ class ModelExplainer:
 
         elif self.explainer_type == "lime":
             exp = self.explainer.explain_instance(
-                features[0], 
-                self.model.predict, 
+                features[0],
+                self.model.predict,
                 num_features=num_features
             )
             explanation = {
@@ -105,7 +104,7 @@ class ModelExplainer:
 
         return explanation
 
-    def get_global_importance(self, X: np.ndarray, n_samples: int = 100) -> Dict:
+    def get_global_importance(self, X: np.ndarray, n_samples: int = 100) -> dict:
         """Global feature importance using SHAP"""
         if not SHAP_AVAILABLE or self.explainer is None:
             return {"error": "SHAP not available"}
@@ -130,7 +129,7 @@ class ModelExplainer:
         except Exception as e:
             return {"error": str(e)}
 
-    def get_status(self) -> Dict:
+    def get_status(self) -> dict:
         return {
             "explainer_type": self.explainer_type,
             "shap_available": SHAP_AVAILABLE,

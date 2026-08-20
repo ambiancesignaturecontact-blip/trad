@@ -36,12 +36,11 @@ jobs:
         python -m compileall -q . -x 'node_modules|\\.git'
 
     - name: Lint (ruff) — audit B16-4
-      # NON bloquant et ASSUMÉ : la codebase legacy (main.py 5 600+ lignes)
-      # ne passe pas ruff aujourd'hui (config .ruff.toml cassée : règle W503
-      # inconnue). Le rendre bloquant casserait le build immédiatement.
-      # À traiter dans un lot dédié (nettoyage lint), pas ici.
+      # BLOQUANT depuis le nettoyage : ruff passe sur tout le repo
+      # (config .ruff.toml réparée — W503 retiré ; F405/E402 ignorés
+      # per-fichier pour les modules découpés au LOT 7).
       run: |
-        ruff check . || true   # report, don't gate (legacy codebase in transition)
+        ruff check .
 
     - name: Dependency vulnerability audit — P1-9 (audit §4.10)
       # BLOQUANT désormais : une CVE haute/critique fait échouer le build.

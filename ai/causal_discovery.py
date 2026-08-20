@@ -3,17 +3,16 @@ LOT 53: Advanced Causal Discovery Engine
 Combines NOTEARS (if PyTorch available) + PC Algorithm + Causal Graph output.
 """
 
+import logging
+
 import numpy as np
 import pandas as pd
-import logging
-from typing import Dict, List, Optional, Tuple
-from collections import defaultdict
 
 logger = logging.getLogger("CausalDiscovery")
 
 try:
     import torch
-    import torch.nn as nn
+    import torch.nn  # noqa: F401 (test de dispo torch) as nn
     TORCH_AVAILABLE = True
 except ImportError:
     TORCH_AVAILABLE = False
@@ -26,12 +25,12 @@ class CausalDiscoveryEngine:
 
     def __init__(self, significance_level: float = 0.05):
         self.significance_level = significance_level
-        self.causal_graph: Dict[str, List[str]] = {}
-        self.causal_strength: Dict[Tuple[str, str], float] = {}
+        self.causal_graph: dict[str, list[str]] = {}
+        self.causal_strength: dict[tuple[str, str], float] = {}
 
-    def discover_causal_graph(self, 
-                              returns_dict: Dict[str, np.ndarray],
-                              external_signals: Optional[Dict[str, np.ndarray]] = None) -> Dict:
+    def discover_causal_graph(self,
+                              returns_dict: dict[str, np.ndarray],
+                              external_signals: dict[str, np.ndarray] | None = None) -> dict:
         """
         Main function. Returns a causal graph {variable: [parents]}.
         """
@@ -66,7 +65,7 @@ class CausalDiscoveryEngine:
                 dfs.append(pd.Series(arr[-250:], name=name))
         return pd.concat(dfs, axis=1).dropna()
 
-    def _pc_algorithm(self, df: pd.DataFrame, variables: List[str]) -> Dict[str, List[str]]:
+    def _pc_algorithm(self, df: pd.DataFrame, variables: list[str]) -> dict[str, list[str]]:
         """Simplified PC algorithm using partial correlation threshold"""
         graph = {var: [] for var in variables}
         corr = df.corr().abs()
@@ -82,7 +81,7 @@ class CausalDiscoveryEngine:
 
         return graph
 
-    def _notears_discovery(self, df: pd.DataFrame, variables: List[str]) -> Dict[str, List[str]]:
+    def _notears_discovery(self, df: pd.DataFrame, variables: list[str]) -> dict[str, list[str]]:
         """Lightweight NOTEARS implementation (if PyTorch is available)"""
         if not TORCH_AVAILABLE:
             return {}
@@ -114,14 +113,14 @@ class CausalDiscoveryEngine:
 
         return graph
 
-    def get_parents(self, variable: str) -> List[str]:
+    def get_parents(self, variable: str) -> list[str]:
         return self.causal_graph.get(variable, [])
 
     def get_causal_strength(self, parent: str, child: str) -> float:
         return self.causal_strength.get((parent, child), 0.0)
 
-    def filter_signal_by_causality(self, signal: float, variable: str, 
-                                   external_causes: Dict[str, float]) -> float:
+    def filter_signal_by_causality(self, signal: float, variable: str,
+                                   external_causes: dict[str, float]) -> float:
         """
         Adjusts a trading signal based on causal parents.
         If a strong causal parent has a conflicting signal, dampen the original signal.

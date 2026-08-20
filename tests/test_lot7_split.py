@@ -62,8 +62,9 @@ def test_all_routes_mounted():
 
 def test_api_responds_after_split():
     """Les endpoints répondent après le découpage (routage réel)."""
-    import main
     from fastapi.testclient import TestClient
+
+    import main
     with TestClient(main.app) as c:
         assert c.get("/api/status").status_code == 200
         assert c.get("/api/telemetry").status_code == 200

@@ -10,9 +10,7 @@ Tests de RÉGRESSION — Fixes des logs de PRODUCTION (logs.1787172095376.log).
  5. VPIN aberrant (>1) clampé à 1.0 -> réduction permanente 0.6 sur tous les
     actifs ; désormais ignoré (neutre).
 """
-import asyncio
 import pandas as pd
-
 import pytest
 
 
@@ -134,8 +132,8 @@ class TestMinNotionalFix:
 class TestMLOpsNtrialsFix:
     def test_empty_value_parsed_as_1(self):
         from models.mlops_pipeline import MLOpsAutoTrainer
-        from models.regime_detector import MarketRegimeDetector
         from models.price_predictor import LSTMLikePredictor
+        from models.regime_detector import MarketRegimeDetector
 
         class FakeDB:
             def __init__(self):
@@ -153,8 +151,8 @@ class TestMLOpsNtrialsFix:
 
     def test_none_value_parsed_as_1(self):
         from models.mlops_pipeline import MLOpsAutoTrainer
-        from models.regime_detector import MarketRegimeDetector
         from models.price_predictor import LSTMLikePredictor
+        from models.regime_detector import MarketRegimeDetector
 
         class FakeDB:
             def __init__(self):

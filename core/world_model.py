@@ -7,7 +7,6 @@ VISION §1 - PENSER: a model of the world instead of signal->weights.
 - counterfactual marginal alpha per closed trade
 """
 import logging
-from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -17,7 +16,7 @@ logger = logging.getLogger("WorldModel")
 FEATURE_NAMES = ["momentum", "vpin", "kyle", "sentiment", "onchain", "funding", "volume"]
 
 
-def compute_regime_probs(regime_detector, features: np.ndarray) -> Dict[str, float]:
+def compute_regime_probs(regime_detector, features: np.ndarray) -> dict[str, float]:
     """Soft probabilities P(regime | data) via the HMM forward pass."""
     try:
         if features.ndim == 1:
@@ -77,7 +76,7 @@ def _partial_corr(x: np.ndarray, y: np.ndarray, z: np.ndarray) -> float:
 
 
 def discover_causal_parents(features_df: pd.DataFrame, target: str = "returns",
-                            alpha: float = 0.05, min_samples: int = 40) -> List[str]:
+                            alpha: float = 0.05, min_samples: int = 40) -> list[str]:
     """
     PC-lite: returns the features that are partial-correlated with the target
     given the other features (a causal parent set). Real-data only.

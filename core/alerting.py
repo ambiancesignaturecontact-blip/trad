@@ -2,10 +2,8 @@
 Advanced Alerting Engine (LOT 17)
 Envoie des alertes proactives et intelligentes via Telegram.
 """
-import asyncio
 import logging
 import time
-from typing import Dict
 
 logger = logging.getLogger("AlertingEngine")
 
@@ -19,10 +17,10 @@ class AdvancedAlertingEngine:
         """Envoie une alerte avec cooldown anti-spam"""
         now = time.time()
         last_sent = self.last_alerts.get(alert_type, 0)
-        
+
         if now - last_sent < cooldown_minutes * 60:
             return  # Trop tôt, on skip
-        
+
         if self.telegram:
             try:
                 await self.telegram.send_push_notification(
@@ -41,7 +39,7 @@ class AdvancedAlertingEngine:
         if adjustment.get("adjusted"):
             factor = adjustment.get("adjustment_factor", 1.0)
             reasons = ", ".join(adjustment.get("reasons", []))
-            
+
             msg = (
                 f"⚖️ *AJUSTEMENT DE RISQUE*\n"
                 f"Facteur appliqué : *{factor:.2f}x*\n"
@@ -55,7 +53,7 @@ class AdvancedAlertingEngine:
         rejected = stats.get("rejected", 0)
         total = stats.get("total_attempts", 1)
         rate = (rejected / total) * 100 if total > 0 else 0
-        
+
         if rate > 25:
             msg = (
                 f"⚠️ *TAUX DE REJET ÉLEVÉ*\n"

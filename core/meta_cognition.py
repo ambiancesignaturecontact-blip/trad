@@ -9,14 +9,13 @@ VISION §4 - DÉCIDER: meta-cognition (knowing when NOT to trade).
 """
 import logging
 import time
-from typing import Dict, List, Optional
 
 import numpy as np
 
 logger = logging.getLogger("MetaCognition")
 
 
-def adaptive_conviction_threshold(recent_signals: List[float], recent_returns: List[float],
+def adaptive_conviction_threshold(recent_signals: list[float], recent_returns: list[float],
                                   base_threshold: float = 0.15,
                                   min_threshold: float = 0.08, max_threshold: float = 0.30) -> float:
     """
@@ -34,7 +33,7 @@ def adaptive_conviction_threshold(recent_signals: List[float], recent_returns: L
     return float(np.clip(base_threshold * factor, min_threshold, max_threshold))
 
 
-def decide_no_trade(symbol: str, signal: float, threshold: float, reasons: List[str],
+def decide_no_trade(symbol: str, signal: float, threshold: float, reasons: list[str],
                     event_log=None, db=None) -> bool:
     """
     VISION §4b: when the signal is below the conviction bar, log an explicit
@@ -55,8 +54,8 @@ def decide_no_trade(symbol: str, signal: float, threshold: float, reasons: List[
     return True
 
 
-def hedging_decision(symbol: str, positions: List[dict], corr_matrix: dict,
-                     max_correlation: float = 0.75) -> Optional[dict]:
+def hedging_decision(symbol: str, positions: list[dict], corr_matrix: dict,
+                     max_correlation: float = 0.75) -> dict | None:
     """
     VISION §4c: if the portfolio is over-concentrated in highly-correlated
     positions, suggest a hedge (opposite, smaller position) on the most

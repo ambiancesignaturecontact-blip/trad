@@ -9,12 +9,11 @@ VISION §3 - INVENTER: the bot becomes a research scientist.
 import logging
 import random
 import time
-from typing import Dict, List
 
 import numpy as np
 import pandas as pd
 
-from core.signal_library import evaluate_signal, SIGNAL_LIBRARY
+from core.signal_library import SIGNAL_LIBRARY, evaluate_signal
 
 logger = logging.getLogger("HypothesisGen")
 
@@ -37,12 +36,12 @@ class HypothesisGenerator:
         self.db = db
         self.meta_prior = {f: 1.0 for f in FAMILIES}   # Thompson alpha
         self.meta_failures = {f: 1.0 for f in FAMILIES}  # Thompson beta
-        self.admitted: Dict[str, dict] = {}             # promoted signals
+        self.admitted: dict[str, dict] = {}             # promoted signals
         self.max_admitted = 12
         # LOT 4 (PDF Pilier D) : discipline anti-fouille de données
         self.research_budget_per_day = 20      # max d'hypothèses testées / jour
         self.freeze_after_promotions = 3       # gel si >= 3 promotions récentes
-        self.promotion_history: List[float] = []  # timestamps des promotions
+        self.promotion_history: list[float] = []  # timestamps des promotions
         self._daily_reset_ts = 0.0
         self._today_tests = 0
 
@@ -89,7 +88,7 @@ class HypothesisGenerator:
             return "sentiment"
         return "momentum"
 
-    def generate_hypotheses(self, n: int = 8, rng=None) -> List[dict]:
+    def generate_hypotheses(self, n: int = 8, rng=None) -> list[dict]:
         """Mutates real parameter variants (Thompson-biased by family)."""
         rng = rng or random
         candidates = []

@@ -9,7 +9,6 @@ P1-11 : update_pnl_attribution passe par le Sharpe DÉFLATÉ (López de Prado,
 P1-10 : corrélation des SIGNAUX inter-stratégies (§4.4) — le méta-allocateur
         pénalise les stratégies redondantes au lieu de croire diversifier.
 """
-import time
 from collections import deque
 
 import numpy as np
@@ -17,9 +16,7 @@ import pandas as pd
 import pytest
 
 import strategies.engine as eng
-from strategies.engine import (MetaAllocationEngine, TrendFollowingStrategy,
-                               MeanReversionStrategy, BaseStrategy)
-
+from strategies.engine import BaseStrategy, MeanReversionStrategy, MetaAllocationEngine, TrendFollowingStrategy
 
 # ---------------------------------------------------------------- P1-12 ----
 # §2.6 : facteur d'oubli

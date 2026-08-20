@@ -166,6 +166,7 @@ class TestToxicity:
 class TestSlicerHonesty:
     def test_no_zero_slippage_claim(self):
         import inspect
+
         from models import execution_slicer
         src = inspect.getsource(execution_slicer)
         assert "0% slippage" not in src

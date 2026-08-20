@@ -1,10 +1,10 @@
 """
 Walk-Forward Optimization Automatique - LOT 9 (100% réel)
 """
+import logging
+
 import numpy as np
 import pandas as pd
-from typing import Dict, List
-import logging
 
 logger = logging.getLogger("WalkForward")
 
@@ -13,13 +13,13 @@ class WalkForwardOptimizer:
     Walk-Forward Optimization 100% basé sur des données réelles.
     Aucune simulation, aucune donnée fictive.
     """
-    
+
     def __init__(self, n_folds: int = 5, train_ratio: float = 0.7):
         self.n_folds = n_folds
         self.train_ratio = train_ratio
 
     def run_walk_forward(self, df_bars: pd.DataFrame, strategy_engine, risk_manager,
-                         regime_detector, price_predictor, ppo_agent) -> Dict:
+                         regime_detector, price_predictor, ppo_agent) -> dict:
         """
         Exécute un walk-forward réel sur les données historiques.
         Retourne les métriques agrégées.

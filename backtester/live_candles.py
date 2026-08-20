@@ -15,7 +15,6 @@ Règle d'honnêteté : PAS de fallback synthétique. Si aucune source réelle ne
 répond, fetch_real_candles() retourne (None, "") et le script CLI s'arrête
 avec un message clair — « AUCUNE DONNÉE RÉELLE -> AUCUNE PREUVE ».
 """
-from typing import List, Optional, Tuple
 
 import httpx
 import pandas as pd
@@ -39,7 +38,7 @@ KRAKEN_NATIVE = 720         # Kraken renvoie 720 bougies 1h par appel
 MAX_BARS = 1200             # borne dure globale (≈ 50 jours de données 1h)
 
 
-def _build_frame(rows: List[dict], limit: int) -> Optional[pd.DataFrame]:
+def _build_frame(rows: list[dict], limit: int) -> pd.DataFrame | None:
     if not rows:
         return None
     rows.sort(key=lambda x: x["timestamp"])
@@ -49,7 +48,7 @@ def _build_frame(rows: List[dict], limit: int) -> Optional[pd.DataFrame]:
     return df.tail(limit)
 
 
-def _fetch_okx(symbol: str, limit: int) -> Optional[pd.DataFrame]:
+def _fetch_okx(symbol: str, limit: int) -> pd.DataFrame | None:
     """OKX : pagination via `after` (ts ms de la bougie la plus ancienne)."""
     inst = SYMBOL_MAP[symbol]["okx"]
     rows, after, last_after = [], None, None
@@ -73,7 +72,7 @@ def _fetch_okx(symbol: str, limit: int) -> Optional[pd.DataFrame]:
     return _build_frame(rows, limit)
 
 
-def _fetch_coinbase(symbol: str, limit: int) -> Optional[pd.DataFrame]:
+def _fetch_coinbase(symbol: str, limit: int) -> pd.DataFrame | None:
     """Coinbase : pagination par fenêtres start/end (max 300 par requête)."""
     prod = SYMBOL_MAP[symbol]["coinbase"]
     rows, end = [], None
@@ -97,7 +96,7 @@ def _fetch_coinbase(symbol: str, limit: int) -> Optional[pd.DataFrame]:
     return _build_frame(rows, limit)
 
 
-def _fetch_kraken(symbol: str, limit: int) -> Optional[pd.DataFrame]:
+def _fetch_kraken(symbol: str, limit: int) -> pd.DataFrame | None:
     """Kraken : 720 bougies 1h natives (suffisant jusqu'à 720)."""
     pair = SYMBOL_MAP[symbol]["kraken"]
     url = f"https://api.kraken.com/0/public/OHLC?pair={pair}&interval=60"
@@ -115,7 +114,7 @@ def _fetch_kraken(symbol: str, limit: int) -> Optional[pd.DataFrame]:
     return _build_frame(rows, limit)
 
 
-def _fetch_binance(symbol: str, limit: int) -> Optional[pd.DataFrame]:
+def _fetch_binance(symbol: str, limit: int) -> pd.DataFrame | None:
     s = SYMBOL_MAP[symbol]["binance"]
     url = (f"https://api.binance.com/api/v3/klines?symbol={s}"
            f"&interval=1h&limit={min(limit, MAX_BARS)}")
@@ -132,7 +131,7 @@ _FETCHERS = {"okx": _fetch_okx, "coinbase": _fetch_coinbase,
 
 
 def fetch_real_candles(symbol: str = "BTCUSDT", limit: int = 500,
-                       verbose: bool = True) -> Tuple[Optional[pd.DataFrame], str]:
+                       verbose: bool = True) -> tuple[pd.DataFrame | None, str]:
     """
     Récupère de VRAIES bougies horaires (open/high/low/close/volume) pour le
     symbole demandé (pagination incluse). Essaie OKX -> Coinbase -> Kraken ->

@@ -15,7 +15,6 @@ Ce module :
 """
 import logging
 import time
-from typing import Dict, List, Optional
 
 from core.config import settings
 
@@ -30,10 +29,10 @@ class CostAccounting:
     """Trace les coûts réels par trade et le coût de portage."""
 
     def __init__(self):
-        self.trade_costs: List[dict] = []      # détail par trade
-        self.carry_cost: Dict[str, float] = {} # coût de portage par symbole
+        self.trade_costs: list[dict] = []      # détail par trade
+        self.carry_cost: dict[str, float] = {} # coût de portage par symbole
         self.total_costs_usd: float = 0.0
-        self._carry_log: List[dict] = []
+        self._carry_log: list[dict] = []
 
     # ------------------------------------------------------------------ #
     # 1. COÛT TOTAL PAR TRADE
@@ -77,7 +76,7 @@ class CostAccounting:
     # 2. COÛT DE PORTAGE (FUNDING) DES POSITIONS TENUES
     # ------------------------------------------------------------------ #
     def record_carry_cost(self, symbol: str, position_notional_usd: float,
-                          funding_rate_8h: Optional[float],
+                          funding_rate_8h: float | None,
                           hold_hours: float = 8.0) -> float:
         """
         Coût de portage : pour une position tenue, le funding (perp) est un
@@ -102,7 +101,7 @@ class CostAccounting:
         return signed
 
     def apply_funding_to_position(self, symbol: str, position_qty: float,
-                                  price: float, funding_rate_8h: Optional[float]) -> float:
+                                  price: float, funding_rate_8h: float | None) -> float:
         """Applique le funding au ledger (position tenue depuis le dernier tick)."""
         notional = abs(position_qty) * price
         return self.record_carry_cost(symbol, notional, funding_rate_8h, hold_hours=8.0)
@@ -124,5 +123,5 @@ class CostAccounting:
                              / len(self.trade_costs) if self.trade_costs else 0.0),
         }
 
-    def recent_costs(self, limit: int = 20) -> List[dict]:
+    def recent_costs(self, limit: int = 20) -> list[dict]:
         return self.trade_costs[-limit:]

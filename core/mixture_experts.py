@@ -8,8 +8,6 @@ VISION §2 - APPRENDRE: a cognitive architecture instead of one agent.
 - curriculum: sort training samples by volatility (calm first, then volatile)
 """
 import logging
-import time
-from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -27,7 +25,7 @@ class HorizonExpert:
         self.horizon = horizon
         self.lookback = lookback
         self.agent = PPOTRAgent(state_dim=state_dim, action_dim=1, hidden_dim=16)
-        self.buffer: List[dict] = []
+        self.buffer: list[dict] = []
         self.max_buffer = 2000
 
     def collect(self, state, action, logp, reward, next_state, terminal=False):
@@ -38,7 +36,7 @@ class HorizonExpert:
         if len(self.buffer) > self.max_buffer:
             self.buffer = self.buffer[-self.max_buffer:]
 
-    def train_offline(self, samples: List[dict]) -> int:
+    def train_offline(self, samples: list[dict]) -> int:
         """Trains on a list of (state, action, logp, reward, next) samples."""
         if len(samples) < 30:
             return 0
@@ -100,7 +98,7 @@ class MixtureOfExperts:
                     f"(contribution PnL {contrib*100:.2f}% sur {n} trades)")
         return newly_sleeping
 
-    def expert_contribution_report(self) -> Dict:
+    def expert_contribution_report(self) -> dict:
         """Rapport de contribution pour la télémétrie / l'audit."""
         return {
             h: {
@@ -111,7 +109,7 @@ class MixtureOfExperts:
             for h in HORIZONS
         }
 
-    def gate(self, regime_id: int, vol_mean: float) -> Dict[str, float]:
+    def gate(self, regime_id: int, vol_mean: float) -> dict[str, float]:
         """
         Soft gating conditioned on regime + volatility (VISION §2a).
         Bull/calm -> swing/position; erratic/high-vol -> scalping.
@@ -168,7 +166,7 @@ def risk_adjusted_reward(actual_return: float, action: float, equity_history: li
     return float(np.clip(r, -1.0, 1.0))
 
 
-def curriculum_sort(samples: List[dict], vol_key: str = "vol") -> List[dict]:
+def curriculum_sort(samples: list[dict], vol_key: str = "vol") -> list[dict]:
     """VISION §2d: order samples by volatility, calm first, then volatile."""
     if not samples:
         return samples

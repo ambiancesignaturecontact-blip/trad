@@ -12,10 +12,10 @@ qu'un passe-plat vers l'implémentation réelle : tout import de
 `market_data.macro_calendar` reçoit le moteur RÉEL, jamais l'ancien code.
 À supprimer quand aucun import ne subsistera.
 """
+from models.macro_calendar import *  # noqa: F401,F403
 from models.macro_calendar import (  # noqa: F401
-    MacroeconomicCalendarEngine,
-    IMPACT_REDUCTION,
     EVENT_ACTIVE_WINDOW,
     EVENT_AFTERMATH_WINDOW,
+    IMPACT_REDUCTION,
+    MacroeconomicCalendarEngine,
 )
-from models.macro_calendar import *  # noqa: F401,F403

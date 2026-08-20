@@ -10,14 +10,12 @@ Vérifie :
  5. Endpoints /api/v1/news et /api/v1/macro/override
  6. NEWS_SHOCK_HALT_MINUTES branché (durée du HALT pilotable)
 """
-import json
 import time
 
 import pytest
 
-from models.macro_calendar import (MacroeconomicCalendarEngine, EVENT_ACTIVE_WINDOW,
-                                   EVENT_AFTERMATH_WINDOW, PHASE_FACTORS)
-from models.sentiment_analyzer import NewsSentimentAnalyzer, SOURCE_WEIGHTS, INTENSIFIERS
+from models.macro_calendar import PHASE_FACTORS, MacroeconomicCalendarEngine
+from models.sentiment_analyzer import INTENSIFIERS, SOURCE_WEIGHTS, NewsSentimentAnalyzer
 
 
 # --------------------------------------------------------------------------- #
@@ -162,8 +160,9 @@ class TestMainIntegration:
 
     def test_macro_override_reduce(self):
         """POST /api/v1/macro/override (reduce) via TestClient."""
-        import main
         from fastapi.testclient import TestClient
+
+        import main
         from main import app
         with TestClient(app) as c:
             r = c.post("/api/v1/macro/override",
@@ -180,7 +179,8 @@ class TestMainIntegration:
 
     def test_macro_override_halt(self):
         from fastapi.testclient import TestClient
-        from main import app, risk_state, RiskStateMachine
+
+        from main import RiskStateMachine, app, risk_state
         with TestClient(app) as c:
             r = c.post("/api/v1/macro/override", json={"action": "halt"})
             assert r.json()["ok"] is True
@@ -190,6 +190,7 @@ class TestMainIntegration:
 
     def test_news_endpoint(self):
         from fastapi.testclient import TestClient
+
         from main import app
         with TestClient(app) as c:
             r = c.get("/api/v1/news")

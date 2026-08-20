@@ -1,11 +1,12 @@
-import os
-import jwt
-import bcrypt
-import pyotp
-import time
 import logging
-from fastapi import HTTPException, Security, Depends
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+import os
+import time
+
+import bcrypt
+import jwt
+import pyotp
+from fastapi import Depends, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 
 logger = logging.getLogger("Auth")
 
@@ -116,12 +117,12 @@ class RBACPermissionChecker:
 
     def __call__(self, user: dict = Depends(get_current_user)):
         user_role = user.get("role", Roles.VIEWER)
-        
+
         user_level = Roles.HIERARCHY.get(user_role, 1)
         required_level = Roles.HIERARCHY.get(self.required_role, 5)
-        
+
         if user_level < required_level:
             logger.warning(f"RBAC Refused: User {user.get('username')} ({user_role}) lacks permission for {self.required_role} protected endpoint.")
             raise HTTPException(status_code=403, detail="Access denied. Insufficient role permissions.")
-            
+
         return user

@@ -8,10 +8,10 @@ import numpy as np
 import pandas as pd
 
 from backtester.engine import EventDrivenBacktester
-from models.regime_detector import MarketRegimeDetector
 from models.price_predictor import LSTMLikePredictor, PPOTRAgent
-from strategies.engine import TrendFollowingStrategy, MetaAllocationEngine
+from models.regime_detector import MarketRegimeDetector
 from risk.risk_manager import RiskManager
+from strategies.engine import MetaAllocationEngine, TrendFollowingStrategy
 
 
 def _make_bars(n=300, seed=42):

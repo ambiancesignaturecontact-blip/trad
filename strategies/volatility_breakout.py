@@ -3,7 +3,9 @@ Volatility Breakout Strategy - Nouvelle stratégie ajoutée (LOT 7)
 """
 import numpy as np
 import pandas as pd
+
 from strategies.engine import BaseStrategy
+
 
 class VolatilityBreakoutStrategy(BaseStrategy):
     """
@@ -33,8 +35,8 @@ class VolatilityBreakoutStrategy(BaseStrategy):
         low = df['low'].values
 
         # ATR
-        tr = np.maximum(high[1:] - low[1:], 
-                        np.maximum(np.abs(high[1:] - close[:-1]), 
+        tr = np.maximum(high[1:] - low[1:],
+                        np.maximum(np.abs(high[1:] - close[:-1]),
                                    np.abs(low[1:] - close[:-1])))
         atr = pd.Series(tr).rolling(self.params['atr_period']).mean().iloc[-1]
 

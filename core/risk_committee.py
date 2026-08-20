@@ -8,14 +8,13 @@ VISION §6 - SE PROTÉGER: an AI risk committee with veto power.
 - dynamic risk budget recalibrated from realized vol + stress scenarios
 """
 import logging
-from typing import Dict, List, Optional
 
 import numpy as np
 
 logger = logging.getLogger("RiskCommittee")
 
 
-def strategy_risk_score(strategy: str, recent_returns: List[float],
+def strategy_risk_score(strategy: str, recent_returns: list[float],
                         correlation: float, drawdown: float,
                         max_vol: float = 0.02) -> float:
     """
@@ -34,10 +33,10 @@ class RiskCommittee:
 
     def __init__(self, veto_threshold: float = 0.85):
         self.veto_threshold = veto_threshold
-        self.vetoed: Dict[str, float] = {}     # strategy -> score at veto
-        self.scores: Dict[str, float] = {}
+        self.vetoed: dict[str, float] = {}     # strategy -> score at veto
+        self.scores: dict[str, float] = {}
 
-    def evaluate(self, meta_engine, state: dict) -> List[dict]:
+    def evaluate(self, meta_engine, state: dict) -> list[dict]:
         """Scores each strategy from REAL recent performance; vetoes the worst."""
         actions = []
         for strat in getattr(meta_engine, "strategies", []):
@@ -68,9 +67,9 @@ class RiskCommittee:
         return {"veto_threshold": self.veto_threshold, "vetoed": self.vetoed, "scores": self.scores}
 
 
-def daily_risk_budget(strategy_returns: Dict[str, List[float]],
+def daily_risk_budget(strategy_returns: dict[str, list[float]],
                       stress_correlation: float = 0.5,
-                      min_weight: float = 0.02, max_weight: float = 0.35) -> Dict[str, float]:
+                      min_weight: float = 0.02, max_weight: float = 0.35) -> dict[str, float]:
     """
     VISION §6b/c: dynamic risk budget = inverse-vol weights, dampened when the
     stress correlation is high (positions become one big bet in a crisis).

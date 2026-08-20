@@ -3,10 +3,9 @@ Unified Dynamic Risk Management Layer (LOT 35)
 Central engine that applies ALL risk constraints in one place.
 This is the "brain" of institutional risk management.
 """
-import numpy as np
-import pandas as pd
 import logging
-from typing import Dict, Tuple
+
+import pandas as pd
 
 logger = logging.getLogger("UnifiedRisk")
 
@@ -22,8 +21,8 @@ class UnifiedRiskManager:
     6. Strategy Correlation Hedging
     7. On-Chain Alpha Filter
     """
-    
-    def __init__(self, 
+
+    def __init__(self,
                  regime_switcher,
                  mtf_consensus,
                  meta_labeling,
@@ -31,7 +30,7 @@ class UnifiedRiskManager:
                  cvar_optimizer,
                  correlation_risk,
                  onchain_tracker):
-        
+
         self.regime_switcher = regime_switcher
         self.mtf_consensus = mtf_consensus
         self.meta_labeling = meta_labeling
@@ -40,7 +39,7 @@ class UnifiedRiskManager:
         self.correlation_risk = correlation_risk
         self.onchain_tracker = onchain_tracker
 
-    def apply_all_risk_filters(self, 
+    def apply_all_risk_filters(self,
                                symbol: str,
                                base_signal: float,
                                current_price: float,
@@ -51,7 +50,7 @@ class UnifiedRiskManager:
                                returns_dict: dict,
                                corr_matrix: pd.DataFrame,
                                onchain_risk: float,
-                               db) -> Tuple[float, Dict]:
+                               db) -> tuple[float, dict]:
         """
         Applies all risk layers sequentially.
         Returns (final_signal, risk_report)
@@ -67,7 +66,7 @@ class UnifiedRiskManager:
         mtf = self.mtf_consensus.check_consensus(symbol, current_price, signal, db)
         signal = mtf["adjusted_signal"]
         report["layers"].append({
-            "layer": "Multi-Timeframe", 
+            "layer": "Multi-Timeframe",
             "signal": round(signal, 3),
             "consensus": mtf["consensus_score"]
         })
@@ -84,7 +83,7 @@ class UnifiedRiskManager:
             if quality < 0.35:
                 signal *= 0.3
             report["layers"].append({
-                "layer": "Meta-Labeling", 
+                "layer": "Meta-Labeling",
                 "signal": round(signal, 3),
                 "quality": round(quality, 2)
             })
@@ -93,7 +92,7 @@ class UnifiedRiskManager:
         kelly_mult = self.kelly_sizer.get_position_size_multiplier(strategy_name, recent_scores, regime_id)
         signal *= kelly_mult
         report["layers"].append({
-            "layer": "Kelly Sizing", 
+            "layer": "Kelly Sizing",
             "signal": round(signal, 3),
             "kelly_mult": round(kelly_mult, 2)
         })
@@ -104,11 +103,11 @@ class UnifiedRiskManager:
             cvar_mult = self.cvar_optimizer.get_cvar_constrained_size(current_cvar, 1.0, symbol)
             signal *= cvar_mult
             report["layers"].append({
-                "layer": "CVaR Constraint", 
+                "layer": "CVaR Constraint",
                 "signal": round(signal, 3),
                 "cvar": round(current_cvar, 4)
             })
-        except:
+        except Exception:
             pass
 
         # 6. Strategy Correlation Hedging
@@ -117,11 +116,11 @@ class UnifiedRiskManager:
             corr_mult = self.correlation_risk.get_hedging_multiplier(avg_corr)
             signal *= corr_mult
             report["layers"].append({
-                "layer": "Correlation Hedging", 
+                "layer": "Correlation Hedging",
                 "signal": round(signal, 3),
                 "avg_corr": round(avg_corr, 2)
             })
-        except:
+        except Exception:
             pass
 
         # 7. On-Chain Alpha Filter
@@ -130,7 +129,7 @@ class UnifiedRiskManager:
         elif onchain_risk < 0.32:
             signal *= 1.15
         report["layers"].append({
-            "layer": "On-Chain Alpha", 
+            "layer": "On-Chain Alpha",
             "signal": round(signal, 3),
             "onchain_risk": round(onchain_risk, 2)
         })

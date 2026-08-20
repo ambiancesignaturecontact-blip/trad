@@ -17,8 +17,6 @@ Ce fichier VERROUILLE mécaniquement la règle, exécuté à chaque CI.
 import ast
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -152,8 +150,9 @@ def test_factor_collection_block_avoids_educational_engines():
 # --------------------------------------------------------------------------- #
 
 def test_telemetry_exposes_educational_rule():
-    import main
     from fastapi.testclient import TestClient
+
+    import main
     with TestClient(main.app) as c:
         r = c.get("/api/telemetry")
         assert r.status_code == 200
@@ -169,6 +168,63 @@ def test_apply_risk_pipeline_still_accepts_rlhf_scale_param():
     """Le paramètre rlhf_scale reste dans la signature (compat) mais main
     passe 1.0 — la mécanique du pipeline est inchangée."""
     import inspect
+
     from core.risk_pipeline import apply_risk_pipeline
     sig = inspect.signature(apply_risk_pipeline)
     assert "rlhf_scale" in sig.parameters
+
+
+# --------------------------------------------------------------------------- #
+# 4. Régression : le warning MLOps (int('') sur get_setting) ne revient pas
+# --------------------------------------------------------------------------- #
+
+class _RealisticDB:
+    """Fake qui imite la VRAIE signature de DBManager.get_setting :
+    (key, user_id=1, decrypt=False) avec int(user_id) — c'est ce qui
+    déclenchait 'invalid literal for int() with base 10: \'\' quand un
+    appel passait un 'défaut' non numérique en 2e position."""
+
+    def __init__(self):
+        self.s = {}
+
+    def get_setting(self, key, user_id=1, decrypt=False):
+        return self.s.get(key, "")
+
+    def save_setting(self, key, value, user_id=1, encrypt=False):
+        self.s[key] = value
+
+    def add_audit_log(self, *a, **k):
+        pass
+
+
+def test_deploy_mlops_no_int_error_with_realistic_db(caplog):
+    """P2-limite : deploy_challenger_if_beats_champion ne doit plus lever
+    'invalid literal for int() with base 10' quand la DB n'a pas de valeur
+    (le 2e argument de get_setting était passé comme user_id)."""
+    import logging
+
+    import pandas as pd
+
+    from models.mlops_pipeline import MLOpsAutoTrainer
+    from models.price_predictor import LSTMLikePredictor
+    from models.regime_detector import MarketRegimeDetector
+
+    caplog.set_level(logging.WARNING, logger="MLOpsPipeline")
+    trainer = MLOpsAutoTrainer(MarketRegimeDetector(), LSTMLikePredictor(),
+                               _RealisticDB())
+    df = pd.DataFrame({"close": [1.0] * 60, "high": [1.0] * 60,
+                       "low": [1.0] * 60, "open": [1.0] * 60,
+                       "volume": [1.0] * 60})
+    # ne doit PAS logger le warning (ni lever)
+    res = trainer.deploy_challenger_if_beats_champion(df, "lstm", 5.78)
+    assert res in (True, False)
+    assert "Challenger/champion comparison failed" not in caplog.text
+
+
+def test_mlops_does_not_pass_default_to_get_setting():
+    """Les appels get_setting de deploy ne passent plus de 'défaut' en 2e
+    position (le bug int(''))."""
+    src = (ROOT / "models" / "mlops_pipeline.py").read_text(encoding="utf-8")
+    assert 'get_setting("mlops_n_trials")' in src
+    assert 'get_setting(champion_key)' in src
+    assert 'get_setting(champion_key, ""' not in src

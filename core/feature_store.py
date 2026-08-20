@@ -3,14 +3,13 @@ LOT 48+: Robust Feature Store with Versioning
 Professional-grade feature management for trading.
 """
 
-import pandas as pd
-import numpy as np
-from typing import Dict, List, Optional, Any
-from datetime import datetime
-import logging
 import json
+import logging
 import os
 from collections import defaultdict
+from datetime import datetime
+
+import pandas as pd
 
 logger = logging.getLogger("RobustFeatureStore")
 
@@ -21,15 +20,15 @@ class FeatureStore:
 
     def __init__(self, storage_path: str = "feature_store.json"):
         self.storage_path = storage_path
-        self.features: Dict[str, Dict] = {}           # symbol -> {version: features}
-        self.metadata: Dict[str, Dict] = {}           # symbol -> {version: metadata}
-        self.versions: Dict[str, List[str]] = defaultdict(list)
+        self.features: dict[str, dict] = {}           # symbol -> {version: features}
+        self.metadata: dict[str, dict] = {}           # symbol -> {version: metadata}
+        self.versions: dict[str, list[str]] = defaultdict(list)
         self._load()
 
     def _load(self):
         if os.path.exists(self.storage_path):
             try:
-                with open(self.storage_path, "r") as f:
+                with open(self.storage_path) as f:
                     data = json.load(f)
                     self.features = data.get("features", {})
                     self.metadata = data.get("metadata", {})
@@ -51,7 +50,7 @@ class FeatureStore:
         except Exception as e:
             logger.error(f"Failed to save Feature Store: {e}")
 
-    def compute_features(self, symbol: str, df: pd.DataFrame, version: str = "v1.0") -> Dict:
+    def compute_features(self, symbol: str, df: pd.DataFrame, version: str = "v1.0") -> dict:
         """Compute and store features with versioning."""
         if df.empty or len(df) < 20:
             return {}
@@ -108,7 +107,7 @@ class FeatureStore:
         tr = pd.concat([tr1, tr2, tr3], axis=1).max(axis=1)
         return tr.rolling(period).mean().iloc[-1]
 
-    def get_features(self, symbol: str, version: Optional[str] = None) -> Optional[Dict]:
+    def get_features(self, symbol: str, version: str | None = None) -> dict | None:
         """Get features. If version is None, returns latest version."""
         if symbol not in self.features:
             return None
@@ -122,7 +121,7 @@ class FeatureStore:
 
         return self.features.get(symbol, {}).get(version)
 
-    def get_metadata(self, symbol: str, version: Optional[str] = None) -> Optional[Dict]:
+    def get_metadata(self, symbol: str, version: str | None = None) -> dict | None:
         if symbol not in self.metadata:
             return None
         if version is None:
@@ -132,10 +131,10 @@ class FeatureStore:
             version = versions[-1]
         return self.metadata.get(symbol, {}).get(version)
 
-    def list_versions(self, symbol: str) -> List[str]:
+    def list_versions(self, symbol: str) -> list[str]:
         return self.versions.get(symbol, [])
 
-    def get_status(self) -> Dict:
+    def get_status(self) -> dict:
         return {
             "symbols": list(self.features.keys()),
             "total_symbols": len(self.features),

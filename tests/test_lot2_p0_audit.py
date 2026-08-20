@@ -8,7 +8,7 @@ P0-5 : tous les scripts/backtests utilisent la MÊME archi LSTM que le live
        (hidden_dim=24) et le même garde-fou anti-biais (audit_backtest avec
        rejet) que l'endpoint /api/run-backtest (audit §4.9).
 """
-import os
+from datetime import UTC
 from pathlib import Path
 
 import numpy as np
@@ -17,7 +17,6 @@ import pytest
 from fastapi.testclient import TestClient
 
 import main
-
 
 # ---------------------------------------------------------------- P0-5 ----
 
@@ -376,8 +375,8 @@ def test_paper_validation_marks_only_real_runtime(monkeypatch):
     stats = main._paper_validation_stats()
     assert stats["active_days"] == 1
     # le jour marqué est bien le jour UTC courant
-    from datetime import datetime, timezone
-    assert stats["days"][0] == datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    from datetime import datetime
+    assert stats["days"][0] == datetime.now(UTC).strftime("%Y-%m-%d")
 
 
 def test_paper_validation_streak_and_validation(monkeypatch):
@@ -470,6 +469,7 @@ def test_vpin_bounded_01_on_real_bars():
     rester une probabilité bornée [0,1] — plus jamais 6 988 465."""
     import numpy as np
     import pandas as pd
+
     from models.microstructure_edge import MicrostructureEdgeEngine
 
     n = 120
@@ -485,8 +485,9 @@ def test_vpin_bounded_01_on_real_bars():
 
 
 def test_vpin_neutral_on_empty_or_zero_volume():
-    from models.microstructure_edge import MicrostructureEdgeEngine
     import pandas as pd
+
+    from models.microstructure_edge import MicrostructureEdgeEngine
     eng = MicrostructureEdgeEngine()
     assert eng.calculate_vpin(pd.DataFrame()) == 0.5
     df = pd.DataFrame({"close": [1.0, 1.0], "volume": [0.0, 0.0]})
@@ -544,7 +545,7 @@ def test_final_scale_persists_every_5min(monkeypatch):
 def test_floor_prevents_cumulative_self_strangulation():
     """P0-4 : le produit de 17 facteurs prudents est plafonné à 15 % — le
     correctif de la chaîne identifié par l'audit (0.8^15 ≈ 3,5 %)."""
-    from core.risk_pipeline import apply_risk_pipeline, FINAL_SCALE_FLOOR
+    from core.risk_pipeline import FINAL_SCALE_FLOOR, apply_risk_pipeline
     res = apply_risk_pipeline(
         base_qty=1000.0, cvar_qty=1e9, max_asset_qty=1e9, conviction=0.8,
         risk_state_scale=0.8, news_scale=0.8, macro_scale=0.8, onchain_scale=0.8,

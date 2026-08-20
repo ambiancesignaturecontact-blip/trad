@@ -9,7 +9,6 @@ Composite index that makes the bot distrust itself when it should:
 When the index falls below a threshold, the bot AUTOMATICALLY shrinks sizes.
 """
 import logging
-from typing import Dict, List
 
 import numpy as np
 
@@ -18,7 +17,7 @@ logger = logging.getLogger("ConfidenceIndex")
 
 def compute_confidence_index(sim_divergence: float, p_value: float,
                              data_quality: str, slippage_trust: float = 1.0,
-                             base: float = 100.0) -> Dict:
+                             base: float = 100.0) -> dict:
     """
     Returns {index (0..100), factor (size multiplier 0.3..1.0), reasons}.
     """

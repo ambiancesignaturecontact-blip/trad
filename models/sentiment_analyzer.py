@@ -1,9 +1,8 @@
-import re
-import urllib.parse
-import httpx
-import logging
-import random
 import asyncio
+import logging
+import re
+
+import httpx
 
 logger = logging.getLogger("SentimentAnalyzer")
 
@@ -24,7 +23,7 @@ INTENSIFIERS = {
     "massive": 1.5, "huge": 1.4, "major": 1.3, "sharp": 1.3, "dramatic": 1.3,
     "extreme": 1.3, "collapse": 1.4, "plunge": 1.3, "surge": 1.3, "soar": 1.3,
     "slump": 1.3, "tank": 1.3, "crisis": 1.4, "stunning": 1.3, "epic": 1.3,
-    "massive": 1.5, "panic": 1.3,
+    "panic": 1.3,
 }
 
 class NewsSentimentAnalyzer:
@@ -46,10 +45,10 @@ class NewsSentimentAnalyzer:
             "panic": -0.8, "fud": -0.7, "selloff": -0.7, "collapse": -0.9,
             "illegal": -0.6, "insolvency": -0.9, "bankruptcy": -0.9
         }
-        
+
         # Negation modifiers that invert the sentiment of the following word
         self.negations = ["not", "no", "never", "avoided", "prevented", "rejected", "deny", "denies", "false", "without"]
-        
+
         # High-impact emergency shock tokens (trigger instant risk limits reduction)
         self.shock_tokens = {
             "hack": "SECURITY_HACK_ALERT",
@@ -185,20 +184,20 @@ class NewsSentimentAnalyzer:
         """
         cleaned = re.sub(r'[^a-zA-Z\s]', '', text.lower())
         words = cleaned.split()
-        
+
         score = 0.0
         match_count = 0
         negate_next = False
-        
+
         for idx, word in enumerate(words):
             # Check if this word is a negation modifier
             if word in self.negations:
                 negate_next = True
                 continue
-                
+
             if word in self.lexicon:
                 base_sentiment = self.lexicon[word]
-                
+
                 # Négation à distance BIDIRECTIONNELLE (LOT 5, PDF Pilier I) :
                 #  - avant : "reports say no crash" (négation dans les 3 mots précédents)
                 #  - après : "crash avoided" (négation post-posée, typique anglais)
@@ -213,7 +212,7 @@ class NewsSentimentAnalyzer:
                     # Invert and scale down slightly for semantic naturalness
                     base_sentiment = -base_sentiment * 0.9
                     negate_next = False
-                
+
                 # Intensificateur : amplifier si un mot fort précède (borné 1.0-2.0)
                 multiplier = 1.0
                 for j in range(max(0, idx - 2), idx):
@@ -221,10 +220,10 @@ class NewsSentimentAnalyzer:
                         multiplier = max(1.0, min(2.0, INTENSIFIERS[words[j]]))
                         break
                 base_sentiment *= multiplier
-                    
+
                 score += base_sentiment
                 match_count += 1
-                
+
         if match_count == 0:
             return 0.0
         return max(-1.0, min(1.0, score / match_count))
@@ -238,7 +237,7 @@ class NewsSentimentAnalyzer:
         for h in headlines:
             cleaned = re.sub(r'[^a-zA-Z\s]', '', h.lower())
             words = cleaned.split()
-            
+
             for word in words:
                 if word in self.shock_tokens:
                     alert_type = self.shock_tokens[word]
@@ -249,7 +248,7 @@ class NewsSentimentAnalyzer:
                         "alert_type": alert_type,
                         "headline": h
                     }
-                    
+
         return {"shock_detected": False}
 
     async def get_market_sentiment_index(self) -> dict:

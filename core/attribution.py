@@ -15,7 +15,6 @@ Le tout alimente le rapport quotidien et le dashboard (mentalité n°9 :
 tout doit être traçable).
 """
 import logging
-from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -42,8 +41,8 @@ STRATEGY_FACTOR = {
 # --------------------------------------------------------------------------- #
 # 1. MÉTRIQUES DE QUALITÉ
 # --------------------------------------------------------------------------- #
-def quality_metrics(equity_curve: List[float],
-                    trades: Optional[List[dict]] = None,
+def quality_metrics(equity_curve: list[float],
+                    trades: list[dict] | None = None,
                     periods_per_year: float = 365.0) -> dict:
     """
     Métriques institutionnelles depuis la courbe d'équité :
@@ -114,7 +113,7 @@ class PerformanceAttribution:
     """Attribue chaque trade clôturé à son facteur, régime, actif et stratégie."""
 
     def __init__(self):
-        self.trades: List[dict] = []
+        self.trades: list[dict] = []
 
     def record(self, symbol: str, strategy: str, pnl_pct: float,
                regime_name: str = "", pnl_usd: float = 0.0) -> None:
@@ -128,9 +127,9 @@ class PerformanceAttribution:
         if len(self.trades) > 2000:
             self.trades = self.trades[-2000:]
 
-    def by_factor(self) -> Dict[str, dict]:
+    def by_factor(self) -> dict[str, dict]:
         """PnL par FACTEUR (market/momentum/carry/vol/meanrev)."""
-        out: Dict[str, dict] = {}
+        out: dict[str, dict] = {}
         for t in self.trades:
             f = t["factor"]
             s = out.setdefault(f, {"pnl_pct": 0.0, "n": 0, "wins": 0})
@@ -143,9 +142,9 @@ class PerformanceAttribution:
             s["pnl_pct"] = round(s["pnl_pct"], 4)
         return out
 
-    def by_regime(self) -> Dict[str, dict]:
+    def by_regime(self) -> dict[str, dict]:
         """PnL par RÉGIME de marché (haussier, baissier, range, erratique)."""
-        out: Dict[str, dict] = {}
+        out: dict[str, dict] = {}
         for t in self.trades:
             r = t["regime"]
             s = out.setdefault(r, {"pnl_pct": 0.0, "n": 0})
@@ -155,8 +154,8 @@ class PerformanceAttribution:
             s["pnl_pct"] = round(s["pnl_pct"], 4)
         return out
 
-    def by_asset(self) -> Dict[str, dict]:
-        out: Dict[str, dict] = {}
+    def by_asset(self) -> dict[str, dict]:
+        out: dict[str, dict] = {}
         for t in self.trades:
             a = t["symbol"]
             s = out.setdefault(a, {"pnl_pct": 0.0, "n": 0, "wins": 0})
@@ -169,8 +168,8 @@ class PerformanceAttribution:
             s["pnl_pct"] = round(s["pnl_pct"], 4)
         return out
 
-    def by_strategy(self) -> Dict[str, dict]:
-        out: Dict[str, dict] = {}
+    def by_strategy(self) -> dict[str, dict]:
+        out: dict[str, dict] = {}
         for t in self.trades:
             st = t["strategy"]
             s = out.setdefault(st, {"pnl_pct": 0.0, "n": 0, "wins": 0})

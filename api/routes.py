@@ -6,22 +6,31 @@ deviennent @router.X. Les symboles partagés viennent de main via
 en fin de main.py). Étape 1 du découpage : sortir le code, pas encore
 refactorer les dépendances.
 """
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse, JSONResponse, Response
-from fastapi.staticfiles import StaticFiles
-from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, Field, field_validator
-from typing import List, Dict
-import json
 import os
 import time
-import asyncio
+
 import numpy as np
 import pandas as pd
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import HTMLResponse, JSONResponse, Response
 
 import main  # noqa: F401  (le module est complet au moment de cet import)
+from core.llm_narrative import answer_question_async, daily_market_narrative_async  # noqa: F401
+from core.module_honesty import get_module_status, status_summary  # noqa: F401
 from main import *  # noqa: F401,F403  (symboles partagés, étape 1 du découpage)
-from main import _alerts_persist, _final_scale_report, _final_scale_stats, _limiting_factor_stats, _load_final_scale_samples, _mark_paper_validation_day, _neutral, _paper_validation_stats, _signal_stats  # noqa: F401
+from main import (  # noqa: F401
+    _alerts_persist,
+    _final_scale_report,
+    _final_scale_stats,
+    _limiting_factor_stats,
+    _load_final_scale_samples,
+    _mark_paper_validation_day,
+    _neutral,
+    _paper_validation_stats,
+    _signal_stats,
+)
+from models.sentiment_analyzer import SOURCE_WEIGHTS as SOURCE_WEIGHTS_REF  # noqa: F401
+from telemetry import compile_telemetry_data, serialize_helper  # noqa: F401
 
 router = APIRouter()
 
@@ -218,7 +227,6 @@ async def api_events(event_type: str = "", since: float = 0.0, limit: int = 200)
 @router.get("/api/v1/ab")
 async def api_ab(_auth: dict = Depends(require_auth)):
     """VISION §7.5: A/B paper comparison (baseline vs vol-targeted config)."""
-    import math
     base, vol = STATE.get("ab_base", []), STATE.get("ab_vol", [])
     if len(base) < 10 or len(vol) < 10:
         return {"valid": False, "reason": "insufficient samples", "samples": len(base)}
@@ -435,7 +443,7 @@ async def webhook_trade(payload: WebhookTradeRequest):
     qty = format_exchange_size(symbol, qty, price)
 
     try:
-        res = submit_order_via_oms(symbol, side, qty, price, mode, "WEBHOOK",
+        submit_order_via_oms(symbol, side, qty, price, mode, "WEBHOOK",
                                    exchange="Binance" if symbol in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit")
     except Exception as e:
         raise HTTPException(status_code=502, detail=f"Order submission failed: {e}")
@@ -525,13 +533,13 @@ async def get_history_endpoint(timeframe: str = "1h", limit: int = 120, offset: 
     valid_timeframes = ["1h", "4h", "1d"]
     if timeframe not in valid_timeframes:
         timeframe = "1h"
-        
+
     interval = "1h" if timeframe == "1h" else "4h" if timeframe == "4h" else "1d"
-    
+
     # Check persistent database cache
     cache_symbol = f"BTCUSDT_{timeframe}"
     df = db.load_candles(cache_symbol, limit=120)
-    
+
     if df.empty or len(df) < 120:
         # Fetch from Binance API
         url = f"https://api.binance.com/api/v3/klines?symbol=BTCUSDT&interval={interval}&limit=120"
@@ -566,11 +574,11 @@ async def get_history_endpoint(timeframe: str = "1h", limit: int = 120, offset: 
                     db.save_candles(cache_symbol, df)
             except Exception as e:
                 logger.warning(f"Yahoo Finance fallback failed for {timeframe}: {str(e)}")
-            
+
     if df.empty:
         logger.error(f"Failed to load historical candles for {timeframe}. No database or CEX feed active.")
         raise HTTPException(status_code=503, detail="Historical market data currently unavailable.")
-        
+
     prices = df['close'].values.tolist()
     timestamps = [str(t) for t in df.index]
     limit = max(10, min(1000, limit))
@@ -595,6 +603,7 @@ async def login(payload: LoginRequest):
     Optional TOTP second factor when ADMIN_TOTP_SECRET is set.
     """
     import hmac as _hmac
+
     import bcrypt as _bc
 
     admin_user = os.getenv("ADMIN_USER", "admin")
@@ -646,11 +655,11 @@ async def toggle_strategy(payload: StrategyToggle, _auth: dict = Depends(require
     strategy = next((s for s in strategies_list if s.name == payload.name), None)
     if not strategy:
         raise HTTPException(status_code=404, detail="Strategy not found")
-        
+
     strategy.enabled = payload.enabled
     db.add_audit_log(
-        "STRATEGY_TOGGLED", 
-        audit_ip(), 
+        "STRATEGY_TOGGLED",
+        audit_ip(),
         f"Modified strategy '{payload.name}' enabled status to {payload.enabled}."
     )
     return {"status": "Success", "message": f"Strategy {payload.name} modified to {payload.enabled}"}
@@ -661,8 +670,8 @@ async def toggle_bot(payload: BotToggleRequest, _auth: dict = Depends(require_au
     STATE["is_running"] = payload.is_running
     action_str = "STARTED" if payload.is_running else "PAUSED"
     db.add_audit_log(
-        "BOT_STATE_CHANGED", 
-        audit_ip(), 
+        "BOT_STATE_CHANGED",
+        audit_ip(),
         f"Automated trading loop has been manually {action_str}."
     )
     return {"status": "Success", "message": f"Automated trading loop {action_str} successfully."}
@@ -677,14 +686,14 @@ async def set_demo_balance(payload: SetBalanceRequest, _auth: dict = Depends(req
     STATE["initial_capital_demo"] = payload.balance
     STATE["current_equity"] = payload.balance
     STATE["equity_history_demo"] = [payload.balance]
-    
+
     # Persist in DB setting so it survives server restart and browser refresh!
     db.save_setting("balance_demo", str(payload.balance))
     db.save_setting("initial_capital_demo", str(payload.balance))
-    
+
     db.add_audit_log(
-        "DEMO_BALANCE_RESET", 
-        audit_ip(), 
+        "DEMO_BALANCE_RESET",
+        audit_ip(),
         f"Demo balance has been manually reset to {payload.balance} USD."
     )
     return {"status": "Success", "message": f"Demo balance successfully set to {payload.balance} USD."}
@@ -695,7 +704,7 @@ async def trigger_manual_retrain(_auth: dict = Depends(require_auth)):
     df = STATE["historical_bars"]
     if df is None:
         raise HTTPException(status_code=400, detail="No historical bars cache loaded yet.")
-        
+
     res = mlops_trainer.execute_pipeline(df)
     return JSONResponse(res)
 
@@ -709,24 +718,24 @@ async def trigger_monte_carlo(_auth: dict = Depends(require_auth)):
     df = STATE["historical_bars"]
     if df is None:
         raise HTTPException(status_code=400, detail="No historical data loaded yet.")
-        
+
     current_p = STATE["last_price"]
     if current_p is None:
         raise HTTPException(status_code=400, detail="No live price fetched yet. Please wait for WebSockets synchronization.")
-        
+
     vols = df['close'].pct_change().std()
     res = monte_carlo_tester.execute_stress_test(
         initial_capital=STATE["balance_demo"] if STATE["mode"] == "DEMO" else STATE["balance_real"],
         current_price=current_p,
         historical_volatility=vols if not np.isnan(vols) else 0.02
     )
-    
+
     db.add_audit_log(
         "MONTE_CARLO_TEST_EXECUTED",
         audit_ip(),
         f"Executed 10,000 Monte Carlo stress-testing simulations. Survival rate: {res['survival_probability_pct']:.2f}%."
     )
-    
+
     return JSONResponse(res)
 
 
@@ -734,8 +743,8 @@ async def trigger_monte_carlo(_auth: dict = Depends(require_auth)):
 async def update_risk_settings(payload: RiskSettingsUpdate, _auth: dict = Depends(require_auth)):
     risk_manager.params.update(payload.dict())
     db.add_audit_log(
-        "RISK_SETTINGS_UPDATED", 
-        audit_ip(), 
+        "RISK_SETTINGS_UPDATED",
+        audit_ip(),
         f"Updated Risk thresholds: Max daily drawdown to {payload.max_daily_drawdown_pct*100:.2f}%."
     )
     return {"status": "Success", "message": "Risk management policies updated successfully."}
@@ -747,8 +756,8 @@ async def store_keys(payload: KeyStorage, _auth: dict = Depends(require_auth)):
     db.save_setting(f"{payload.exchange}_api_key", payload.api_key, encrypt=True)
     db.save_setting(f"{payload.exchange}_secret_key", payload.secret_key, encrypt=True)
     db.add_audit_log(
-        "API_KEYS_STORED", 
-        audit_ip(), 
+        "API_KEYS_STORED",
+        audit_ip(),
         f"Stored and encrypted API key pairs for exchange {payload.exchange}."
     )
     return {"status": "Success", "message": f"Encrypted keys stored for {payload.exchange}."}
@@ -779,10 +788,10 @@ async def switch_mode(payload: SwitchModeRequest, _auth: dict = Depends(require_
     if not (is_wallet or is_totp):
         db.add_audit_log("AUTH_FAILURE", audit_ip(), f"Failed 2FA transit attempt to mode {payload.target_mode}.")
         raise HTTPException(status_code=401, detail="Invalid 2FA factor. Security block triggered.")
-        
+
     if payload.target_mode not in ["DEMO", "REAL"]:
         raise HTTPException(status_code=400, detail="Invalid target trading mode.")
-        
+
     if payload.target_mode == "REAL":
         # AUTOPILOT GATE (audit D1): paper validation period must have elapsed
         if settings.get_bool("autopilot", "paper_validation_required", True):
@@ -805,14 +814,14 @@ async def switch_mode(payload: SwitchModeRequest, _auth: dict = Depends(require_
         client = get_ccxt_client()
         if not client:
             raise HTTPException(
-                status_code=400, 
+                status_code=400,
                 detail="Real Mode denied. Please configure valid and active Exchange API Keys in the dashboard first."
             )
-            
+
     STATE["mode"] = payload.target_mode
     db.add_audit_log(
-        "TRADING_MODE_CHANGED", 
-        audit_ip(), 
+        "TRADING_MODE_CHANGED",
+        audit_ip(),
         f"Successfully changed system trading mode to {payload.target_mode} via authorization {payload.verification_2fa[:12]}..."
     )
     return {"status": "Success", "message": f"Platform successfully switched to {payload.target_mode} Mode."}
@@ -959,12 +968,12 @@ async def reset_risk_state(_auth: dict = Depends(require_auth)):
 async def engage_kill_switch(_auth: dict = Depends(require_auth)):
     STATE["kill_switch_active"] = True
     STATE["is_running"] = False
-    
+
     positions = db.get_positions()
     active_mode = STATE["mode"]
     active_balance_key = "balance_demo" if active_mode == "DEMO" else "balance_real"
     client = get_ccxt_client() if active_mode == "REAL" else None
-    
+
     for p in positions:
         try:
             asset_price = STATE["assets"].get(p['symbol'], {}).get("price")
@@ -975,7 +984,7 @@ async def engage_kill_switch(_auth: dict = Depends(require_auth)):
                 continue
             if active_mode == "REAL" and client:
                 client.create_order(symbol=p['symbol'].replace("USDT", "/USDT"), type='market', side='sell', amount=p['qty'])
-                
+
             close_val = p['qty'] * asset_price * 0.999
             STATE[active_balance_key] += close_val
             db.update_position(p['symbol'], 0, 0, active_mode)
@@ -991,7 +1000,7 @@ async def engage_kill_switch(_auth: dict = Depends(require_auth)):
             )
         except Exception as exc:
             logger.error(f"Emergency close failed for {p['symbol']}: {str(exc)}")
-            
+
     db.add_audit_log("KILL_SWITCH_ENGAGED", audit_ip(), "Global KILL SWITCH activated manually. Closed all open exposures.")
     return {"status": "Success", "message": "EMERGENCY GLOBAL KILL SWITCH ENGAGED. All exposures flatted, system locked."}
 
@@ -1010,7 +1019,7 @@ async def run_backtest_handler(_auth: dict = Depends(require_auth)):
     df = STATE["historical_bars"]
     if df is None:
         raise HTTPException(status_code=400, detail="Historical bars not loaded yet.")
-        
+
     # LOT 8 (PDF Pilier N) : AUDIT DES BIAIS avant tout backtest (look-ahead,
     # survivorship, slippage). Un backtest qui échoue à l'audit est REJETÉ.
     try:
@@ -1037,16 +1046,16 @@ async def run_backtest_handler(_auth: dict = Depends(require_auth)):
     # P0-5 (audit §4.9) : même archi que le live (hidden_dim=24).
     local_predictor = LSTMLikePredictor(5, 24)
     local_ppo = PPOTRAgent(4, 1)
-    
+
     split = int(len(df) * 0.6)
     train_slice = df.iloc[:split]
     test_slice = df.iloc[split:]
-    
+
     train_returns = train_slice['close'].pct_change().dropna().values
     train_vols = train_slice['close'].pct_change().rolling(5).std().dropna().values
     min_l = min(len(train_returns), len(train_vols))
     local_detector.fit(np.column_stack((train_returns[-min_l:], train_vols[-min_l:])))
-    
+
     feats = []
     labs = []
     pct_df = train_slice[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0)
@@ -1054,7 +1063,7 @@ async def run_backtest_handler(_auth: dict = Depends(require_auth)):
         feats.append(pct_df.iloc[i-5:i].values)
         labs.append(pct_df['close'].iloc[i])
     local_predictor.fit(feats, np.array(labs))
-    
+
     metrics = backtester.run(
         test_slice,
         meta_engine,

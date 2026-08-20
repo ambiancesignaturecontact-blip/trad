@@ -1,7 +1,8 @@
-import time
 import logging
-from market_data.quality import MarketDataQuality
+import time
+
 from market_data.models import MarketTick
+from market_data.quality import MarketDataQuality
 
 logger = logging.getLogger("DataQualityGate")
 
@@ -38,9 +39,9 @@ class DataQualityGate:
         if not tick or tick.last is None:
             logger.error(f"DATA_GATE: Rejected null tick for {getattr(tick, 'symbol', 'Unknown')}.")
             return False
-            
+
         current_epoch = time.time()
-        
+
         # 1. Freshness Validation (Stale Timeout)
         # Check time elapsed since receipt or tick timestamp
         elapsed_since_receipt = current_epoch - tick.received_at
@@ -48,7 +49,7 @@ class DataQualityGate:
             tick.quality = MarketDataQuality.STALE
             logger.error(f"DATA_GATE: Rejected {tick.symbol} tick. Data is STALE (Elapsed: {elapsed_since_receipt:.1f}s).")
             return False
-            
+
         # 2. Quality Validation based on Trading Mode
         if mode == "REAL":
             # For REAL trading: strictly ONLY 'LIVE' quality is permitted!
@@ -60,5 +61,5 @@ class DataQualityGate:
             if tick.quality not in [MarketDataQuality.LIVE, MarketDataQuality.DELAYED]:
                 logger.error(f"DATA_GATE: Rejected {tick.symbol} tick. Quality is {tick.quality}.")
                 return False
-                
+
         return True

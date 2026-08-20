@@ -64,9 +64,9 @@ class CopyTrader:
 class CopyTradingManager:
     """
     Sovereign Copytrading Manager (Phase 29 & Lot 6).
-    Enforces strict real-world copytrading. If no genuine, verified trader API 
+    Enforces strict real-world copytrading. If no genuine, verified trader API
     or leaderboard feed is active, declares 'UNAVAILABLE' and disables all features.
-    
+
     Strictly forbids any simulated fake profiles or hardcoded performance statistics!
     """
     def __init__(self):
@@ -75,7 +75,7 @@ class CopyTradingManager:
         self.copy_positions = {}
         self.status = "UNAVAILABLE"
         self.status_message = "Real trader data unavailable"
-        
+
         # Try to initialize with actual, real-world copytrading endpoints
         self.refresh_real_copytrader_leaderboard()
 
@@ -222,10 +222,10 @@ class CopyTradingManager:
     def start_copying(self, trader_id: str, allocated_capital: float) -> tuple:
         if self.status == "UNAVAILABLE":
             return False, "Feature Unavailable: Real trader data is offline."
-            
+
         if trader_id not in self.traders:
             return False, "Trader not found."
-            
+
         # AUDIT B13: honest "follow" mode - we TRACK the real trader's live
         # performance against the allocated capital; actual order mirroring
         # requires per-exchange execution keys and is a separate integration.

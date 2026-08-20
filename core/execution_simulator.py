@@ -3,9 +3,9 @@ LOT 49: Realistic Execution Simulator (Slippage + Latency Modeling)
 Used for high-fidelity backtesting of REAL trading conditions.
 """
 
-import numpy as np
 import logging
-from typing import Dict
+
+import numpy as np
 
 logger = logging.getLogger("ExecutionSimulator")
 
@@ -21,7 +21,7 @@ class ExecutionSimulator:
         self.base_slippage_bps = base_slippage_bps      # 5 basis points default
         self.base_latency_ms = base_latency_ms
 
-    def simulate_slippage(self, price: float, side: str, volatility: float, 
+    def simulate_slippage(self, price: float, side: str, volatility: float,
                           liquidity_score: float = 1.0, order_size_pct: float = 0.01) -> float:
         """
         Calculate realistic slippage.
@@ -55,8 +55,8 @@ class ExecutionSimulator:
 
         return round(latency, 1)
 
-    def simulate_execution(self, symbol: str, side: str, expected_price: float, 
-                           quantity: float, market_conditions: Dict) -> Dict:
+    def simulate_execution(self, symbol: str, side: str, expected_price: float,
+                           quantity: float, market_conditions: dict) -> dict:
         """
         Full realistic execution simulation.
         Returns dict with executed_price, latency, slippage, success.

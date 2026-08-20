@@ -8,8 +8,6 @@ VISION §5 - EXÉCUTER: the last mile becomes intelligent.
 - per-strategy execution attribution (slippage by strategy)
 """
 import logging
-import time
-from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -34,8 +32,8 @@ class ExecutionStyleBandit:
         self.min_epsilon = min_epsilon
         self.decay_per_obs = decay_per_obs
         self._n_obs = 0
-        self.counts: Dict[str, Dict[str, int]] = {}
-        self.sums: Dict[str, Dict[str, float]] = {}
+        self.counts: dict[str, dict[str, int]] = {}
+        self.sums: dict[str, dict[str, float]] = {}
 
     def _key(self, symbol: str, vol_regime: str) -> str:
         return f"{symbol}|{vol_regime}"
@@ -90,7 +88,7 @@ class StrategyExecutionAttribution:
     """VISION §5c: slippage by strategy - tells signal vs execution apart."""
 
     def __init__(self):
-        self.by_strategy: Dict[str, Dict] = {}
+        self.by_strategy: dict[str, dict] = {}
 
     def record(self, strategy: str, slippage_bps: float, style: str) -> None:
         s = self.by_strategy.setdefault(strategy, {"n": 0, "sum_bps": 0.0, "last": 0.0})

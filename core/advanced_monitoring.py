@@ -3,11 +3,11 @@ LOT 60: Advanced Monitoring & Auto-Scaling System
 Real-time performance monitoring + automatic risk adjustment + anomaly detection
 """
 
-import numpy as np
 import logging
-from typing import Dict, List, Optional
-from datetime import datetime, timedelta
 from collections import deque
+from datetime import datetime
+
+import numpy as np
 
 logger = logging.getLogger("AdvancedMonitoring")
 
@@ -16,11 +16,11 @@ class AdvancedMonitoringSystem:
     LOT 60: Advanced monitoring with auto-scaling capabilities.
     """
 
-    def __init__(self, 
+    def __init__(self,
                  max_drawdown_threshold: float = 0.08,
                  pnl_drop_threshold: float = 0.15,
                  model_performance_threshold: float = 0.05):
-        
+
         self.max_drawdown_threshold = max_drawdown_threshold
         self.pnl_drop_threshold = pnl_drop_threshold
         self.model_performance_threshold = model_performance_threshold
@@ -30,10 +30,10 @@ class AdvancedMonitoringSystem:
         self.drawdown_history = deque(maxlen=200)
         self.model_performance = {}  # model_name -> deque of scores
 
-        self.alerts: List[Dict] = []
-        self.auto_scaling_actions: List[Dict] = []
+        self.alerts: list[dict] = []
+        self.auto_scaling_actions: list[dict] = []
 
-    def update_equity(self, current_equity: float, timestamp: Optional[datetime] = None):
+    def update_equity(self, current_equity: float, timestamp: datetime | None = None):
         if timestamp is None:
             timestamp = datetime.now()
 
@@ -62,7 +62,7 @@ class AdvancedMonitoringSystem:
             if recent_avg < self.model_performance_threshold:
                 self._trigger_alert("MODEL_UNDERPERFORMING", f"{model_name} avg score: {recent_avg:.3f}")
 
-    def check_anomalies(self, current_pnl: float, current_drawdown: float) -> List[str]:
+    def check_anomalies(self, current_pnl: float, current_drawdown: float) -> list[str]:
         """Detect performance anomalies"""
         anomalies = []
 
@@ -79,7 +79,7 @@ class AdvancedMonitoringSystem:
 
         return anomalies
 
-    def auto_scale_exposure(self, current_exposure: float, anomalies: List[str]) -> float:
+    def auto_scale_exposure(self, current_exposure: float, anomalies: list[str]) -> float:
         """Automatically adjust capital exposure based on risk"""
         new_exposure = current_exposure
 
@@ -118,7 +118,7 @@ class AdvancedMonitoringSystem:
         self.auto_scaling_actions.append(log)
         logger.info(f"[AUTO-SCALING] {action}: {old_value:.2f} → {new_value:.2f} ({reason})")
 
-    def get_status(self) -> Dict:
+    def get_status(self) -> dict:
         return {
             "current_drawdown": list(self.drawdown_history)[-1] if self.drawdown_history else 0,
             "active_alerts": len(self.alerts),

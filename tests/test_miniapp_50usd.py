@@ -8,10 +8,6 @@ Vérifie les 3 problèmes signalés par l'utilisateur :
  3. La mini-app doit permettre de régler le montant du capital DEMO.
 """
 import asyncio
-import inspect
-
-import numpy as np
-import pytest
 
 from fastapi.testclient import TestClient
 
@@ -70,8 +66,8 @@ class TestAssistant:
 class TestMicroBudget50:
     def test_sizing_generates_trade(self):
         """Avec 50 $, le sizing produit un ordre >= min notional (3$)."""
-        from risk.risk_manager import RiskManager
         from core.paper_execution import min_notional_for_capital
+        from risk.risk_manager import RiskManager
         rm = RiskManager()
         # BTC
         qty = rm.calculate_position_size(50.0, 500.0, 64000.0)
@@ -187,6 +183,7 @@ class TestMiniAppComplete:
     def test_endpoints_used_exist(self):
         """Tous les endpoints appelés par la mini-app existent dans main.py."""
         import re
+
         import main
         from test_support import all_api_paths
         routes = set(all_api_paths(main.app))
@@ -252,6 +249,7 @@ class TestUISync:
     def test_all_endpoints_exist(self):
         """Tous les endpoints appelés par les deux interfaces existent."""
         import re
+
         import main
         from test_support import all_api_paths
         routes = set(all_api_paths(main.app))

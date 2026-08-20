@@ -1,13 +1,14 @@
-import sqlite3
 import os
+import sqlite3
 
 from dotenv import load_dotenv
+
 load_dotenv()  # ensure .env is loaded for env-based config (audit B1-3)
+import base64
+import hashlib
 import json
 import logging
-from typing import Optional
-import hashlib
-import base64
+
 import pandas as pd
 
 logger = logging.getLogger("DBManager")
@@ -80,7 +81,7 @@ class DBManager:
     """
     Dual-dialect, Multi-User SaaS DB manager supporting SQLite for local runs,
     and PostgreSQL (Supabase) for production environments.
-    
+
     Ties positions, orders, configurations, and copytrades to unique user_id keys.
     Implements DELETE-then-INSERT transaction strategies to guarantee 100% compatibility
     with pre-existing database constraint configurations on Supabase.
@@ -88,11 +89,11 @@ class DBManager:
     """
     def __init__(self):
         self.initialize_key()
-        
+
         from cryptography.fernet import Fernet
         self.cipher = Fernet(self.load_key())
         self.is_postgres = DATABASE_URL is not None and (DATABASE_URL.startswith("postgresql://") or DATABASE_URL.startswith("postgres://"))
-        
+
         if self.is_postgres:
             logger.info("Attempting to connect to Production Supabase PostgreSQL...")
             self.pg_url = DATABASE_URL.replace("postgres://", "postgresql://")
@@ -108,14 +109,14 @@ class DBManager:
                 logger.critical("FORBIDDEN: SQLite fallback is strictly prohibited in Production REAL mode.")
                 logger.critical("HALTING STARTUP FOR SAFETY.")
                 logger.critical("=========================================================================")
-                
+
                 # In production/REAL mode, raise a fatal error to abort startup!
                 # Strictly forbids silent SQLite fallbacks (Lot 10)
                 raise RuntimeError("DATABASE_UNAVAILABLE: Production Supabase PostgreSQL offline. Trading halted.")
         else:
             # SQLite is only authorized in isolated TEST and DEVELOPMENT/DEMO environments
             logger.info("Database Mode: Local SQLite Dev (Authorized for Test & Development only)")
-            
+
         self.init_db()
         self._ensure_indexes()
 
@@ -126,13 +127,13 @@ class DBManager:
             hashed = hashlib.sha256(env_key.encode()).digest()
             self.key = base64.urlsafe_b64encode(hashed)
             return
-            
+
         if not os.path.exists(KEY_PATH):
             from cryptography.fernet import Fernet
             key = Fernet.generate_key()
             with open(KEY_PATH, "wb") as key_file:
                 key_file.write(key)
-        
+
         self.key = self.load_key()
 
     def load_key(self):
@@ -207,7 +208,7 @@ class DBManager:
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
+
             if self.is_postgres:
                 # SaaS Users Table
                 cursor.execute("""
@@ -219,7 +220,7 @@ class DBManager:
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 """)
-                
+
                 # Create a default admin user if not exists
                 # Bootstrap admin is created/updated at startup with a REAL bcrypt hash
                 # (password from ADMIN_PASSWORD env or a generated one - see main.py login)
@@ -238,7 +239,7 @@ class DBManager:
                     VALUES (1, 'admin_quant', 'hash_admin_secret', 'ADMIN')
                     ON CONFLICT (username) DO NOTHING
                 """)
-                
+
                 # Orders
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS orders (
@@ -254,7 +255,7 @@ class DBManager:
                         order_type VARCHAR(20)
                     )
                 """)
-                
+
                 # Positions
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS positions (
@@ -264,7 +265,7 @@ class DBManager:
                         mode VARCHAR(10)
                     )
                 """)
-                
+
                 # System Settings
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS system_settings (
@@ -272,7 +273,7 @@ class DBManager:
                         value TEXT
                     )
                 """)
-                
+
                 # Audit Logs
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS audit_logs (
@@ -283,7 +284,7 @@ class DBManager:
                         details TEXT
                     )
                 """)
-                
+
                 # Copytrading
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS copy_allocations (
@@ -292,7 +293,7 @@ class DBManager:
                         active INTEGER DEFAULT 0
                     )
                 """)
-                
+
                 # Market Candles Cache Table
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS market_candles (
@@ -306,7 +307,7 @@ class DBManager:
                         PRIMARY KEY (symbol, timestamp)
                     )
                 """)
-                
+
                 # Fills Table (Postgres)
                 cursor.execute("""
                     CREATE TABLE IF NOT EXISTS fills (
@@ -410,7 +411,7 @@ class DBManager:
                         FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
                     )
                 """)
-                
+
             conn.commit()
 
             # RUN DYNAMIC AUTO-MIGRATIONS FOR PRODUCTION DATABASES (Supabase & local SQLite)
@@ -425,7 +426,7 @@ class DBManager:
                     # Column already exists, rollback PG transaction safely
                     if self.is_postgres:
                         conn.rollback()
-                        
+
             # Migrate 'hash' column for audit_logs
             try:
                 if self.is_postgres:
@@ -532,7 +533,7 @@ class DBManager:
                 cursor.execute("DELETE FROM positions WHERE user_id = %s AND symbol = %s", (int(user_id), str(symbol)))
             else:
                 cursor.execute("DELETE FROM positions WHERE user_id = ? AND symbol = ?", (int(user_id), str(symbol)))
-                
+
             if qty > 0:
                 if self.is_postgres:
                     cursor.execute("""
@@ -564,25 +565,25 @@ class DBManager:
         """
         with self.get_connection() as conn:
             cursor = conn.cursor()
-            
+
             prev_hash = "GENESIS_ROOT_HASH"
             try:
                 if self.is_postgres:
                     cursor.execute("SELECT hash FROM audit_logs WHERE user_id = %s ORDER BY id DESC LIMIT 1", (int(user_id),))
                 else:
                     cursor.execute("SELECT hash FROM audit_logs WHERE user_id = ? ORDER BY id DESC LIMIT 1", (int(user_id),))
-                
+
                 row = cursor.fetchone()
                 if row and row['hash']:
                     prev_hash = row['hash']
             except Exception:
                 if self.is_postgres:
                     conn.rollback()
-                
+
             # Compute current block hash (concatenating prev_hash + action + details + user_ip)
             content_str = f"{prev_hash}_{action}_{details}_{user_ip}"
             current_hash = hashlib.sha256(content_str.encode()).hexdigest()
-            
+
             if self.is_postgres:
                 cursor.execute("""
                     INSERT INTO audit_logs (user_id, action, user_ip, details, hash)
@@ -593,7 +594,7 @@ class DBManager:
                     INSERT INTO audit_logs (user_id, action, user_ip, details, hash)
                     VALUES (?, ?, ?, ?, ?)
                 """, (int(user_id), str(action), str(user_ip), str(details), str(current_hash)))
-                
+
             conn.commit()
             logger.info(f"Cryptographically chained audit log created. Hash: {current_hash[:16]}...")
 
@@ -668,20 +669,20 @@ class DBManager:
             cursor = conn.cursor()
             for idx, row in df_bars.iterrows():
                 ts_str = str(idx)
-                
+
                 # Dynamic type safety check to prevent any NoneType crashes!
                 open_val = float(row['open']) if row['open'] is not None else 0.0
                 high_val = float(row['high']) if row['high'] is not None else 0.0
                 low_val = float(row['low']) if row['low'] is not None else 0.0
                 close_val = float(row['close']) if row['close'] is not None else 0.0
                 volume_val = float(row['volume']) if row['volume'] is not None else 15.0
-                
+
                 if self.is_postgres:
                     cursor.execute("""
                         INSERT INTO market_candles (symbol, timestamp, open, high, low, close, volume)
                         VALUES (%s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT (symbol, timestamp) DO UPDATE 
-                        SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low, 
+                        ON CONFLICT (symbol, timestamp) DO UPDATE
+                        SET open = EXCLUDED.open, high = EXCLUDED.high, low = EXCLUDED.low,
                             close = EXCLUDED.close, volume = EXCLUDED.volume
                     """, (symbol, ts_str, open_val, high_val, low_val, close_val, volume_val))
                 else:
@@ -696,23 +697,23 @@ class DBManager:
             cursor = conn.cursor()
             if self.is_postgres:
                 cursor.execute("""
-                    SELECT timestamp, open, high, low, close, volume 
-                    FROM market_candles 
-                    WHERE symbol = %s 
+                    SELECT timestamp, open, high, low, close, volume
+                    FROM market_candles
+                    WHERE symbol = %s
                     ORDER BY timestamp DESC LIMIT %s
                 """, (symbol, limit))
             else:
                 cursor.execute("""
-                    SELECT timestamp, open, high, low, close, volume 
-                    FROM market_candles 
-                    WHERE symbol = ? 
+                    SELECT timestamp, open, high, low, close, volume
+                    FROM market_candles
+                    WHERE symbol = ?
                     ORDER BY timestamp DESC LIMIT ?
                 """, (symbol, limit))
-                
+
             rows = cursor.fetchall()
             if not rows:
                 return pd.DataFrame()
-                
+
             data = []
             for r in reversed(rows):
                 data.append({
@@ -734,7 +735,6 @@ class DBManager:
           Supabase's built-in daily backups - recommended in production).
         Returns the backup path.
         """
-        import shutil
         from datetime import datetime
         stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         backup_dir = os.path.join(os.getcwd(), "backups")
@@ -817,7 +817,7 @@ class DBManager:
             logger.error(f"create_user failed: {e}")
             return False
 
-    def get_user(self, username: str) -> Optional[dict]:
+    def get_user(self, username: str) -> dict | None:
         try:
             with self.get_connection() as conn:
                 cur = conn.cursor()

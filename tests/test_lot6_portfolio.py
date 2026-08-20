@@ -14,12 +14,16 @@ import time
 import numpy as np
 import pytest
 
-from core.position_manager import (PositionProtection, evaluate_protection,
-                                    evaluate_time_stop, apply_breakeven_stop,
-                                    partial_take_profit, can_pyramid,
-                                    position_age_hours, PositionProtectionStore)
-from core.portfolio_allocator import (PortfolioAllocator, CASH_RESERVE_PCT,
-                                      REDUNDANT_CORR, MAX_PARTICIPATION_PCT)
+from core.portfolio_allocator import CASH_RESERVE_PCT, REDUNDANT_CORR, PortfolioAllocator
+from core.position_manager import (
+    PositionProtection,
+    PositionProtectionStore,
+    apply_breakeven_stop,
+    can_pyramid,
+    evaluate_protection,
+    evaluate_time_stop,
+    partial_take_profit,
+)
 
 
 # --------------------------------------------------------------------------- #

@@ -2,10 +2,9 @@
 External Indicators Module
 Gère les données avancées (Sentiment, OnChain, Macro, Funding, etc.)
 """
-import asyncio
-import httpx
 import logging
-from typing import Dict
+
+import httpx
 
 logger = logging.getLogger("Indicators")
 
@@ -53,7 +52,7 @@ class ExternalIndicators:
         """Analyse les opportunités de funding rate arbitrage"""
         if symbol not in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
             return None
-            
+
         try:
             async with httpx.AsyncClient(timeout=5.0) as client:
                 resp = await client.get(f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={symbol}")

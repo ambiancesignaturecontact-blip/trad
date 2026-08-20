@@ -19,7 +19,6 @@ Exigences couvertes :
 """
 import logging
 import time
-from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -47,14 +46,14 @@ class PortfolioAllocator:
         self.target_vol_annual = target_vol_annual
         self.rebalance_hours = rebalance_hours
         self.last_rebalance_ts = 0.0
-        self.allocation: Dict = {"status": "PENDING"}
+        self.allocation: dict = {"status": "PENDING"}
 
     # ------------------------------------------------------------------ #
     # (a) BUDGET DE RISQUE TOTAL
     # ------------------------------------------------------------------ #
     def total_risk_budget(self, total_capital: float,
-                          portfolio_cvar_pct: Optional[float] = None,
-                          realized_vol_annual: Optional[float] = None) -> dict:
+                          portfolio_cvar_pct: float | None = None,
+                          realized_vol_annual: float | None = None) -> dict:
         """
         Budget de risque TOTAL :
         1. Réserve de cash OBLIGATOIRE : investissable = capital × (1 - réserve).
@@ -89,7 +88,7 @@ class PortfolioAllocator:
     # ------------------------------------------------------------------ #
     # (b) ALLOCATION STRATÉGIES + DIVERSIFICATION RÉELLE
     # ------------------------------------------------------------------ #
-    def strategy_diversification(self, strategy_returns: Dict[str, List[float]],
+    def strategy_diversification(self, strategy_returns: dict[str, list[float]],
                                  min_samples: int = 20) -> dict:
         """
         Diversification RÉELLE : mesure la corrélation entre STRATÉGIES (pas
@@ -131,9 +130,9 @@ class PortfolioAllocator:
     # ------------------------------------------------------------------ #
     # (c) SIZING PAR TRADE — capacité + facteur d'exposition portfolio
     # ------------------------------------------------------------------ #
-    def capacity_cap_qty(self, symbol: str, volume_24h: Optional[float],
+    def capacity_cap_qty(self, symbol: str, volume_24h: float | None,
                          current_price: float, participation_pct: float = MAX_PARTICIPATION_PCT
-                         ) -> Optional[float]:
+                         ) -> float | None:
         """
         CAPACITÉ (mentalité n°11) : toute stratégie a une taille maximale
         au-delà de laquelle elle se détruit elle-même (impact de marché).
@@ -147,7 +146,7 @@ class PortfolioAllocator:
         return float(volume_24h) * participation_pct
 
     def portfolio_exposure_factor(self, state: dict, active_balance_key: str,
-                                  current_equity: Optional[float] = None) -> float:
+                                  current_equity: float | None = None) -> float:
         """
         Garde de réserve de cash au niveau PORTEFEUILLE : si l'exposition
         investie approche (1 - réserve), on réduit les nouveaux trades.
@@ -195,8 +194,8 @@ class PortfolioAllocator:
         return (now - self.last_rebalance_ts) >= self.rebalance_hours * 3600.0
 
     def rebalance(self, state: dict, total_capital: float,
-                  portfolio_cvar_pct: Optional[float] = None,
-                  realized_vol_annual: Optional[float] = None) -> dict:
+                  portfolio_cvar_pct: float | None = None,
+                  realized_vol_annual: float | None = None) -> dict:
         """
         Recalcule le budget top-down et le stocke dans STATE pour la
         télémétrie et le sizing (anti-drift : on revient vers les cibles).

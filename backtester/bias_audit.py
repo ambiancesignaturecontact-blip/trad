@@ -16,7 +16,6 @@ Chaque audit retourne {ok, issues[], score} — un backtest qui échoue à
 l'audit doit être REJETÉ (on n'apprend pas sur un passé truqué).
 """
 import logging
-from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
@@ -26,7 +25,7 @@ logger = logging.getLogger("BiasAudit")
 
 def audit_lookahead_bias(df: pd.DataFrame,
                          signal_col: str = "close",
-                         compute_fn=None) -> Dict:
+                         compute_fn=None) -> dict:
     """
     Détecte le look-ahead bias : un signal calculé à l'instant t ne doit
     JAMAIS dépendre des valeurs futures (t+1...).
@@ -82,8 +81,8 @@ def audit_lookahead_bias(df: pd.DataFrame,
             "score": 1.0 if ok else max(0.0, 1.0 - 0.5 * len(issues))}
 
 
-def audit_survivorship_bias(assets_universe: List[str],
-                            assets_tested: List[str]) -> Dict:
+def audit_survivorship_bias(assets_universe: list[str],
+                            assets_tested: list[str]) -> dict:
     """
     Survivership bias : si des actifs ont disparu (délités, faillis) et sont
     absents de l'univers testé, les résultats sont biaisés à la hausse.
@@ -104,9 +103,9 @@ def audit_survivorship_bias(assets_universe: List[str],
             "assets_tested": list(assets_tested)}
 
 
-def audit_slippage_bias(slippage_bps: Optional[float],
-                        commission_pct: Optional[float],
-                        venue: str = "Binance") -> Dict:
+def audit_slippage_bias(slippage_bps: float | None,
+                        commission_pct: float | None,
+                        venue: str = "Binance") -> dict:
     """
     Biais de slippage : des coûts sous-estimés (ou nuls) rendent un backtest
     irréaliste. Exigences :
@@ -133,11 +132,11 @@ def audit_slippage_bias(slippage_bps: Optional[float],
 
 
 def audit_backtest(df: pd.DataFrame,
-                   assets_universe: List[str],
-                   assets_tested: List[str],
-                   slippage_bps: Optional[float] = None,
-                   commission_pct: Optional[float] = None,
-                   compute_fn=None) -> Dict:
+                   assets_universe: list[str],
+                   assets_tested: list[str],
+                   slippage_bps: float | None = None,
+                   commission_pct: float | None = None,
+                   compute_fn=None) -> dict:
     """
     Audit COMPLET d'un backtest : les 3 biais (look-ahead, survivorship,
     slippage). Si un seul échoue, le backtest est marqué REJECTED.

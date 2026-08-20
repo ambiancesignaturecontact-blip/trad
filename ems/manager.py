@@ -38,7 +38,7 @@ class ExecutionManagementSystem:
         order.status = OrderStatus.SUBMITTED
         order.timestamp_updated = time.time()
         adapter = self.binance if order.exchange.lower() == "binance" else self.bybit
-        
+
         if order.mode in ["DEMO", "PAPER", "SHADOW"]:
             order.status = OrderStatus.ACKNOWLEDGED
             logger.info(f"EMS: Routed Virtual Order {order.client_order_id} on {order.exchange}.")
@@ -48,12 +48,12 @@ class ExecutionManagementSystem:
                 "price": order.requested_price,
                 "amount": order.requested_qty
             }
-            
+
         if not adapter or not adapter.client:
             order.status = OrderStatus.REJECTED
             logger.error(f"EMS: Rejected Real Order {order.client_order_id} - Target exchange adapter offline.")
             return {"status": "REJECTED", "reason": "Exchange adapter unconfigured"}
-            
+
         try:
             logger.info(f"EMS: ROUTING REAL ORDER TO {order.exchange} ({order.side} {order.requested_qty} {order.symbol})")
             res = adapter.place_order(

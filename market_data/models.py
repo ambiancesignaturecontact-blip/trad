@@ -1,5 +1,7 @@
 import time
+
 from market_data.quality import MarketDataQuality
+
 
 class MarketTick:
     """
@@ -13,7 +15,7 @@ class MarketTick:
         self.received_at = time.time()
         self.source = source
         self.quality = MarketDataQuality.LIVE
-        
+
         self.bid = float(bid) if bid is not None else None
         self.ask = float(ask) if ask is not None else None
         self.last = float(last) if last is not None else None

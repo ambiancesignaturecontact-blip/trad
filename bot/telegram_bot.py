@@ -1,7 +1,7 @@
-import os
-import logging
 import asyncio
-import json
+import logging
+import os
+
 import httpx
 
 logger = logging.getLogger("TelegramBot")
@@ -17,10 +17,10 @@ class TelegramBotManager:
         self.chat_id = os.getenv("TELEGRAM_CHAT_ID")
         self.state = state_dict if state_dict is not None else {}
         self.db = db_manager
-        
+
         self.api_url = f"https://api.telegram.org/bot{self.token}" if self.token else None
         self.last_update_id = 0
-        
+
         if self.token and self.chat_id:
             logger.info("Telegram Bot successfully configured and active.")
         else:
@@ -28,7 +28,7 @@ class TelegramBotManager:
 
     async def send_startup_message(self):
         """
-        Sends the startup hello notification. 
+        Sends the startup hello notification.
         """
         if self.token and self.chat_id:
             await self.send_push_notification(
@@ -45,7 +45,7 @@ class TelegramBotManager:
         """
         if not self.api_url or not self.chat_id:
             return False
-            
+
         url = f"{self.api_url}/sendMessage"
         safe_html = self._format_markdown_to_html(text)
         payload = {
@@ -55,7 +55,7 @@ class TelegramBotManager:
         }
         if reply_markup is not None:
             payload["reply_markup"] = reply_markup
-            
+
         try:
             async with httpx.AsyncClient() as client:
                 resp = await client.post(url, json=payload, timeout=5.0)
@@ -70,7 +70,7 @@ class TelegramBotManager:
         """
         if not self.api_url or not self.chat_id:
             return False
-            
+
         url = f"{self.api_url}/sendMessage"
         raw_text = (
             f"⏰ *ATTENTION : TEMPÊTE MACROÉCONOMIQUE APPROCHE !*\n"
@@ -109,32 +109,32 @@ class TelegramBotManager:
         """
         if not text:
             return ""
-            
+
         # Detect if the input already contains HTML tags to avoid double-escaping
         has_html = "<b>" in text or "<code>" in text or "<i>" in text or "<strong>" in text or "<a>" in text
-        
+
         if not has_html:
             # 1. Escape HTML entities safely
             text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
-            
+
             # 2. Convert bold (`*text*`) to `<b>text</b>`
             parts = text.split("*")
             for i in range(1, len(parts), 2):
                 parts[i] = f"<b>{parts[i]}</b>"
             text = "".join(parts)
-            
+
             # 3. Convert code (`` `text` ``) to `<code>text</code>`
             parts = text.split("`")
             for i in range(1, len(parts), 2):
                 parts[i] = f"<code>{parts[i]}</code>"
             text = "".join(parts)
-            
+
             # 4. Convert italic (`_text_`) to `<i>text</i>`
             parts = text.split("_")
             for i in range(1, len(parts), 2):
                 parts[i] = f"<i>{parts[i]}</i>"
             text = "".join(parts)
-            
+
         return text
 
     async def poll_telegram_commands_loop(self):
@@ -144,21 +144,21 @@ class TelegramBotManager:
             # toutes les 20s (spam de logs) alors que ce n'est pas un crash.
             while True:
                 await asyncio.sleep(60)
-            
+
         logger.info("Starting Telegram Remote Control polling worker...")
         url = f"{self.api_url}/getUpdates"
-        
+
         while True:
             try:
                 params = {"offset": self.last_update_id + 1, "timeout": 20}
                 async with httpx.AsyncClient() as client:
                     resp = await client.get(url, params=params, timeout=25.0)
-                    
+
                     if resp.status_code == 200:
                         updates = resp.json().get("result", [])
                         for update in updates:
                             self.last_update_id = update.get("update_id", self.last_update_id)
-                            
+
                             # Handle standard message commands
                             if "message" in update:
                                 message = update.get("message", {})
@@ -167,7 +167,7 @@ class TelegramBotManager:
                                     continue
                                 text = message.get("text", "").strip()
                                 await self.process_command(text)
-                                
+
                             # Handle tactile inline callback button clicks!
                             elif "callback_query" in update:
                                 callback = update.get("callback_query", {})
@@ -175,12 +175,12 @@ class TelegramBotManager:
                                 chat_id = str(callback.get("message", {}).get("chat", {}).get("id", ""))
                                 if chat_id != self.chat_id:
                                     continue
-                                    
+
                                 data = callback.get("data", "")
                                 await self.process_callback_query(callback_id, data)
             except Exception as e:
                 logger.error(f"Error in Telegram polling loop: {str(e)}")
-                
+
             await asyncio.sleep(3)
 
     async def process_command(self, command: str):
@@ -189,7 +189,9 @@ class TelegramBotManager:
         # VISION_FUTUR §6: consultative-mode approvals
         if cmd_lower == "/approve":
             try:
-                from main import STATE as _S, submit_order_via_oms as _submit, db as _db
+                from main import STATE as _S
+                from main import db as _db
+                from main import submit_order_via_oms as _submit
                 pending = list(_S.get("pending_approvals", []))
                 _S["pending_approvals"] = []
                 approved = 0
@@ -219,7 +221,9 @@ class TelegramBotManager:
             return
         if cmd_lower.startswith("/chat "):
             try:
-                from main import STATE as _S, answer_question, db as _db
+                from main import STATE as _S
+                from main import answer_question
+                from main import db as _db
                 question = command[6:].strip()
                 ctx = {"last_price": _S.get("last_price"), "current_equity": _S.get("current_equity"),
                        "regime_name": _S.get("regime_name"), "confidence_index": _S.get("confidence_index", 100)}
@@ -228,7 +232,7 @@ class TelegramBotManager:
             except Exception as e:
                 await self.send_push_notification(f"❌ Assistant indisponible : {e}")
             return
-        
+
         # Standard buttons layout (Like a Telegram Web App)
         keyboard = {
             "inline_keyboard": [
@@ -249,7 +253,7 @@ class TelegramBotManager:
                 ]
             ]
         }
-        
+
         # Dynamically append native Telegram Mini App button if hosting URL is present!
         web_app_url = os.getenv("PORTAL_URL") or os.getenv("WEB_APP_URL") or os.getenv("RAILWAY_STATIC_URL")
         if web_app_url:
@@ -258,26 +262,26 @@ class TelegramBotManager:
             keyboard["inline_keyboard"].insert(0, [
                 {"text": "🖥️ OUVRIR MINI APP PRO", "web_app": {"url": web_app_url + "/telegram_mini_app.html"}}
             ])
-        
+
         if cmd_lower.startswith("/set "):
             try:
                 amount_str = command.split(" ")[1]
                 amount = float(amount_str)
                 if amount <= 0:
                     raise ValueError("Amount must be positive.")
-                    
+
                 self.state["balance_demo"] = amount
                 self.state["initial_capital_demo"] = amount
                 self.state["current_equity"] = amount
                 self.state["equity_history_demo"] = [amount]
-                
+
                 if self.db:
                     self.db.add_audit_log(
-                        "DEMO_BALANCE_RESET_TELEGRAM", 
-                        "telegram", 
+                        "DEMO_BALANCE_RESET_TELEGRAM",
+                        "telegram",
                         f"Demo balance has been manually reset to {amount} USD via Telegram."
                     )
-                    
+
                 await self.send_push_notification(
                     f"💰 <b>SOLDE SIMULÉ RÉINITIALISÉ !</b>\n"
                     f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -295,7 +299,7 @@ class TelegramBotManager:
                     reply_markup=keyboard
                 )
                 return
-                
+
         if cmd_lower in ["/start", "/help"]:
             welcome_msg = (
                 "👋 *BIENVENUE SUR VOTRE CONSOLE DE TRADING TACTILE !*\n\n"
@@ -312,14 +316,14 @@ class TelegramBotManager:
                 "🤖 `/chat <question>` - Poser une question à mon assistant."
             )
             await self.send_push_notification(welcome_msg, reply_markup=keyboard)
-            
+
         elif cmd_lower == "/status":
             mode = self.state.get("mode", "DEMO")
             equity = self.state.get("current_equity", 0.0)
             balance = self.state.get("balance_demo" if mode == "DEMO" else "balance_real", 0.0)
             regime = self.state.get("regime_name", "Unknown")
             is_active = "ACTIF 🟢" if self.state.get("is_running") else "EN PAUSE ⏸️"
-            
+
             # Simple, beginner-friendly translations of regime
             hmm_translation = {
                 "Bull Trend (Low Vol)": "Soleil Haussier ☀️ (Marché haussier calme)",
@@ -328,15 +332,15 @@ class TelegramBotManager:
                 "Erratic High Volatility": "Volatilité Erratique 🌪️ (Marché agité et imprévisible)"
             }
             translated_regime = hmm_translation.get(regime, regime)
-            
+
             # Calculate Live Benefits (PnL)
             initial_cap = self.state.get("initial_capital_demo" if mode == "DEMO" else "initial_capital_real", 100000.0)
             live_pnl_usd = equity - initial_cap if initial_cap > 0 else 0.0
             live_pnl_pct = (live_pnl_usd / initial_cap) * 100.0 if initial_cap > 0 else 0.0
-            
+
             pnl_color = "🟢" if live_pnl_usd >= 0 else "🔴"
             pnl_sign = "+" if live_pnl_usd >= 0 else ""
-            
+
             pos_msg = ""
             if self.db:
                 positions = self.db.get_positions()
@@ -346,7 +350,7 @@ class TelegramBotManager:
                         pos_msg += f"\n• <b>{p['symbol']}</b> : {p['qty']:.4f} (Prix d'achat: ${p['avg_price']:.2f})"
                 else:
                     pos_msg = "📂 <b>Vos investissements actifs :</b> Aucun achat en cours. Votre argent dort en sécurité !"
-            
+
             # LOT 2 (PDF Faille 3) : état de la machine à états risque
             try:
                 _rs = self.state.get("risk_state", {}) or {}
@@ -359,7 +363,7 @@ class TelegramBotManager:
                              + (f" — {_rs_reason}" if _rs_reason else "") + ")\n")
             except Exception:
                 risk_line = ""
-            
+
             status_msg = (
                 f"🏦 <b>QUANT-PORTAL • CONSOLE DE TRADING ({mode})</b>\n"
                 f"━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
@@ -378,7 +382,7 @@ class TelegramBotManager:
                 f"🖥️ <i>Terminal Web synchronisé. Utilisez les touches ci-dessous :</i>"
             )
             await self.send_push_notification(status_msg, reply_markup=keyboard)
-            
+
         elif cmd_lower == "/history":
             orders_msg = "📋 *HISTORIQUE DES 5 DERNIÈRES TRANSACTIONS :*\n-----------------------------------------"
             if self.db:
@@ -396,7 +400,7 @@ class TelegramBotManager:
             else:
                 orders_msg += "\nBase de données indisponible."
             await self.send_push_notification(orders_msg, reply_markup=keyboard)
-            
+
         elif cmd_lower == "/modes":
             mode_msg = (
                 "⚖️ *DÉMO vs RÉEL : COMPRENDRE LA DIFFÉRENCE*\n"
@@ -406,7 +410,7 @@ class TelegramBotManager:
                 "💡 *Mode Actif Actuel* : " + f"*{self.state.get('mode', 'DEMO')}*"
             )
             await self.send_push_notification(mode_msg, reply_markup=keyboard)
-            
+
         elif cmd_lower == "/risk":
             # Simple explanations of risk settings
             risk_msg = (
@@ -417,12 +421,11 @@ class TelegramBotManager:
                 "• *Sizing à la volatilité* : Plus le vent souffle fort sur le marché (haute volatilité), plus je réduis la taille de mes transactions pour vous protéger !"
             )
             await self.send_push_notification(risk_msg, reply_markup=keyboard)
-            
+
         elif cmd_lower == "/honesty":
             # LOT 9 (PDF Faille 7) : honnêteté brute — étiquetage des modules
             try:
-                from main import get_module_status, status_summary
-                s = status_summary()
+                from main import get_module_status
                 mods = get_module_status()
                 prod = [m for m, i in mods.items() if i["status"] == "PRODUCTION"]
                 exp = [m for m, i in mods.items() if i["status"] == "EXPÉRIMENTAL"]
@@ -445,7 +448,7 @@ class TelegramBotManager:
         elif cmd_lower == "/pause":
             self.state["is_running"] = False
             await self.send_push_notification("⏸️ *TRADING MIS EN PAUSE !* J'ai arrêté toute prise de position automatique. Vos fonds actuels sont conservés au chaud.", reply_markup=keyboard)
-            
+
         elif cmd_lower == "/resume":
             self.state["is_running"] = True
             # LOT 2 : /resume remet aussi la machine à états risque à NORMAL
@@ -457,25 +460,25 @@ class TelegramBotManager:
             except Exception:
                 pass
             await self.send_push_notification("🟢 *TRADING AUTOMATIQUE RELANCÉ !* Je reprends la surveillance active des marchés réels pour investir selon les meilleures opportunités.", reply_markup=keyboard)
-            
+
         elif cmd_lower == "/kill":
             self.state["kill_switch_active"] = True
             self.state["is_running"] = False
-            
+
             # Direct liquidation of positions to avoid circular imports and hardcoded local port requests!
             positions = []
             if self.db:
                 positions = self.db.get_positions()
-                
+
             active_mode = self.state.get("mode", "DEMO")
             active_balance_key = "balance_demo" if active_mode == "DEMO" else "balance_real"
-            
+
             for p in positions:
                 try:
                     asset_price = self.state["assets"].get(p['symbol'], {}).get("price", self.state.get("last_price"))
                     if asset_price is None:
                         asset_price = p['avg_price'] # fallback
-                        
+
                     close_val = p['qty'] * asset_price * 0.999
                     self.state[active_balance_key] = self.state.get(active_balance_key, 100000.0) + close_val
                     if self.db:
@@ -492,10 +495,10 @@ class TelegramBotManager:
                         )
                 except Exception as exc:
                     logger.error(f"Emergency close failed for {p['symbol']} via Telegram: {str(exc)}")
-                    
+
             if self.db:
                 self.db.add_audit_log("KILL_SWITCH_ENGAGED_TELEGRAM", "telegram", "Global KILL SWITCH activated via Telegram remote control.")
-                
+
             await self.send_push_notification(
                 "🚨 *URGENCE : KILL SWITCH DÉCLENCHÉ VIA TELEGRAM !*\n\n"
                 "J'ai immédiatement bloqué le robot et vendu l'intégralité de nos investissements au prix du marché.\n"
@@ -516,7 +519,7 @@ class TelegramBotManager:
             "bot_pause": "/pause",
             "bot_kill": "/kill"
         }
-        
+
         if data in cmd_mapping:
             await self.process_command(cmd_mapping[data])
             return
@@ -528,11 +531,11 @@ class TelegramBotManager:
         if data == "reject_pending":
             await self.process_command("/reject")
             return
-        
+
         if data.startswith("macro_reduce_expo_"):
             event_name = data.replace("macro_reduce_expo_", "")
             self.state["macro_scale_factor_tactile"] = 0.40
-            
+
             await self.send_push_notification(
                 f"🛑 *EXPOSITION RÉDUITE À 40% (RÉDUCTION DE 60%) !*\n"
                 f"Félicitations pour votre prudence. J'ai immédiatement bridé nos tailles d'achats "

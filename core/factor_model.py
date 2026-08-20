@@ -7,6 +7,7 @@ Factor model + risk budgeting (VISION §6).
   each strategy contributes a BUDGET OF RISK (vol), not a budget of capital.
 """
 import logging
+
 import numpy as np
 
 logger = logging.getLogger("FactorModel")

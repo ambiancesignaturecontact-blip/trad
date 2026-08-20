@@ -1,5 +1,5 @@
-import time
 import logging
+import time
 
 logger = logging.getLogger("OrderBook")
 
@@ -26,7 +26,7 @@ class LiveOrderBookManager:
         self.symbol = symbol
         self.exchange = exchange
         self.stale_timeout_seconds = stale_timeout_seconds
-        
+
         self.active_book = None # Active OrderBookSnapshot
         self.last_update_epoch = 0.0
         self.is_synced = False
@@ -38,7 +38,7 @@ class LiveOrderBookManager:
         # Parse floats
         parsed_bids = [[float(b[0]), float(b[1])] for b in bids]
         parsed_asks = [[float(a[0]), float(a[1])] for a in asks]
-        
+
         self.active_book = OrderBookSnapshot(
             symbol=self.symbol,
             exchange=self.exchange,
@@ -58,7 +58,7 @@ class LiveOrderBookManager:
         if not self.active_book:
             logger.warning(f"OrderBook: Cannot apply update. No active snapshot loaded for {self.symbol}.")
             return False
-            
+
         # 1. Enforce Sequence Validation & Gap Detection
         # The update's first update ID must align precisely with the previous sequence
         # Binance protocol: first_update_id <= last_update_id + 1 AND final_update_id >= last_update_id + 1
@@ -70,16 +70,16 @@ class LiveOrderBookManager:
             )
             self.is_synced = False
             return False
-            
+
         # Ignore old updates
         if final_update_id <= last_seq:
             return True
-            
+
         # 2. Update Bids and Asks
         # Helper to merge updates: if quantity is 0, delete the level; otherwise overwrite/insert
         self._update_levels(self.active_book.bids, bids_update, reverse=True)
         self._update_levels(self.active_book.asks, asks_update, reverse=False)
-        
+
         # Update sequence tracking
         self.active_book.sequence = final_update_id
         self.last_update_epoch = time.time()
@@ -89,14 +89,14 @@ class LiveOrderBookManager:
         for upd in updates:
             price = float(upd[0])
             qty = float(upd[1])
-            
+
             # Find if price level already exists
             match_idx = -1
             for idx, lvl in enumerate(current_levels):
                 if abs(lvl[0] - price) < 1e-8:
                     match_idx = idx
                     break
-                    
+
             if qty == 0.0:
                 if match_idx != -1:
                     current_levels.pop(match_idx)
@@ -105,7 +105,7 @@ class LiveOrderBookManager:
                     current_levels[match_idx][1] = qty
                 else:
                     current_levels.append([price, qty])
-                    
+
         # Re-sort order book (bids descending, asks ascending)
         current_levels.sort(key=lambda x: x[0], reverse=reverse)
         # Keep maximum of 20 depth levels for memory efficiency
@@ -118,13 +118,13 @@ class LiveOrderBookManager:
         """
         if not self.is_synced or not self.active_book:
             return False
-            
+
         elapsed = time.time() - self.last_update_epoch
         if elapsed > self.stale_timeout_seconds:
             logger.error(f"OrderBook: {self.symbol} is STALE (Last update {elapsed:.1f}s ago). Halting trading!")
             self.is_synced = False
             return False
-            
+
         return True
 
     def get_bids_asks(self) -> tuple:

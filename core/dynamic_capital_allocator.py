@@ -3,9 +3,9 @@ LOT 50: Dynamic Capital Allocator
 Auto-scales capital allocation using Kelly Criterion + Risk Parity.
 """
 
-import numpy as np
 import logging
-from typing import Dict, List
+
+import numpy as np
 
 logger = logging.getLogger("DynamicCapitalAllocator")
 
@@ -35,16 +35,16 @@ class DynamicCapitalAllocator:
         kelly = (b * p - q) / b
         return max(0.0, min(kelly, 1.0))
 
-    def compute_risk_parity_weights(self, volatilities: Dict[str, float]) -> Dict[str, float]:
+    def compute_risk_parity_weights(self, volatilities: dict[str, float]) -> dict[str, float]:
         """Risk Parity allocation (inverse volatility)"""
         inv_vol = {k: 1.0 / max(v, 0.001) for k, v in volatilities.items()}
         total = sum(inv_vol.values())
         return {k: v / total for k, v in inv_vol.items()}
 
-    def update_allocation(self, 
-                          strategy_performance: Dict[str, Dict],
-                          asset_volatilities: Dict[str, float],
-                          regime_id: int) -> Dict:
+    def update_allocation(self,
+                          strategy_performance: dict[str, dict],
+                          asset_volatilities: dict[str, float],
+                          regime_id: int) -> dict:
         """
         Main function called periodically.
         Returns recommended exposure and per-strategy weights.

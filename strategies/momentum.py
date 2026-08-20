@@ -3,7 +3,9 @@ Momentum Strategy - Nouvelle stratégie ajoutée (LOT 7)
 """
 import numpy as np
 import pandas as pd
+
 from strategies.engine import BaseStrategy
+
 
 class MomentumStrategy(BaseStrategy):
     """

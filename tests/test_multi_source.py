@@ -5,7 +5,6 @@ Chaque catégorie critique (prix, funding) doit avoir AU MOINS 2 sources
 indépendantes croisées. Divergence anormale -> DIVERGENT -> gel du trading.
 Aucun prix fabriqué : source down = None, consensus UNAVAILABLE sinon.
 """
-import asyncio
 
 import pytest
 

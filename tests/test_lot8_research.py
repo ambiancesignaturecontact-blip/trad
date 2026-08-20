@@ -157,8 +157,8 @@ class TestCostAccounting:
 # --------------------------------------------------------------------------- #
 class TestPnLNet:
     def test_pnl_net_code_present(self):
-        import inspect
-        src = inspect.getsource(__import__("main", fromlist=["x"]))
+        # le code du PnL net vit dans telemetry.py (étape 2 du découpage LOT 7)
+        src = open("telemetry.py").read()
         assert "cost_accounting.total_costs_usd" in src
         assert "live_pnl_usd -= _costs" in src
 
@@ -251,8 +251,8 @@ class TestIntegration:
         src = open("api/routes.py").read()
         assert 'api_v1_attribution' in src
         assert 'api_v1_stress' in src
-        # le garde-fou anti-biais reste branché dans main.py
-        assert "audit_backtest" in open("main.py").read()
+        # le garde-fou anti-biais vit dans api/routes.py (handler du backtest)
+        assert "audit_backtest" in src
 
     def test_report_has_metrics(self):
         import main

@@ -22,7 +22,6 @@ Divergence : (max - min) / médiane × 100. Si > seuil par actif -> DIVERGENT.
 import asyncio
 import logging
 import time
-from typing import Dict, List, Optional, Tuple
 
 import httpx
 
@@ -61,10 +60,10 @@ class MultiSourcePriceEngine:
     """Moteur de consensus de prix multi-sources (asyncio, non bloquant)."""
 
     def __init__(self):
-        self._cache: Dict[str, dict] = {}        # symbol -> consensus récent
-        self._slow_cache: Dict[str, dict] = {}   # symbol -> prix sources lentes
-        self._funding_cache: Dict[str, dict] = {}
-        self._yahoo_cache: Dict[str, Tuple[float, dict]] = {}
+        self._cache: dict[str, dict] = {}        # symbol -> consensus récent
+        self._slow_cache: dict[str, dict] = {}   # symbol -> prix sources lentes
+        self._funding_cache: dict[str, dict] = {}
+        self._yahoo_cache: dict[str, tuple[float, dict]] = {}
 
     # ------------------------------------------------------------------ #
     # HELPERS
@@ -246,7 +245,7 @@ class MultiSourcePriceEngine:
     # ------------------------------------------------------------------ #
     # SOURCES PAR ACTIF
     # ------------------------------------------------------------------ #
-    def _source_coros(self, symbol: str) -> List[Tuple[str, object]]:
+    def _source_coros(self, symbol: str) -> list[tuple[str, object]]:
         """Liste (nom, coroutine) des sources RAPIDES pour un symbole."""
         if symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
             return [
@@ -262,7 +261,7 @@ class MultiSourcePriceEngine:
             ("er-api", self._fetch_erapi(symbol)),
         ]
 
-    def _slow_source_coros(self, symbol: str) -> List[Tuple[str, object]]:
+    def _slow_source_coros(self, symbol: str) -> list[tuple[str, object]]:
         if symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT"):
             return [
                 ("coingecko", self._fetch_coingecko(symbol)),
@@ -297,7 +296,7 @@ class MultiSourcePriceEngine:
 
         results = await asyncio.gather(*tasks)
 
-        prices: Dict[str, float] = {}
+        prices: dict[str, float] = {}
         for name, price in results:
             if price is not None and float(price) > 0:
                 prices[name] = float(price)
@@ -316,7 +315,7 @@ class MultiSourcePriceEngine:
         return data
 
     @staticmethod
-    def _compute_consensus(symbol: str, prices: Dict[str, float]) -> dict:
+    def _compute_consensus(symbol: str, prices: dict[str, float]) -> dict:
         n = len(prices)
         now = time.time()
         threshold = MultiSourcePriceEngine.threshold(symbol)

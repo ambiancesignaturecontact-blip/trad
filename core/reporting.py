@@ -9,12 +9,11 @@ Daily P&L reporting, health score and the Telegram "risk concierge" digest
 """
 import logging
 import time
-from typing import Dict, Optional
 
 logger = logging.getLogger("Reporting")
 
 
-def compute_health_score(state: Dict, db) -> int:
+def compute_health_score(state: dict, db) -> int:
     """
     0-100 composite health. Each component contributes a weighted score.
     """
@@ -67,7 +66,8 @@ def compute_health_score(state: Dict, db) -> int:
 
     # 6. Backups fresh (10 pts)
     try:
-        import glob, os
+        import glob
+        import os
         snaps = sorted(glob.glob(os.path.join(os.getcwd(), "backups", "trading_platform_*.db")))
         if snaps:
             age_h = (time.time() - os.path.getmtime(snaps[-1])) / 3600.0
@@ -94,7 +94,7 @@ def compute_health_score(state: Dict, db) -> int:
     return max(0, min(100, int(score))), reasons
 
 
-def build_daily_report(state: Dict, db) -> Dict:
+def build_daily_report(state: dict, db) -> dict:
     """P&L report: per strategy, per asset, per mode + positions + risk.
 
     LOT 8 (PDF Pilier Q) : enrichi avec les métriques de qualité
@@ -114,8 +114,8 @@ def build_daily_report(state: Dict, db) -> Dict:
     except Exception as e:
         logger.warning(f"Report: orders fetch failed: {e}")
 
-    by_strategy: Dict[str, Dict] = {}
-    by_asset: Dict[str, Dict] = {}
+    by_strategy: dict[str, dict] = {}
+    by_asset: dict[str, dict] = {}
     today_ts = time.time() - 24 * 3600
 
     def _ts(o) -> float:
@@ -200,7 +200,7 @@ def build_daily_report(state: Dict, db) -> Dict:
     }
 
 
-def build_concierge_message(report: Dict) -> str:
+def build_concierge_message(report: dict) -> str:
     """Telegram risk-concierge digest (audit D4)."""
     h = report["health_score"]
     emoji = "🟢" if h >= 80 else ("🟠" if h >= 50 else "🔴")

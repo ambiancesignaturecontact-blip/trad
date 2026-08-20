@@ -1,9 +1,26 @@
-import pytest
-import sys
 import os
+import sys
+
+import pytest
 
 # Add project root to path
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+# ===========================================================================
+# DB DE TEST ISOLÉE (contention SQLite réglée) :
+# les tests écrivent dans UNE COPIE de la base réelle (ou une base vide), PAS
+# dans trading_platform.db. Avant : lancer pytest pendant que le serveur
+# uvicorn écrit dans la même DB rendait la suite 15x plus lente (500s+ vs 30s)
+# et polluait la vraie base. SQLITE_DB_PATH est lu par database/db_manager.py
+# au moment de l'import — on le définit ICI, avant tout import de main.
+# ===========================================================================
+_TEST_DB = os.path.join(os.path.dirname(__file__), "test_trading.db")
+os.environ["SQLITE_DB_PATH"] = _TEST_DB
+if os.path.exists(_TEST_DB):
+    try:
+        os.remove(_TEST_DB)  # base fraîche à chaque session de test
+    except OSError:
+        pass
 
 @pytest.fixture
 def sample_returns():

@@ -8,7 +8,6 @@ Real copy-trading mirroring engine (VISION §5 / copy-trading execution).
   otherwise honest SIGNAL_ONLY mode (no fake execution).
 """
 import logging
-from typing import Dict, List, Optional
 
 import httpx
 
@@ -18,7 +17,7 @@ HL_INFO = "https://api.hyperliquid.xyz/info"
 COIN_MAP = {"BTC": "BTCUSDT", "ETH": "ETHUSDT", "SOL": "SOLUSDT"}
 
 
-def fetch_trader_positions(trader_id: str, timeout: float = 12.0) -> List[dict]:
+def fetch_trader_positions(trader_id: str, timeout: float = 12.0) -> list[dict]:
     """Returns real signed positions of a trader: [{coin, szi, entry_px, notional_usd}]."""
     try:
         resp = httpx.post(HL_INFO, json={"type": "clearinghouseState", "user": trader_id}, timeout=timeout)
@@ -44,9 +43,9 @@ def fetch_trader_positions(trader_id: str, timeout: float = 12.0) -> List[dict]:
         return []
 
 
-def build_mirror_orders(trader_positions: List[dict], my_positions: Dict[str, float],
+def build_mirror_orders(trader_positions: list[dict], my_positions: dict[str, float],
                         allocated_capital: float, trader_account_value: float,
-                        min_notional: float = 10.0, max_asset_pct: float = 0.25) -> List[dict]:
+                        min_notional: float = 10.0, max_asset_pct: float = 0.25) -> list[dict]:
     """
     Computes the DELTA orders to mirror the trader's book scaled to our allocation.
     my_positions: {symbol: qty}. Returns [{symbol, side, qty, reason}].
@@ -74,7 +73,7 @@ def build_mirror_orders(trader_positions: List[dict], my_positions: Dict[str, fl
     return orders
 
 
-def mirror_status_text(following: Dict[str, dict]) -> str:
+def mirror_status_text(following: dict[str, dict]) -> str:
     """Human-readable summary of the active mirroring (Telegram/dashboard)."""
     if not following:
         return "Aucun trader suivi (mode FOLLOW_ONLY / pas d'allocation)."

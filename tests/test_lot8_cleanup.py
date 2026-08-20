@@ -12,8 +12,6 @@ P2-18 : le shim db_manager.py racine est supprimé ; les 5 importeurs utilisent
 """
 from pathlib import Path
 
-import pytest
-
 ROOT = Path(__file__).resolve().parent.parent
 
 
@@ -31,14 +29,13 @@ def test_market_data_macro_calendar_is_deprecation_shim():
 
 def test_macro_shim_exposes_real_engine():
     """Importer depuis market_data.macro_calendar donne le moteur RÉEL."""
-    from market_data.macro_calendar import MacroeconomicCalendarEngine, IMPACT_REDUCTION
+    from market_data.macro_calendar import IMPACT_REDUCTION, MacroeconomicCalendarEngine
     assert MacroeconomicCalendarEngine.__module__ == "models.macro_calendar"
     assert IMPACT_REDUCTION["HIGH"] == 0.40
 
 
 def test_no_old_simulated_events_anywhere():
     """Aucun événement macro simulé (time.time() + 3600*X) ne subsiste."""
-    import re
     for rel in ("market_data/macro_calendar.py", "models/macro_calendar.py"):
         src = (ROOT / rel).read_text(encoding="utf-8")
         assert "time.time() + 3600" not in src, f"{rel} contient encore du simulé"

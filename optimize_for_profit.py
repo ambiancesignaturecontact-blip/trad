@@ -1,42 +1,45 @@
 import numpy as np
-import pandas as pd
+
+from backtester.bias_audit import audit_backtest
+from backtester.engine import EventDrivenBacktester
+from backtester.honest_verdict import print_honest_result
+from backtester.live_candles import fetch_real_candles
+from models.price_predictor import LSTMLikePredictor, PPOTRAgent
 
 # Import our quant models
 from models.regime_detector import MarketRegimeDetector
-from models.price_predictor import LSTMLikePredictor, PPOTRAgent
-from strategies.engine import (
-    MetaAllocationEngine, TrendFollowingStrategy, MeanReversionStrategy,
-    StatisticalArbitrageStrategy, GridTradingStrategy, ScalpingStrategy
-)
 from risk.risk_manager import RiskManager
-from backtester.engine import EventDrivenBacktester
-from backtester.bias_audit import audit_backtest
-from backtester.live_candles import fetch_real_candles
-from backtester.honest_verdict import print_honest_result
+from strategies.engine import (
+    GridTradingStrategy,
+    MeanReversionStrategy,
+    MetaAllocationEngine,
+    TrendFollowingStrategy,
+)
+
 
 def run_profitability_calibration():
     print("=========================================================================")
     print("🎯 CALIBRATION ET OPTIMISATION DE RENTABILITÉ SUR MARCHÉ RÉEL")
     print("=========================================================================")
-    
+
     # Load actual real-world historical market data!
     # (OKX -> Coinbase -> Kraken -> Binance ; plus AUCUN fallback synthétique —
     # sans données réelles, pas de preuve. P0-5, audit §4.9.)
     df, _src = fetch_real_candles("BTCUSDT", limit=500)
     if df is None:
         return
-    
+
     # 2. Instantiate and fit models
     detector = MarketRegimeDetector()
     predictor = LSTMLikePredictor(5, 24)  # P0-5 : même archi que le live (audit §4.9)
     ppo = PPOTRAgent(4, 1)
-    
+
     train_df = df.iloc[:100]
     returns = train_df['close'].pct_change().dropna().values
     vols = train_df['close'].pct_change().rolling(10).std().dropna().values
     min_l = min(len(returns), len(vols))
     detector.fit(np.column_stack((returns[-min_l:], vols[-min_l:])))
-    
+
     feats = []
     labs = []
     pct_df = train_df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0)
@@ -44,7 +47,7 @@ def run_profitability_calibration():
         feats.append(pct_df.iloc[i-5:i].values)
         labs.append(pct_df['close'].iloc[i])
     predictor.fit(feats, np.array(labs))
-    
+
     # 3. Setup Strategies
     strategies = [
         TrendFollowingStrategy(params={'ema_fast': 10, 'ema_slow': 20, 'breakout_period': 15}),
@@ -52,7 +55,7 @@ def run_profitability_calibration():
         GridTradingStrategy(params={'grid_levels': 5, 'atr_multiplier': 1.2})
     ]
     meta_engine = MetaAllocationEngine(strategies=strategies)
-    
+
     risk = RiskManager(params={
         'max_daily_drawdown_pct': 0.05,
         'max_total_drawdown_pct': 0.10,
@@ -60,7 +63,7 @@ def run_profitability_calibration():
         'fractional_kelly_multiplier': 0.25,
         'deviation_limit_pct': 0.05
     })
-    
+
     # 4. Run Backtest
     backtester = EventDrivenBacktester(initial_capital=100000.0, commission_pct=0.0004, slippage_pct=0.0001)
 
@@ -78,7 +81,7 @@ def run_profitability_calibration():
     print(f"✅ Audit des biais passé (score {_bias['score']})")
 
     results = backtester.run(df, meta_engine, risk, detector, predictor, ppo)
-    
+
     print("\n📊 RAPPORT FINANCIER D'OPTIMISATION DE L'IA :")
     print("-------------------------------------------------------------------------")
     print(f"Capital de départ     : ${results['initial_capital']:.2f}")

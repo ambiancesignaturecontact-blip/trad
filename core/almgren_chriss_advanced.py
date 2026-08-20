@@ -2,10 +2,9 @@
 LOT 57: Advanced Almgren-Chriss Market Impact & Liquidity Model
 """
 
-import numpy as np
-import pandas as pd
-from typing import Dict, Tuple, Optional
 import logging
+
+import numpy as np
 
 logger = logging.getLogger("AlmgrenChrissAdvanced")
 
@@ -18,7 +17,7 @@ class AdvancedAlmgrenChrissModel:
     - Risk aversion
     """
 
-    def __init__(self, 
+    def __init__(self,
                  gamma: float = 0.1,      # Permanent impact coefficient
                  eta: float = 0.05,       # Temporary impact coefficient
                  lambda_risk: float = 0.5):  # Risk aversion
@@ -26,13 +25,13 @@ class AdvancedAlmgrenChrissModel:
         self.eta = eta
         self.lambda_risk = lambda_risk
 
-    def estimate_market_impact(self, 
+    def estimate_market_impact(self,
                                symbol: str,
                                order_size: float,
                                avg_daily_volume: float,
                                volatility: float,
                                current_price: float,
-                               side: str = "BUY") -> Dict:
+                               side: str = "BUY") -> dict:
         """
         Estimate total execution cost including market impact.
         """
@@ -74,7 +73,7 @@ class AdvancedAlmgrenChrissModel:
         logger.info(f"LOT 57: {symbol} | Participation: {participation:.2%} | Total Impact: {total_cost_bps:.1f} bps")
         return result
 
-    def optimal_execution_trajectory(self, 
+    def optimal_execution_trajectory(self,
                                      total_shares: float,
                                      horizon_steps: int = 10,
                                      urgency: float = 0.5) -> np.ndarray:
@@ -88,8 +87,8 @@ class AdvancedAlmgrenChrissModel:
 
         return np.diff(np.concatenate([[0], trajectory]))
 
-    def get_liquidity_score(self, 
-                            avg_daily_volume: float, 
+    def get_liquidity_score(self,
+                            avg_daily_volume: float,
                             spread_bps: float,
                             volatility: float) -> float:
         """Returns a normalized liquidity score (0 = illiquid, 1 = very liquid)"""

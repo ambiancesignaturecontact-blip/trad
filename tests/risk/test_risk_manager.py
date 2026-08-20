@@ -1,6 +1,5 @@
-import pytest
-import numpy as np
 from risk.risk_manager import RiskManager
+
 
 def test_risk_manager_initialization():
     risk = RiskManager()
@@ -15,7 +14,7 @@ def test_circuit_breakers():
         'max_exposure_per_asset_pct': 0.30,
         'fractional_kelly_multiplier': 0.15
     })
-    
+
     # Set starting values
     risk.set_initial_capital(100.0)  # micro-account -> 18% daily limit
 
@@ -30,7 +29,7 @@ def test_circuit_breakers():
 
 def test_position_sizing_safeguards():
     risk = RiskManager()
-    
+
     # Test sizing under standard conditions
     qty = risk.calculate_position_size(
         capital=10000.0,
@@ -43,16 +42,16 @@ def test_position_sizing_safeguards():
 
 def test_order_safety_sanity_checks():
     risk = RiskManager()
-    
+
     # 1. Valid order
     ok, reason = risk.validate_order_safety(1000.0, 1000.0, 1.0, 10000.0)
     assert ok is True
-    
+
     # 2. Price deviation fat-finger rejection
     ok, reason = risk.validate_order_safety(1100.0, 1000.0, 1.0, 10000.0) # 10% deviation (limit is 5%)
     assert ok is False
     assert "Price deviation too high" in reason
-    
+
     # 3. Insufficient capital rejection
     ok, reason = risk.validate_order_safety(1000.0, 1000.0, 20.0, 10000.0) # $20k order on $10k capital
     assert ok is False

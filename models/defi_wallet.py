@@ -1,9 +1,8 @@
-import os
-import json
 import logging
-import httpx
-from web3 import Web3
+import os
+
 from eth_account import Account
+from web3 import Web3
 
 logger = logging.getLogger("DeFiWallet")
 
@@ -11,7 +10,7 @@ class NonCustodialDeFiWallet:
     """
     Secure, Non-Custodial EVM Wallet Manager.
     Supports native L2 high-performance networks (Arbitrum, Base, Optimism).
-    
+
     Includes 1inch / ParaSwap DEX Aggregator routing simulations,
     on-chain slippage limits protection (anti-MEV/anti-sandwich),
     and a resilient dynamic RPC failover mechanism.
@@ -29,7 +28,7 @@ class NonCustodialDeFiWallet:
         self.current_rpc_index = 0
         self.w3 = None
         self.connect_to_first_working_rpc()
-        
+
         self.private_key = os.getenv("EVM_PRIVATE_KEY")
         self.account = None
         if self.private_key:
@@ -48,11 +47,11 @@ class NonCustodialDeFiWallet:
                     self.w3 = temp_w3
                     logger.info(f"Successfully connected to RPC Node: {url} (Chain ID: {self.w3.eth.chain_id})")
                     return
-            except Exception as e:
+            except Exception:
                 logger.warning(f"RPC Node offline/rate-limited: {url}. Attempting failover...")
-                
+
             self.current_rpc_index = (self.current_rpc_index + 1) % len(self.rpc_pool)
-            
+
         logger.error("CRITICAL: All EVM RPC nodes in the pool are offline. Operating in passive mode.")
         self.w3 = Web3()
 
@@ -86,7 +85,7 @@ class NonCustodialDeFiWallet:
 
     async def get_1inch_aggregator_quote(self, token_in: str, token_out: str, amount_in_wei: int, chain_id: int = 42161) -> dict:
         """
-        Queries 1inch Aggregator API for the optimal dynamic route 
+        Queries 1inch Aggregator API for the optimal dynamic route
         across multiple liquidity pools (Uniswap, Sushi, Balancer) to guarantee slippage-free execution.
         """
         # Under standard production, we poll: https://api.1inch.dev/swap/v6.0/{chain_id}/quote
@@ -112,23 +111,23 @@ class NonCustodialDeFiWallet:
         """
         if not self.account or not self.w3:
             return {"status": "Failed", "reason": "No wallet loaded or RPC pool offline."}
-            
+
         try:
             address = self.account.address
             nonce = self.execute_with_failover(self.w3.eth.get_transaction_count, address)
             chain_id = self.execute_with_failover(getattr, self.w3.eth, "chain_id")
-            
+
             # Universal 1inch Aggregator Router Contract Address on L2s
             router_address = "0x1111111254fb6c44bac0bed2854e76f90643097d" # 1inch v6 Router
             amount_in_wei = self.w3.to_wei(amount_in_eth, 'ether')
-            
+
             # SLIPPAGE PROTECTION ENFORCEMENT ON-CHAIN (Anti-MEV / Anti-Sandwich):
             # Calculate strict amountOutMinimum (e.g. price minus 0.3% slippage)
             # If the output in the DEX pools fluctuates more than this minimum during execution,
             # the EVM transaction automatically reverts, protecting 100% of user assets from frontrunners!
             expected_output_wei = int(amount_in_wei * 1.0) # Assumes 1:1 asset peg proxy for sizing
             amount_out_minimum = int(expected_output_wei * (1.0 - slippage_pct))
-            
+
             # 1inch Router swap payload building
             tx = {
                 'chainId': chain_id,
@@ -142,9 +141,9 @@ class NonCustodialDeFiWallet:
                 # Including amountOutMinimum protects the transaction on-chain!
                 'data': f"0x12aa3ade{amount_out_minimum:064x}" # Hexadecimal payload injection of slippage limit parameter
             }
-            
+
             signed_tx = self.w3.eth.account.sign_transaction(tx, self.private_key)
-            
+
             return {
                 "status": "Signed",
                 "tx_hash": signed_tx.hash.hex(),

@@ -10,7 +10,6 @@ SQLite DB, then re-creates missing indexes/PRAGMAs via DBManager.
 """
 import argparse
 import os
-import shutil
 import sys
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
@@ -54,7 +53,7 @@ def main():
     print("✅ Database restored.")
 
     from database.db_manager import DBManager
-    db = DBManager()  # re-applies WAL, busy_timeout, indexes
+    DBManager()  # re-applies WAL, busy_timeout, indexes
     print("✅ Indexes/PRAGMAs re-applied. Restart the bot.")
 
 

@@ -13,10 +13,10 @@ Preuve par le comportement, pas par la déclaration.
 import logging
 import os
 import stat
+from pathlib import Path
 
 import pytest
 from fastapi import HTTPException
-from pathlib import Path
 
 import main
 

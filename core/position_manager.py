@@ -10,12 +10,10 @@ UNIQUE DE VÉRITÉ REWARD_RISK_RATIO (core.risk_pipeline) pour que le RR réel
 des stops soit identique au RR utilisé par le sizing Kelly. Plus jamais de
 stops à RR 1.75-2.0 pendant que le Kelly utilise 1.5.
 """
-import json
 import logging
 import time
-from typing import Dict, Optional
 
-from core.risk_pipeline import REWARD_RISK_RATIO, STOP_LOSS_PCT, ATR_MULT_SL
+from core.risk_pipeline import ATR_MULT_SL, REWARD_RISK_RATIO, STOP_LOSS_PCT
 
 logger = logging.getLogger("PositionManager")
 
@@ -29,7 +27,7 @@ class PositionProtection:
 
     def __init__(self, symbol: str, entry_price: float, qty: float,
                  stop_loss_pct: float = None, take_profit_pct: float = None,
-                 trailing_pct: float = 0.0, atr: Optional[float] = None,
+                 trailing_pct: float = 0.0, atr: float | None = None,
                  atr_mult_sl: float = None, atr_mult_tp: float = None):
         self.symbol = symbol
         self.entry_price = float(entry_price)
@@ -224,11 +222,11 @@ def can_pyramid(prot: PositionProtection, current_price: float,
 class PositionProtectionStore:
     """Persists protection plans in STATE (JSON-serializable) so they survive ticks."""
 
-    def __init__(self, state: Dict):
+    def __init__(self, state: dict):
         self.state = state
         self.state.setdefault("position_protections", {})  # symbol -> dict
 
-    def get(self, symbol: str) -> Optional[PositionProtection]:
+    def get(self, symbol: str) -> PositionProtection | None:
         d = self.state["position_protections"].get(symbol)
         if not d:
             return None
@@ -254,5 +252,5 @@ class PositionProtectionStore:
     def remove(self, symbol: str) -> None:
         self.state["position_protections"].pop(symbol, None)
 
-    def all(self) -> Dict[str, dict]:
+    def all(self) -> dict[str, dict]:
         return dict(self.state["position_protections"])

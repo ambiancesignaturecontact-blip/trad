@@ -1,40 +1,41 @@
 import numpy as np
-import pandas as pd
+
+from backtester.bias_audit import audit_backtest
+from backtester.engine import EventDrivenBacktester
+from backtester.honest_verdict import print_honest_result
+from backtester.live_candles import fetch_real_candles
+from models.price_predictor import LSTMLikePredictor, PPOTRAgent
 
 # Import our quant models
 from models.regime_detector import MarketRegimeDetector
-from models.price_predictor import LSTMLikePredictor, PPOTRAgent
-from strategies.engine import MetaAllocationEngine, TrendFollowingStrategy
 from risk.risk_manager import RiskManager
-from backtester.engine import EventDrivenBacktester
-from backtester.bias_audit import audit_backtest
-from backtester.live_candles import fetch_real_candles
-from backtester.honest_verdict import print_honest_result
+from strategies.engine import MetaAllocationEngine, TrendFollowingStrategy
+
 
 def run_micro_budget_simulation():
     print("=========================================================================")
     print("💶 SIMULATION DE BUDGET MICRO : DÉPART À 50 EUROS ($50 USD)")
     print("=========================================================================")
-    
+
     # 1. Données RÉELLES uniquement (ETHUSDT, OKX -> Coinbase -> Kraken).
     #    Plus AUCUNE donnée synthétique : sans données réelles, pas de preuve
     #    (P0-5, audit §4.9 — un backtest sur données fabriquées ne prouve rien).
     df, _src = fetch_real_candles("ETHUSDT", limit=500)
     if df is None:
         return
-    
+
     # 2. Setup Models
     detector = MarketRegimeDetector()
     predictor = LSTMLikePredictor(5, 24)  # P0-5 : même archi que le live (audit §4.9)
     ppo = PPOTRAgent(4, 1)
-    
+
     # Train
     train_df = df.iloc[:100]
     returns = train_df['close'].pct_change().dropna().values
     vols = train_df['close'].pct_change().rolling(5).std().dropna().values
     min_l = min(len(returns), len(vols))
     detector.fit(np.column_stack((returns[-min_l:], vols[-min_l:])))
-    
+
     feats = []
     labs = []
     pct_df = train_df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0)
@@ -42,11 +43,11 @@ def run_micro_budget_simulation():
         feats.append(pct_df.iloc[i-5:i].values)
         labs.append(pct_df['close'].iloc[i])
     predictor.fit(feats, np.array(labs))
-    
+
     # Setup Strategies
     trend_strat = TrendFollowingStrategy(params={'ema_fast': 12, 'ema_slow': 26, 'breakout_period': 20})
     meta_engine = MetaAllocationEngine(strategies=[trend_strat])
-    
+
     # Risk management policy for Micro-Budget (allowing larger asset exposures because total capital is very small)
     risk = RiskManager(params={
         'max_daily_drawdown_pct': 0.15,     # 15% daily limit
@@ -55,7 +56,7 @@ def run_micro_budget_simulation():
         'fractional_kelly_multiplier': 0.50, # larger Kelly fraction to capture L2 alpha
         'deviation_limit_pct': 0.05
     })
-    
+
     # 4. Run Backtest with Layer-2 ultra-cheap fees:
     # - Commission: 0.05% (Binance VIP or standard Uniswap fee of 0.05% on L2)
     # - Slippage: 0.01%
@@ -77,15 +78,15 @@ def run_micro_budget_simulation():
     print(f"✅ Audit des biais passé (score {_bias['score']})")
 
     results = backtester.run(df, meta_engine, risk, detector, predictor, ppo)
-    
+
     # Subtract gas fees: say we made 10 trades, costing 10 * 0.005 = 0.05 USD total
     gas_cost = results['total_trades'] * 0.005
     results['final_equity'] -= gas_cost
     results['total_return_pct'] = ((results['final_equity'] - 50.0) / 50.0) * 100.0
-    
+
     print(f"Rendement de l'actif sous-jacent : +{((df['close'].iloc[-1] - df['close'].iloc[0])/df['close'].iloc[0])*100:.2f}%")
     print("-------------------------------------------------------------------------")
-    print(f"Capital de départ (Micro) : $50.00 (approx. 50 Euros)")
+    print("Capital de départ (Micro) : $50.00 (approx. 50 Euros)")
     print(f"Capital Final (Equity)    : ${results['final_equity']:.2f}")
     print(f"Rendement Net (PnL)       : ${results['final_equity'] - 50.0:.2f} ({results['total_return_pct']:.2f}%)")
     print(f"Nombre total d'ordres     : {results['total_trades']}")

@@ -1,19 +1,19 @@
-import pytest
-from models.oms_ems import OrderManagementSystem, ExecutionManagementSystem, OrderStatus, Fill
 from adapters.exchange_adapter import BinanceExchangeAdapter, BybitExchangeAdapter
 from database.db_manager import DBManager
+from models.oms_ems import ExecutionManagementSystem, Fill, OrderManagementSystem, OrderStatus
+
 
 def test_oms_and_ems_lifecycle_flow():
     db = DBManager()
-    
+
     # Instantiate adapters
     binance = BinanceExchangeAdapter(None)
     bybit = BybitExchangeAdapter(None)
-    
+
     # Instantiate EMS & OMS
     ems = ExecutionManagementSystem(binance, bybit)
     oms = OrderManagementSystem(db, ems)
-    
+
     # Create order
     order = oms.submit_new_order(
         symbol="BTCUSDT",
@@ -24,13 +24,13 @@ def test_oms_and_ems_lifecycle_flow():
         strategy="META_MODEL",
         client_order_id="unique_client_id_77"
     )
-    
+
     assert order.status == OrderStatus.CREATED
     assert order.requested_qty == 0.01
-    
+
     # Approve and execute order through OMS -> EMS!
     res = oms.approve_and_execute_order(order)
-    
+
     assert res["status"] == "ACKNOWLEDGED"
     assert order.status == OrderStatus.ACKNOWLEDGED
 
@@ -38,7 +38,7 @@ def test_confirmed_fills_flow():
     db = DBManager()
     ems = ExecutionManagementSystem(None, None)
     oms = OrderManagementSystem(db, ems)
-    
+
     order = oms.submit_new_order(
         symbol="BTCUSDT",
         side="BUY",
@@ -48,10 +48,10 @@ def test_confirmed_fills_flow():
         strategy="META_MODEL",
         client_order_id="client_id_88"
     )
-    
+
     # Enforce that order status is NOT filled on submission
     assert order.status == OrderStatus.CREATED
-    
+
     # Process a PARTIAL fill
     f1 = Fill(
         fill_id="f_01",
@@ -64,11 +64,11 @@ def test_confirmed_fills_flow():
         side="BUY"
     )
     oms.process_exchange_fill_receipt("client_id_88", f1)
-    
+
     assert order.status == OrderStatus.PARTIALLY_FILLED
     assert order.filled_qty == 0.04
     assert order.remaining_qty == 0.06
-    
+
     # Process the final finishing fill (fully filled!)
     f2 = Fill(
         fill_id="f_02",
@@ -81,7 +81,7 @@ def test_confirmed_fills_flow():
         side="BUY"
     )
     oms.process_exchange_fill_receipt("client_id_88", f2)
-    
+
     assert order.status == OrderStatus.FILLED
     assert order.filled_qty == 0.10
     assert order.remaining_qty == 0.0
@@ -91,7 +91,7 @@ def test_order_rejection_flow():
     db = DBManager()
     ems = ExecutionManagementSystem(None, None)
     oms = OrderManagementSystem(db, ems)
-    
+
     order = oms.submit_new_order(
         symbol="BTCUSDT",
         side="BUY",
@@ -101,7 +101,7 @@ def test_order_rejection_flow():
         strategy="META_MODEL",
         client_order_id="client_id_rejection"
     )
-    
+
     oms.process_order_rejection("client_id_rejection", "Risk limit exceeded")
     assert order.status == OrderStatus.REJECTED
 
@@ -109,7 +109,7 @@ def test_order_cancellation_flow():
     db = DBManager()
     ems = ExecutionManagementSystem(None, None)
     oms = OrderManagementSystem(db, ems)
-    
+
     order = oms.submit_new_order(
         symbol="BTCUSDT",
         side="BUY",
@@ -119,6 +119,6 @@ def test_order_cancellation_flow():
         strategy="META_MODEL",
         client_order_id="client_id_cancellation"
     )
-    
+
     oms.process_order_cancellation("client_id_cancellation")
     assert order.status == OrderStatus.CANCELLED
