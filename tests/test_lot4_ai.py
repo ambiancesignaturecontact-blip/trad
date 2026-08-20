@@ -229,11 +229,12 @@ class TestRLHFandGAN:
         assert model.predict_reward(np.zeros(10)) is None
 
     def test_main_handles_none(self):
-        """main.py ne réduit PAS la taille quand le score RLHF est None."""
+        """P2-19 (audit §2.4) : main.py n'appelle PLUS le RLHF (ÉDUCATIF)
+        pour le sizing — le facteur du pipeline est la constante 1.0."""
         import inspect
         src = inspect.getsource(__import__("main", fromlist=["x"]))
-        assert "_rlhf_score is None" in src
-        assert "_rlhf_s = 1.0" in src
+        assert "rlhf_scale=1.0" in src
+        assert "rlhf_reward_model.predict_reward" not in src
 
     def test_gan_documents_limits(self):
         src = open("ai/generative_extreme_scenarios.py").read()

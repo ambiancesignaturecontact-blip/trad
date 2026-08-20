@@ -287,10 +287,11 @@ from ai.generative_extreme_scenarios import ExtremeScenarioGenerator
 generative_engine = ExtremeScenarioGenerator()
 logger.info("✅ LOT 54: Generative Extreme Scenario Engine initialized")
 
-# === LOT 55: RLHF (Reinforcement Learning from Human Feedback) ===
-from rl.rlhf_reward_model import RLHFRewardModel
-rlhf_reward_model = RLHFRewardModel()
-logger.info("✅ LOT 55: RLHF Reward Model initialized")
+# === LOT 55 (module ÉDUCATIF — P2-19) ===
+# rl/rlhf_reward_model.py reste dans le repo, étiqueté ÉDUCATIF dans le
+# registre module_honesty. Il n'est PLUS chargé ici : un module ÉDUCATIF ne
+# doit JAMAIS influencer une décision de trading (audit §2.4). L'implémentation
+# reste testée unitairement (tests/test_lot9_honesty.py).
 
 # === LOT 56: Multi-Objective Portfolio Optimizer (Sharpe + CVaR + Max Drawdown) ===
 from core.multi_objective_optimizer import MultiObjectivePortfolioOptimizer
@@ -3724,17 +3725,9 @@ async def live_trading_loop():
                     _conf_s = STATE.get("confidence_factor", 1.0)
                     # 11. Organisation (desks)
                     _org_s = organization.confidence_factor(_dom_early)
-                    # 12. RLHF (modulateur borné)
-                    _rlhf_s = 1.0
-                    try:
-                        _rlhf_feats = np.array([norm_pos, vol_mean, STATE["ml_prediction_pct"], actual_return])
-                        _rlhf_score = rlhf_reward_model.predict_reward(_rlhf_feats)
-                        if _rlhf_score is None:
-                            _rlhf_s = 1.0  # RLHF indisponible -> NEUTRE (LOT 4)
-                        else:
-                            _rlhf_s = max(0.25, 0.5 + 0.5 * float(_rlhf_score))
-                    except Exception:
-                        pass
+                    # 12. RLHF — P2-19 (audit §2.4) : module ÉDUCATIF, JAMAIS
+                    # dans le sizing. Le facteur du pipeline est 1.0 constant
+                    # (voir rlhf_scale dans l'appel ci-dessous).
                     # 13. Volatilité cible
                     _vol_scale = 1.0
                     try:
@@ -3789,7 +3782,7 @@ async def live_trading_loop():
                             reason_attribution_scale=_reason_s,
                             confidence_scale=_conf_s,
                             org_scale=_org_s,
-                            rlhf_scale=_rlhf_s,
+                            rlhf_scale=1.0,  # P2-19 : rlhf ÉDUCATIF -> JAMAIS d'influence sizing
                             vol_scale=_vol_scale,
                             tradability_scale=_trad_s,
                         )
