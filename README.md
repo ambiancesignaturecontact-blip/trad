@@ -126,10 +126,12 @@ flowchart LR
   (si `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID`) ou via le fichier
   `.admin_credentials` (0600, exclu du dépôt) — à supprimer après première connexion.
 
-## 🗺️ Feuille de route (non bloquant)
+## 🗺️ État du projet
 
-Voir `ROADMAP_INSTITUTIONNEL.md` pour l'analyse de gap détaillée (auth API, attribution par modèle,
-sauvegardes DB, anti-doublons d'ordres, nettoyage de code mort…).
+Voir `STATE_OF_THE_PROJECT.md` pour l'état vivant du projet : ce qui est fait
+(avec preuves : commits, tests), ce qui est en cours, et les limites connues.
+Les anciens documents d'audit/vision sont archivés dans
+`docs/archive/audits-2026-08/`.
 
 ## 📄 Licence
 
