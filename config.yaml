@@ -91,6 +91,12 @@ strategies:
   enable_stat_arb: true
   enable_inter_exchange_arb: true
   enable_scalping: true
+  # ===== P1-12 (audit §2.2/§2.6) : bandit Thompson non-stationnaire =====
+  bandit_decay: 0.98                # oubli exponentiel (demi-vie ~34 mises à jour)
+  bandit_sample_refresh_seconds: 60.0  # tirage figé par cycle de décision (plus par tick)
+  # ===== P1-11 (audit §2.5) : attribution PnL par Sharpe déflaté =====
+  pnl_min_samples_full: 20          # échantillon minimal pour ajustement complet
+  pnl_max_adjustment: 0.20          # borne d'ajustement (±20%) sous le plancher
 
 logging:
   level: INFO

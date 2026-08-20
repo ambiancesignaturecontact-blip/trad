@@ -105,6 +105,13 @@ _DEFAULTS: Dict[str, Any] = {
         "enable_stat_arb": True,
         "enable_inter_exchange_arb": True,
         "enable_scalping": True,
+        # P1-12 (audit §2.6) : oubli du bandit Thompson (non-stationnarité)
+        "bandit_decay": 0.98,
+        # P1-12 (audit §2.2) : durée de vie d'un tirage Thompson (cycle de décision)
+        "bandit_sample_refresh_seconds": 60.0,
+        # P1-11 (audit §2.5) : plancher d'échantillon + borne d'ajustement PnL
+        "pnl_min_samples_full": 20,
+        "pnl_max_adjustment": 0.20,
     },
     "autopilot": {
         # P0-6 (audit §5-P0-6) : l'audit exige 4-8 semaines de paper-trading

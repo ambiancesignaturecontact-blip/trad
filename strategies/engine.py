@@ -1,7 +1,38 @@
+import time
+from collections import deque
+
 import numpy as np
 import pandas as pd
 from statsmodels.tsa.stattools import coint
+
+from core.config import settings
+from models.lopez_de_prado import calculate_deflated_sharpe_ratio
 from models.regime_detector import compute_order_book_imbalance
+
+# =========================================================================== #
+# P1-10 / P1-11 / P1-12 (audit indépendant §4.4 / §2.5 / §2.6 / §2.2)
+# =========================================================================== #
+# P1-12 (§2.6) : facteur d'oubli du bandit Thompson (non-stationnarité).
+# Un régime de marché dure quelques semaines : l'avantage d'une stratégie
+# doit s'estomper, pas se figer à vie. 0.98 = demi-vie ~34 mises à jour.
+BANDIT_DECAY = settings.get_float("strategies", "bandit_decay", 0.98)
+# P1-12 (§2.2) : durée de vie d'un tirage Thompson (cycle de décision).
+# Le tirage est figé N secondes au lieu d'être ré-échantillonné à chaque
+# tick (2,5 s) — sinon deux ticks stables produisent des poids différents
+# par le seul bruit du tirage.
+BANDIT_SAMPLE_REFRESH_SECONDS = settings.get_float(
+    "strategies", "bandit_sample_refresh_seconds", 60.0)
+# P1-11 (§2.5) : échantillon de PnL minimal avant ajustement COMPLET des
+# poids (en dessous : ajustement borné à ±20 % par mise à jour).
+PNL_MIN_SAMPLES_FULL = settings.get_int("strategies", "pnl_min_samples_full", 20)
+PNL_MAX_ADJUSTMENT = settings.get_float("strategies", "pnl_max_adjustment", 0.20)
+PNL_HISTORY_MAXLEN = 80
+# P1-10 (§4.4) : historique des signaux pour la matrice de corrélation
+# inter-stratégies (le méta-allocateur ne doit pas croire diversifier alors
+# qu'il parie sur 2-3 facteurs latents corrélés).
+SIGNAL_HISTORY_MAXLEN = 200
+SIGNAL_CORR_MIN_SAMPLES = 30
+SIGNAL_CORR_MAX_PENALTY = 0.50   # une stratégie ne descend jamais sous 50 %
 
 class BaseStrategy:
     def __init__(self, name, params=None):
@@ -320,6 +351,93 @@ class MetaAllocationEngine:
         self.recent_performance = {s.name: [] for s in self.strategies}  # Sharpe-like score récent
         self.walkforward_weights = np.ones(self.num_strategies) / self.num_strategies
 
+        # P1-12 (§2.2) : cache des tirages Thompson (figés par cycle de décision)
+        self._bandit_sample_cache = {}
+        # P1-11 (§2.5) : historique de PnL RÉEL par stratégie (séparé du buffer
+        # du bandit — les deux mécanismes de reward ne doivent plus se marcher
+        # dessus) + poids issus de l'attribution DSR.
+        self.pnl_history = {s.name: deque(maxlen=PNL_HISTORY_MAXLEN)
+                            for s in self.strategies}
+        self.pnl_weights = {}
+        # P1-10 (§4.4) : historique des SIGNAUX par stratégie (corrélation
+        # inter-stratégies — l'angle mort dénoncé par l'audit).
+        self.signal_history = {s.name: deque(maxlen=SIGNAL_HISTORY_MAXLEN)
+                               for s in self.strategies}
+
+    def _sample_bandit(self, i: int) -> float:
+        """P1-12 (§2.2) : tirage Thompson FIGÉ par cycle de décision —
+        au maximum 1 tirage / BANDIT_SAMPLE_REFRESH_SECONDS par stratégie,
+        au lieu d'un ré-échantillonnage à chaque tick (2,5 s)."""
+        now = time.time()
+        cached = self._bandit_sample_cache.get(i)
+        if cached is not None and now - cached[0] < BANDIT_SAMPLE_REFRESH_SECONDS:
+            return cached[1]
+        value = float(np.random.beta(self.alpha_bandit[i], self.beta_bandit[i]))
+        self._bandit_sample_cache[i] = (now, value)
+        return value
+
+    def signal_diversification_weights(self) -> dict:
+        """P1-10 (§4.4) : facteur de diversification par stratégie basé sur la
+        corrélation moyenne de SES signaux avec ceux des AUTRES stratégies.
+        Deux stratégies qui votent quasi toujours pareil (Trend/Grid/MeanRev
+        lisent le même OHLC) sont pénalisées : le méta-allocateur ne doit pas
+        croire diversifier alors qu'il parie sur 2-3 facteurs latents.
+        Retourne {name: facteur <= 1.0} ; {} si échantillon insuffisant."""
+        names = [s.name for s in self.strategies
+                 if len(self.signal_history.get(s.name, ())) >= SIGNAL_CORR_MIN_SAMPLES]
+        if len(names) < 2:
+            return {}
+        n = min(len(self.signal_history[nm]) for nm in names)
+        series = {nm: np.asarray(list(self.signal_history[nm])[-n:], dtype=float)
+                  for nm in names}
+        factors = {}
+        for nm in names:
+            corrs = []
+            for other in names:
+                if other == nm:
+                    continue
+                a, b = series[nm], series[other]
+                if np.std(a) < 1e-9 or np.std(b) < 1e-9:
+                    continue
+                c = float(np.corrcoef(a, b)[0, 1])
+                if np.isfinite(c):
+                    corrs.append(abs(c))
+            if corrs:
+                avg = float(np.mean(corrs))
+                # corrélation moyenne 0.9 -> facteur 0.55 ; 0.2 -> 0.80 ; jamais < 0.50
+                factors[nm] = max(SIGNAL_CORR_MAX_PENALTY, 1.0 - avg)
+        return factors
+
+    def _dsr_score(self, history) -> float:
+        """P1-11 (§2.5) : score de significativité d'une stratégie via le
+        Sharpe DÉFLATÉ (López de Prado) — le MÊME test que la promotion de
+        nouvelles hypothèses. Retourne une probabilité [0,1] : proche de 1 =
+        l'edge observé bat l'espérance max sous l'hypothèse nulle de
+        data-snooping sur les stratégies testées."""
+        rets = np.asarray(list(history), dtype=float)
+        if len(rets) < 5:
+            return 0.5
+        std = float(np.std(rets))
+        mean = float(np.mean(rets))
+        if std < 1e-12:
+            sharpe = 0.999 if mean > 0 else (-0.999 if mean < 0 else 0.0)
+        else:
+            sharpe = float(mean / std)
+        sharpe = sharpe * np.sqrt(24.0 * 365.0)  # annualisation indicative
+        dsr = calculate_deflated_sharpe_ratio(
+            observed_sharpe=sharpe,
+            num_trials=max(len(self.strategies), 1),
+            trials_variance_sharpe=1.0,
+            sample_length=len(rets),
+        )
+        # calculate_deflated_sharpe_ratio retourne le sharpe BRUT quand
+        # num_trials <= 1 (pas de data-snooping à corriger) : on le convertit
+        # alors en probabilité pour que le score soit TOUJOURS dans [0,1].
+        if not (0.0 <= dsr <= 1.0):
+            from scipy.stats import norm
+            dsr = float(norm.cdf(dsr))
+        return float(np.clip(dsr, 0.0, 1.0))
+
     def update_bandit_feedback(self, symbol: str, strategy_signals: dict, actual_return: float):
         """
         Updates Thompson Sampling Bandit successes/failures based on trade direction feedback.
@@ -327,7 +445,15 @@ class MetaAllocationEngine:
         Otherwise, we penalize it (increment beta).
         
         + Walk-Forward dynamique : mise à jour des performances récentes.
+        + P1-12 (audit §2.6) : facteur d'oubli — le bandit est NON-stationnaire.
         """
+        # P1-12 (§2.6) : oubli exponentiel AVANT d'ajouter l'observation.
+        # Sans cela, une stratégie qui a brillé pendant un vieux régime bull
+        # garde un avantage de plus en plus figé — le bandit cesse d'explorer
+        # au moment où le marché change.
+        self.alpha_bandit = self.alpha_bandit * BANDIT_DECAY
+        self.beta_bandit = self.beta_bandit * BANDIT_DECAY
+
         for i, s in enumerate(self.strategies):
             sig_obj = strategy_signals.get(s.name, 0.0)
             sig_val = sig_obj.get("signal", 0.0) if isinstance(sig_obj, dict) else sig_obj
@@ -349,43 +475,70 @@ class MetaAllocationEngine:
         """
         LOT 4 (PDF Pilier D) : pondère les stratégies par leur contribution
         RÉELLE au PnL (attribution), pas uniquement par bandit sur signaux
-        bruts. Chaque trade clôturé ajuste le poids via un softmax sur les
-        PnL récents par stratégie (mentalité n°17 : l'alpha décroît — les
-        stratégies qui perdent sont dé-pondérées).
+        bruts.
+
+        P1-11 (audit §2.5) : le rééquilibrage passe désormais par le MÊME
+        test de significativité que la promotion de nouvelles hypothèses —
+        le Sharpe déflaté (López de Prado) — avec un plancher d'échantillon :
+        en dessous de PNL_MIN_SAMPLES_FULL, l'ajustement de poids est borné
+        à ±PNL_MAX_ADJUSTMENT par mise à jour (une série de 10 trades n'est
+        plus suffisante pour gonfler un poids — c'était du bruit statistique).
         """
-        if strategy not in self.recent_performance:
-            self.recent_performance[strategy] = []
-        self.recent_performance[strategy].append(float(pnl_pct))
-        if len(self.recent_performance[strategy]) > 80:
-            self.recent_performance[strategy].pop(0)
-        # Softmax sur les moyennes de PnL récentes (pondération relative)
+        if strategy not in self.pnl_history:
+            self.pnl_history[strategy] = deque(maxlen=PNL_HISTORY_MAXLEN)
+        self.pnl_history[strategy].append(float(pnl_pct))
+
+        # Score = Sharpe DÉFLATÉ par stratégie (probabilité de significativité)
         scores = {}
-        for name in self.recent_performance:
-            perf = self.recent_performance[name]
-            if len(perf) >= 3:  # échantillon minimal avant ajustement
-                scores[name] = float(np.mean(perf))
-        if len(scores) >= 2:
-            vals = np.array([max(scores.get(s.name, 0.0), -0.5) for s in self.strategies
-                             if s.name in scores] + [0.0])  # filet de sécurité
-            # softmax stable
-            exp = np.exp(vals - np.max(vals))
-            probs = exp / exp.sum()
-            idx = 0
-            for i, s in enumerate(self.strategies):
-                if s.name in scores:
-                    self.walkforward_weights[i] = float(probs[idx])
-                    idx += 1
+        for name, hist in self.pnl_history.items():
+            if len(hist) >= 5:
+                scores[name] = self._dsr_score(hist)
+        if len(scores) < 2:
+            return
+
+        # Softmax sur les DSR -> poids cibles
+        vals = np.array([max(scores.get(s.name, 0.0), 1e-9) for s in self.strategies
+                         if s.name in scores])
+        exp = np.exp(vals - np.max(vals))
+        probs = exp / exp.sum()
+
+        idx = 0
+        for i, s in enumerate(self.strategies):
+            if s.name not in scores:
+                continue
+            target = float(probs[idx])
+            idx += 1
+            n = len(self.pnl_history[s.name])
+            old = self.pnl_weights.get(s.name, 1.0 / max(len(self.strategies), 1))
+            if n >= PNL_MIN_SAMPLES_FULL:
+                new = target                      # échantillon suffisant : ajustement complet
+            else:
+                # échantillon < plancher : ajustement borné à ±20 % par mise à jour
+                band = PNL_MAX_ADJUSTMENT * max(old, 0.05)
+                new = old + max(-band, min(band, target - old))
+            self.pnl_weights[s.name] = float(np.clip(new, 0.01, 0.99))
+
+        # normalisation à somme 1
+        tot = sum(self.pnl_weights.values())
+        if tot > 0:
+            self.pnl_weights = {k: v / tot for k, v in self.pnl_weights.items()}
 
     def get_strategy_weights(self) -> dict:
         """
         Returns the current live allocation weights per strategy
-        (Thompson Sampling bandit + walk-forward + PnL attribution LOT 4).
-        Used by the mini-app attribution panel and the LOT 46 telemetry.
+        (Thompson Sampling bandit + walk-forward + PnL attribution LOT 4 /
+        P1-11 : Sharpe déflaté). Used by the mini-app attribution panel and
+        the LOT 46 telemetry.
         """
         weights = {}
         for i, s in enumerate(self.strategies):
             name = getattr(s, "name", f"Strategy_{i}")
             w = float(self.walkforward_weights[i]) if i < len(self.walkforward_weights) else 0.0
+            # P1-11 : une fois l'attribution PnL disponible, le poids affiché
+            # combine walk-forward (50 %) et attribution DSR (50 %).
+            if self.pnl_weights:
+                p = float(self.pnl_weights.get(name, 1.0 / max(len(self.strategies), 1)))
+                w = 0.5 * w + 0.5 * p
             weights[name] = round(w, 4)
         return weights
 
@@ -413,6 +566,13 @@ class MetaAllocationEngine:
                 signals_dict[s.name] = 0.0
                 conf_dict[s.name] = 0.0
 
+        # P1-10 (§4.4) : enregistrement des signaux pour la corrélation
+        # inter-stratégies (utilisée plus bas pour pénaliser la redondance).
+        for name, sig in signals_dict.items():
+            if name in self.signal_history:
+                self.signal_history[name].append(float(sig))
+        _corr_weights = self.signal_diversification_weights()
+
         # === WALK-FORWARD DYNAMIQUE (LOT 11) ===
         # Calcul des poids dynamiques basés sur les performances récentes
         for i, s in enumerate(self.strategies):
@@ -437,9 +597,11 @@ class MetaAllocationEngine:
                 s.enabled = True
 
         # 2. Thompson Sampling (MAB) Weight Calculation:
+        # P1-12 (§2.2) : tirage FIGÉ par cycle de décision (cache temporel),
+        # plus de ré-échantillonnage à chaque tick.
         sampled_performance = np.zeros(self.num_strategies)
         for i in range(self.num_strategies):
-            sampled_performance[i] = np.random.beta(self.alpha_bandit[i], self.beta_bandit[i])
+            sampled_performance[i] = self._sample_bandit(i)
             
         exp_perf = np.exp(sampled_performance - np.max(sampled_performance))
         mab_weights = exp_perf / np.sum(exp_perf)
@@ -478,6 +640,14 @@ class MetaAllocationEngine:
                 weight += float(regime_weights[s.name]) * 0.18
             if s.name in risk_weights:
                 weight += float(risk_weights[s.name]) * 0.20
+            # P1-11 (§2.5) : attribution PnL réelle (Sharpe déflaté) — composante
+            # de pondération propre, séparée du buffer du bandit.
+            if s.name in self.pnl_weights:
+                weight += self.pnl_weights[s.name] * 0.20
+            # P1-10 (§4.4) : pénalité de redondance — deux stratégies dont les
+            # signaux sont corrélés ne sont plus comptées comme deux paris.
+            if s.name in _corr_weights:
+                weight *= _corr_weights[s.name]
             classical_signal += signals_dict.get(s.name, 0.0) * weight
 
         mean_confidence = conf_dict.get(dominant_strategy, 0.5)
@@ -539,5 +709,9 @@ class MetaAllocationEngine:
             "ml_signal": float(ml_signal),
             "ppo_signal": float(ppo_action),
             "contributions": strategy_contributions,
-            "walkforward_weights": {s.name: float(self.walkforward_weights[i]) for i, s in enumerate(self.strategies)}
+            "walkforward_weights": {s.name: float(self.walkforward_weights[i]) for i, s in enumerate(self.strategies)},
+            # P1-11 (§2.5) : poids d'attribution PnL (Sharpe déflaté)
+            "pnl_weights": dict(self.pnl_weights),
+            # P1-10 (§4.4) : facteurs de diversification par corrélation des signaux
+            "signal_correlation": dict(_corr_weights),
         }
