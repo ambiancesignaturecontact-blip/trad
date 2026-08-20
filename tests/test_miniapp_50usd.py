@@ -266,6 +266,25 @@ class TestUISync:
             assert s in dash, f"'{s}' manquant dans dashboard"
             assert s in mini, f"'{s}' manquant dans mini-app"
 
+    def test_orders_history_in_both(self):
+        """PARITÉ : l'historique des trades doit exister dans les DEUX
+        interfaces (dashboard: tbl-orders, mini-app: orders-history)."""
+        dash = open("templates/dashboard.html").read()
+        mini = open("templates/telegram_mini_app.html").read()
+        assert 'id="tbl-orders"' in dash, "dashboard sans tableau des ordres"
+        assert 'id="orders-history"' in mini, "mini-app sans historique des trades"
+        # la mini-app alimente l'historique depuis la télémétrie (orders)
+        assert "renderOrdersHistory" in mini
+        assert "telemetry.orders" in mini
+
+    def test_audit_logs_in_both(self):
+        """PARITÉ : le journal d'audit existe dans les DEUX interfaces."""
+        dash = open("templates/dashboard.html").read()
+        mini = open("templates/telegram_mini_app.html").read()
+        assert 'id="audit-logs"' in dash, "dashboard sans journal d'audit"
+        assert 'id="audit-logs-mini"' in mini, "mini-app sans journal d'audit"
+        assert "renderAuditLogsMini" in mini
+
 
 # --------------------------------------------------------------------------- #
 # Régression : le trading micro 50$ ne doit plus être rejeté (min notional)

@@ -264,6 +264,28 @@
             <div id="positions-table" class="space-y-2">
                 <!-- Rempli dynamiquement par JS -->
             </div>
+
+            <!-- HISTORIQUE DES TRADES (parité dashboard PC) -->
+            <div class="mt-4 px-1">
+                <div class="flex justify-between items-center mb-1.5">
+                    <span class="text-xs font-semibold text-slate-300">📋 Historique des trades</span>
+                    <span class="text-[10px] text-slate-500">15 derniers</span>
+                </div>
+                <div id="orders-history" class="space-y-1.5 max-h-56 overflow-y-auto pr-1">
+                    <span class="text-[10px] text-slate-500">chargement…</span>
+                </div>
+            </div>
+
+            <!-- JOURNAL D'AUDIT (parité dashboard PC) -->
+            <div class="mt-4 px-1">
+                <div class="flex justify-between items-center mb-1.5">
+                    <span class="text-xs font-semibold text-slate-300">🛡️ Journal d'audit</span>
+                    <span class="text-[10px] text-slate-500">15 derniers</span>
+                </div>
+                <div id="audit-logs-mini" class="space-y-1.5 max-h-40 overflow-y-auto pr-1 font-mono text-[10px] text-slate-500">
+                    <span>chargement…</span>
+                </div>
+            </div>
         </div>
 
         <!-- STRATÉGIES ACTIVES + ADVANCED MODELS (LOT 46-57) -->
@@ -862,9 +884,51 @@
                 renderRiskFromTelemetry();
                 renderWeightsFromTelemetry();
                 renderVisionFutur(telemetry);
+                // Historique des trades + journal d'audit (parité dashboard PC)
+                renderOrdersHistory(telemetry);
+                renderAuditLogsMini(telemetry);
             } catch (e) {
                 console.log('Telemetry fetch failed', e);
             }
+        }
+
+        // ===== HISTORIQUE DES TRADES (15 derniers) — parité dashboard PC =====
+        function renderOrdersHistory(telemetry) {
+            const box = document.getElementById('orders-history');
+            if (!box) return;
+            const orders = telemetry.orders || [];
+            if (!orders.length) {
+                box.innerHTML = '<span class="text-[10px] text-slate-500">Aucun ordre pour le moment.</span>';
+                return;
+            }
+            box.innerHTML = orders.map(o => {
+                const buy = String(o.side || '').toUpperCase() === 'BUY';
+                const color = buy ? 'text-emerald-400' : 'text-red-400';
+                const emoji = buy ? '🟢' : '🔴';
+                const statusColor = o.status === 'FILLED' ? 'text-emerald-400' : o.status === 'REJECTED' ? 'text-red-400' : 'text-amber-400';
+                const qty = typeof o.qty === 'number' ? o.qty.toFixed(4) : o.qty;
+                const px = typeof o.price === 'number' ? '$' + o.price.toFixed(2) : o.price;
+                return `<div class="glass rounded-lg px-3 py-1.5 flex justify-between items-center text-[11px]">
+                    <div><span class="${color} font-bold">${emoji} ${o.side || '?'}</span> <span class="font-semibold">${o.symbol || ''}</span>
+                        <div class="text-[10px] text-slate-500">${qty} @ ${px} · ${o.strategy || ''}</div></div>
+                    <div class="${statusColor} text-[10px] font-bold">${o.status || ''}</div>
+                </div>`;
+            }).join('');
+        }
+
+        // ===== JOURNAL D'AUDIT (15 derniers) — parité dashboard PC =====
+        function renderAuditLogsMini(telemetry) {
+            const box = document.getElementById('audit-logs-mini');
+            if (!box) return;
+            const logs = telemetry.audit_logs || [];
+            if (!logs.length) {
+                box.innerHTML = '<span class="text-[10px] text-slate-500">Aucun événement d'audit.</span>';
+                return;
+            }
+            box.innerHTML = logs.map(l => {
+                const ts = l.timestamp ? new Date(l.timestamp * 1000).toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit'}) : '';
+                return `<div class="text-[10px] leading-snug"><span class="text-slate-600">${ts}</span> <span class="text-cyan-400/80">${l.event_type || l.action || ''}</span> — ${(l.details || l.message || '').slice(0, 90)}</div>`;
+            }).join('');
         }
 
         function refreshData() {
