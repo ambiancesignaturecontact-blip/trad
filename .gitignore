@@ -38,3 +38,5 @@ trade_journal*.json
 # SQLite WAL sidecars (audit: never commit live DB pages)
 trading_platform.db-wal
 trading_platform.db-shm
+.coverage
+coverage.json

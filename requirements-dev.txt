@@ -1,0 +1,9 @@
+# Dépendances de DÉVELOPPEMENT / CI uniquement (P1-9, audit §2.8/§4.10).
+# La prod installe requirements.lock (figé) ; le CI installe LE LOCK + ce
+# fichier, pour tester exactement les versions déployées.
+# Regénérer avec : pip freeze | grep -E ... (ou uv pip compile)
+pytest==9.0.3
+pytest-asyncio==1.4.0
+pytest-cov==7.1.0
+pip-audit==2.10.1
+ruff==0.16.3

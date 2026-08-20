@@ -15,32 +15,50 @@ jobs:
     - name: Checkout Repository
       uses: actions/checkout@v4
 
-    - name: Set up Python 3.13
+    # P1-9 (audit §2.8) : le CI teste les MÊMES versions que la prod.
+    # - Python 3.11 aligné sur le Dockerfile (python:3.11-slim) — avant :
+    #   CI sur 3.13, prod sur 3.11 (les tests ne prouvaient rien pour la prod).
+    # - requirements.lock (figé) + requirements-dev.txt — avant : requirements.txt
+    #   (>= non figé), les tests ne garantissaient pas le comportement déployé.
+    - name: Set up Python 3.11 (aligné sur le Dockerfile de prod)
       uses: actions/setup-python@v5
       with:
-        python-version: "3.13"
+        python-version: "3.11"
 
-    - name: Install Dependencies
+    - name: Install Dependencies (locked prod + dev)
       run: |
         python -m pip install --upgrade pip
-        pip install -r requirements.txt
-        pip install pytest ruff pip-audit
+        pip install -r requirements.lock
+        pip install -r requirements-dev.txt
 
     - name: Syntax Compilation Check
       run: |
-        python -m compileall -q . -x 'node_modules|\.git'
+        python -m compileall -q . -x 'node_modules|\\.git'
 
     - name: Lint (ruff) — audit B16-4
+      # NON bloquant et ASSUMÉ : la codebase legacy (main.py 5 600+ lignes)
+      # ne passe pas ruff aujourd'hui (config .ruff.toml cassée : règle W503
+      # inconnue). Le rendre bloquant casserait le build immédiatement.
+      # À traiter dans un lot dédié (nettoyage lint), pas ici.
       run: |
         ruff check . || true   # report, don't gate (legacy codebase in transition)
 
-    - name: Dependency vulnerability audit — audit B17
+    - name: Dependency vulnerability audit — P1-9 (audit §4.10)
+      # BLOQUANT désormais : une CVE haute/critique fait échouer le build.
+      # pip-audit >= 2.7 a retiré --fail-on : le script analyse la sortie JSON.
+      # Vérifié au branchement : requirements.lock = 0 vulnérabilité haute/critique.
       run: |
-        pip-audit --progress-spinner off || true
+        python scripts/check_vulnerabilities.py
 
     - name: Run Automated Unit Tests (+ API smoke tests)
       run: |
         python -m pytest tests/ -q
+
+    - name: Core coverage thresholds — P1-15 (audit §5)
+      # Seuils par fichier sur le cœur qui touche l'argent :
+      # main.py >= 30%, strategies/engine.py >= 80%, core/risk_pipeline.py >= 95%.
+      run: |
+        python scripts/check_coverage.py
 
     - name: Production Safety Check Script
       run: |
