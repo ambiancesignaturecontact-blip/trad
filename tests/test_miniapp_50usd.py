@@ -346,3 +346,44 @@ def test_min_notional_rounding_is_mode_independent():
     # bornes de sécurité présentes
     assert "* 0.80" in block or "0.80)" in block
     assert "min_notional_for_capital" in block
+
+
+# --------------------------------------------------------------------------- #
+# Mandat : la mini-app ne doit JAMAIS afficher de données fictives et doit
+# se rafraîchir automatiquement (fiabilité vs dashboard web)
+# --------------------------------------------------------------------------- #
+
+def test_miniapp_no_simulated_data():
+    """AUCUNE donnée simulée dans la mini-app (mandat : pas de fallback
+    synthétique qui fuit en production). L'état initial est honnête (—/0)."""
+    src = open("templates/telegram_mini_app.html").read()
+    for bad in ("124850", "4820", "1.84", "0.0842", "61240", "+3.87%"):
+        assert bad not in src, f"donnée simulée restante dans la mini-app: {bad}"
+    assert "Données simulées" not in src
+    # placeholders honnêtes présents
+    assert ">—</div>" in src or "$—" in src
+
+
+def test_miniapp_auto_polling():
+    """La mini-app se rafraîchit AUTOMATIQUEMENT (setInterval 5s) — c'était
+    la cause de la non-fiabilité : sans polling ni WebSocket, les données
+    restaient périmées jusqu'au clic suivant."""
+    src = open("templates/telegram_mini_app.html").read()
+    assert "setInterval(loadTelemetry, 5000)" in src
+
+
+def test_miniapp_freshness_indicator():
+    """Indicateur de fraîcheur visible (🟢 MAJ / 🟡 chargement / 🔴 erreur)."""
+    src = open("templates/telegram_mini_app.html").read()
+    assert 'id="data-freshness"' in src
+    assert "state.lastUpdate" in src
+    assert "télémétrie indisponible" in src
+
+
+def test_miniapp_js_balanced():
+    """La structure JS de la mini-app est valide (accolades/backticks)."""
+    import re
+    html = open("templates/telegram_mini_app.html").read()
+    for s in re.findall(r"<script>(.*?)</script>", html, re.S):
+        assert s.count("{") == s.count("}")
+        assert s.count("`") % 2 == 0

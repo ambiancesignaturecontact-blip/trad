@@ -140,13 +140,14 @@
             <div class="flex items-center justify-between">
                 <div>
                     <div class="text-xs text-slate-400">MODE</div>
-                    <div id="mode-display" class="font-bold text-xl tracking-tight">DEMO</div>
+                    <div id="mode-display" class="font-bold text-xl tracking-tight">—</div>
                 </div>
                 
                 <div class="text-right">
                     <div class="text-xs text-slate-400">CAPITAL ACTUEL</div>
-                    <div id="capital-display" class="font-display text-3xl font-bold tabular-nums tracking-tighter">$124,850</div>
+                    <div id="capital-display" class="font-display text-3xl font-bold tabular-nums tracking-tighter">$—</div>
                     <div id="equity-display" class="text-[10px] text-slate-500 font-semibold mt-0.5">Équité: —</div>
+                    <div id="data-freshness" class="text-[9px] text-slate-600 mt-0.5">🟡 chargement…</div>
                 </div>
             </div>
             <div class="flex gap-1.5 mt-2">
@@ -165,13 +166,13 @@
                         <div class="text-xs text-slate-400">P&amp;L LIVE</div>
                         <div id="pnl-value" class="font-display text-2xl font-bold tabular-nums">+$4,820</div>
                     </div>
-                    <div id="pnl-pct" class="text-emerald-400 text-sm font-bold">+3.87%</div>
+                    <div id="pnl-pct" class="text-emerald-400 text-sm font-bold">—</div>
                 </div>
             </div>
             
             <div class="glass p-4">
                 <div class="text-xs text-slate-400">SHARPE</div>
-                <div id="sharpe-value" class="font-display text-2xl font-bold tabular-nums">1.84</div>
+                <div id="sharpe-value" class="font-display text-2xl font-bold tabular-nums">—</div>
                 <div class="text-xs text-emerald-400">Excellent</div>
             </div>
             
@@ -443,26 +444,28 @@
         
         let equityChart = null;
         
-        // Données simulées (à remplacer par WebSocket réel)
+        // État initial HONNÊTE (aucune donnée fictive — le mandat interdit les
+        // fallbacks synthétiques). Les valeurs réelles arrivent via
+        // loadTelemetry() (polling toutes les 5s). Tant qu'aucune donnée
+        // réelle n'est reçue, l'interface affiche « — » et « chargement… ».
         let state = {
-            mode: "DEMO",
-            capital: 124850,
-            pnl: 4820,
-            pnl_pct: 3.87,
-            sharpe: 1.84,
-            drawdown: -2.1,
-            is_running: true,
-            positions: [
-                { symbol: "BTCUSDT", qty: 0.0842, avg: 61240, price: 62850, pnl: 135.4 },
-                { symbol: "ETHUSDT", qty: 1.85, avg: 2980, price: 3120, pnl: 258.2 },
-                { symbol: "SOLUSDT", qty: 12.4, avg: 148, price: 162, pnl: 172.8 }
-            ],
-            equity_history: [120000, 121400, 119800, 122300, 124850]
+            mode: "—",
+            capital: 0,
+            pnl: 0,
+            pnl_pct: 0,
+            sharpe: 0,
+            drawdown: 0,
+            is_running: false,
+            positions: [],
+            equity_history: []
         };
         
         function updateUI() {
             // Mode
             document.getElementById('mode-display').innerHTML = state.mode;
+            // Indicateur de fraîcheur (dernier rafraîchissement réussi)
+            const fresh = document.getElementById('data-freshness');
+            if (fresh) fresh.textContent = state.lastUpdate ? '🟢 MAJ ' + state.lastUpdate : '🟡 chargement…';
             document.getElementById('mode-display').className = 
                 state.mode === 'REAL' ? 'font-bold text-xl tracking-tight text-red-400' : 'font-bold text-xl tracking-tight';
             
@@ -846,6 +849,7 @@
                 const res = await fetch('/api/telemetry');
                 if (!res.ok) return;
                 telemetry = await res.json();
+                state.lastUpdate = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
                 
                 state.mode = telemetry.mode || state.mode;
                 state.capital = telemetry.balance ?? state.capital;
@@ -889,6 +893,8 @@
                 renderAuditLogsMini(telemetry);
             } catch (e) {
                 console.log('Telemetry fetch failed', e);
+                const fresh = document.getElementById('data-freshness');
+                if (fresh) fresh.textContent = '🔴 télémétrie indisponible — nouvel essai dans 5s';
             }
         }
 
@@ -1205,7 +1211,14 @@
             } catch (e) { errEl.textContent = 'Erreur réseau'; }
         };
 
-        window.onload = init;
+        window.onload = function () {
+            init();
+            // Polling REST automatique (parité avec le fallback du dashboard 1.5s ;
+            // 5s suffisent pour une mini-app mobile, économise la batterie).
+            // La mini-app n'a pas de WebSocket : ce polling est SA source de
+            // fraîcheur — sans lui, les données restaient périmées.
+            setInterval(loadTelemetry, 5000);
+        };
     </script>
 </body>
 </html>

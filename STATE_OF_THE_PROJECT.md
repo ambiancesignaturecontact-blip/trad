@@ -59,6 +59,10 @@ Dernière mise à jour : 2026-08-20 · Repo : `trad` · Langue : français
 | Warning MLOps éliminé | **Vrai bug trouvé** : `get_setting(key, "défaut")` passait le défaut en `user_id` → `int("")` ; appels corrigés + test de régression | `359c13c` · `test_lot9_educational.py` |
 | Contention SQLite réglée | Tests isolés sur `tests/test_trading.db` (base fraîche par session, `.gitignore`) — pytest peut tourner pendant que le serveur écrit | `359c13c` · `tests/conftest.py` |
 | Étape 2 du découpage | `telemetry.py` extrait (`serialize_helper`, `compile_telemetry_data`, `broadcast_telemetry`) — main.py 4918 → 4696 lignes | `359c13c` |
+| Fix prod (logs Railway) | `/api/v1/health` 500 corrigé (imports directs des symboles perdus par le nettoyage ruff F401 — `compute_health_score` etc.) ; supervisor silencieux en pause volontaire ; **test : toutes les routes GET répondent sans NameError** | `ab251aa` · `test_routes_health.py` |
+| Mini-app fiable (mandat) | **Cause trouvée** : pas de polling + état initial 100 % simulé (chiffres fictifs affichés !). Corrigé : polling REST 5 s (parité fallback dashboard), état initial honnête (—/chargement), indicateur de fraîcheur 🟢/🟡/🔴, erreurs visibles. Tests verrouillés | commit mandat · `test_miniapp_50usd.py` |
+| Accès marchés vérifié | Crypto (Coinbase/Kraken/OKX/CoinGecko), Or XAUUSD (Yahoo GC=F + gold-api), Forex EURUSD (Yahoo + er-api), Actions AAPL/TSLA (Yahoo) — toutes les classes d'actifs alimentées par des sources RÉELLES (Binance/Bybit géobloqués en sandbox, OK en prod) | test live 2026-08-20 |
+| Trading 50 $ prouvé | 44 ordres FILLED sur la session (Grid Trading SOL, allers-retours ~20 s, ~3 $/trade — le min-notional remonté) ; l'impression « ne trade pas » vient de la petitesse/rapidité + NO_TRADE fréquents (régime Bear Trend High Vol, prudence par design) | journal DB 2026-08-20 |
 
 ---
 
