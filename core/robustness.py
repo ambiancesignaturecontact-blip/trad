@@ -74,9 +74,14 @@ class Supervisor:
             return self.last_issues
         self.last_check = now
         issues = []
+        # FIX prod (logs Railway) : quand le bot est VOLONTAIREMENT en pause
+        # (is_running=False), la boucle de trading ne met pas last_tick_ts à
+        # jour et l'order flow est silencieux — ce n'est PAS une anomalie.
+        # On ne signale ces deux points que si le bot est censé tourner.
+        running = bool(self.state.get("is_running", True))
         # 1. trading loop heartbeat
         last_tick = float(self.state.get("last_tick_ts", 0.0))
-        if now - last_tick > 30:
+        if running and now - last_tick > 30:
             issues.append("trading loop heartbeat stale")
         # 2. price freshness (faille 1 : last_price peut être None tant qu'aucune
         # donnée réelle n'est arrivée — c'est un signal de santé, pas un crash)
@@ -100,11 +105,11 @@ class Supervisor:
         except Exception:
             pass
         # 5. Order flow : si aucun trade réel reçu depuis longtemps sur les
-        # cryptos (flux down silencieux)
+        # cryptos (flux down silencieux) — seulement si le bot est censé tourner
         try:
             _of = self.state.get("order_flow", {})
             _of_btc = _of.get("BTCUSDT", {})
-            if _of_btc.get("n_trades", 0) == 0 and self.state.get("last_tick_ts", 0.0) > 0:
+            if running and _of_btc.get("n_trades", 0) == 0 and self.state.get("last_tick_ts", 0.0) > 0:
                 # silencieux seulement si le bot tourne depuis > 5 min
                 if now - self.state.get("last_tick_ts", 0.0) > 300:
                     issues.append("order flow silent (aucun trade réel reçu)")

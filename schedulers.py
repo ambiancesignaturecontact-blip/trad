@@ -9,6 +9,12 @@ import os
 import time
 
 import main  # noqa: F401
+
+# Imports directs des symboles utilisés par ces schedulers (FIX prod : le
+# 'from main import *' ne suffisait plus après le nettoyage ruff F401).
+from core.copy_mirror import build_mirror_orders, fetch_trader_positions  # noqa: F401
+from core.llm_narrative import daily_market_narrative_async  # noqa: F401
+from core.reporting import build_concierge_message, build_daily_report  # noqa: F401
 from main import *  # noqa: F401,F403
 
 # helpers _privés de main utilisés par ces schedulers (non couverts par `*`)

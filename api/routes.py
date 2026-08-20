@@ -11,12 +11,29 @@ import time
 
 import numpy as np
 import pandas as pd
+import pyotp  # noqa: F401
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, Response
+from fastapi.responses import (
+    HTMLResponse,
+    JSONResponse,
+    RedirectResponse,  # noqa: F401
+    Response,
+)
 
 import main  # noqa: F401  (le module est complet au moment de cet import)
+
+# Imports directs des symboles utilisés par ces routes (FIX prod : le
+# 'from main import *' ne suffisait plus après le nettoyage ruff F401 —
+# /api/v1/health plantait avec 'compute_health_score is not defined').
+from backtester.bias_audit import audit_backtest  # noqa: F401
+from backtester.engine import EventDrivenBacktester  # noqa: F401
+from core.copy_mirror import build_mirror_orders, fetch_trader_positions, mirror_status_text  # noqa: F401
+from core.factor_model import compute_factor_exposures  # noqa: F401
 from core.llm_narrative import answer_question_async, daily_market_narrative_async  # noqa: F401
 from core.module_honesty import get_module_status, status_summary  # noqa: F401
+from core.reporting import build_daily_report, compute_health_score  # noqa: F401
+from core.robustness import chaos_cut_feed  # noqa: F401
+from core.signal_library import evaluate_all_signals  # noqa: F401
 from main import *  # noqa: F401,F403  (symboles partagés, étape 1 du découpage)
 from main import (  # noqa: F401
     _alerts_persist,
@@ -243,7 +260,6 @@ async def api_ab(_auth: dict = Depends(require_auth)):
 @router.get("/api/v1/factors")
 async def api_factors(_auth: dict = Depends(require_auth)):
     """VISION §6: factor exposures of the live equity curve (market/momentum/carry/vol)."""
-    from core.factor_model import compute_factor_exposures
     eq = STATE.get("equity_history_demo" if STATE["mode"] == "DEMO" else "equity_history_real", [])
     if len(eq) < 20:
         return {"valid": False, "reason": "insufficient equity history"}
@@ -511,7 +527,6 @@ async def get_telegram_mini_app_alias(request: Request):
     Backward-compatible alias for those who configured the old filename in
     @BotFather. Redirects to /telegram.
     """
-    from starlette.responses import RedirectResponse
     return RedirectResponse(url="/telegram")
 
 
