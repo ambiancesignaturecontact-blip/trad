@@ -44,7 +44,7 @@ Dernière mise à jour : 2026-08-20 · Repo : `trad` · Langue : français
 | P2-17 | `models/telegram_bot.py` → `bot/telegram_bot.py` (28 Ko, pas un modèle quantitatif) | `b792eb3` |
 | P2-18 | Shim `db_manager.py` racine supprimé ; 5 importeurs → `database.db_manager` | `b792eb3` |
 | P2-19 | **Violation réelle corrigée** : RLHF (ÉDUCATIF) alimentait le sizing → `rlhf_scale=1.0` constant, module non chargé en prod + garde-fou mécanique (mapping facteur→module, spy AST) | `fe43fe8` · `test_lot9_educational.py` |
-| P2-20 | Ce document + archive des 12 documents d'audit | commit `ad50bea` · `test_lot10_state.py` |
+| P2-20 | Ce document + archive des 12 documents d'audit | commit `643b106` · `test_lot10_state.py` |
 
 ### Fixes supplémentaires (hors liste P0/P1/P2)
 
