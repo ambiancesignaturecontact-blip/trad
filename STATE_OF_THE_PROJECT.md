@@ -84,6 +84,7 @@ Dernière mise à jour : 2026-08-20
 | Intelligence Axe 1 | Conviction CALIBRÉE par le win rate réel (`calibrated_conviction`, interpolation 0.45→x0.60 … 0.65→x1.25, bornée, neutre sans historique) — le sizing reflète la probabilité calibrée de succès (meta-labeling, López de Prado) au lieu de \|signal\| brut | `18909c6` · `test_intelligence.py` |
 | Intelligence Axe 2 | `RegimeSwitchingAllocator` ADAPTATIF : poids statiques = a priori, performance RÉELLE par (régime, stratégie) ajuste en ligne (EMA 0.2, min 5 obs, shift borné ±30 %) — non-stationnarité sans sur-réaction au bruit | `18909c6` |
 | Intelligence Axe 3 | Risk budget CONDITIONNEL au régime : `regime_risk_scale` (Bear High Vol ×0.70, Erratic ×0.80, calme ×1.0, inconnu neutre) intégré à `total_risk_budget`/`rebalance` | `18909c6` |
+| LOT A (F1 conviction) | Plancher anti-empilement **0.15 → 0.25** (signaux calibrés, risque porté par Kelly/CVaR/drawdowns) ; seuil de conviction **adaptatif à la distribution réelle** (base = p25 des \|signaux\| — avant : constante 0.08 qui bornait le seuil à [0.08, 0.14]) ; `active_factors` exposé (transparence de l'empilement). Preuve live : seuil 0.08 → 0.26, échantillons récents à 0.250 | `cf9b25d` · `test_lot_a_conviction.py` |
 | Trading 50 $ prouvé | 44 ordres FILLED sur la session (Grid Trading SOL, allers-retours ~20 s, ~3 $/trade — le min-notional remonté) ; l'impression « ne trade pas » vient de la petitesse/rapidité + NO_TRADE fréquents (régime Bear Trend High Vol, prudence par design) | journal DB 2026-08-20 |
 
 ---
