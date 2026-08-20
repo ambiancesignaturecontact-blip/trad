@@ -3841,13 +3841,18 @@ async def live_trading_loop():
                                             steps=_pipe.get("steps"))
                         # FIX (trading micro 50$) : avec un signal faible, la taille
                         # post-pipeline tombe SOUS le min notional (ex. 1,50$ < 3$)
-                        # -> simulate_paper_fill REJETTE -> le bot ne trade JAMAIS
-                        # sur petit compte. En DEMO : on remonte au min notional
-                        # (borné 80% du capital, comme calculate_position_size) pour
-                        # que le bot puisse trader et apprendre (philosophie méta-label
-                        # DEMO). En REAL : JAMAIS de remontée — le pipeline est sacré.
+                        # -> l'exécution REJETTE -> le bot ne trade JAMAIS sur petit
+                        # compte. Comportement UNIQUE DEMO == REAL (fidélité) :
+                        # arrondi d'exécution réaliste — en REAL aussi, un ordre sous
+                        # le min serait rejeté par l'exchange, et le pipeline a déjà
+                        # validé le trade (target_qty > 0). La remontée est bornée :
+                        #   - au min notional (3$ < 200$, 5$ < 1000$, 10$ sinon)
+                        #   - à 80 % du capital (jamais plus, cohérent avec
+                        #     calculate_position_size)
+                        #   - aucun effet si le capital ne permet pas le min
+                        # Le risque reste donc plafonné au min notional réel.
                         try:
-                            if active_mode == "DEMO" and target_qty > 0:
+                            if target_qty > 0:
                                 _mn = min_notional_for_capital(STATE[active_balance_key])
                                 _notional = target_qty * current_price
                                 if _notional < _mn:
@@ -3855,8 +3860,9 @@ async def live_trading_loop():
                                     _bumped = min(_mn / current_price, _cap_qty)
                                     if _bumped > target_qty:
                                         logger.info(
-                                            f"DEMO micro-budget {symbol}: notional {_notional:.2f}$ < min {_mn:.2f}$ "
-                                            f"-> taille remontée à {_bumped*current_price:.2f}$ (apprentissage continu).")
+                                            f"micro-budget {symbol} ({active_mode}): notional {_notional:.2f}$ "
+                                            f"< min {_mn:.2f}$ -> arrondi exécution à {_bumped*current_price:.2f}$ "
+                                            f"(plafond 80% capital).")
                                         target_qty = _bumped
                         except Exception:
                             pass

@@ -274,8 +274,10 @@ class TestUISync:
 def test_micro_50usd_trade_survives_pipeline_and_min_notional(monkeypatch):
     """FIX : avec un signal faible (conviction ~0.10), la taille post-pipeline
     tombait sous le min notional (1,50$ < 3$) -> simulate_paper_fill rejetait
-    -> le bot ne tradait JAMAIS sur petit compte. En DEMO, la taille doit être
-    remontée au min notional (bornée 80% du capital) et le fill accepté."""
+    -> le bot ne tradait JAMAIS sur petit compte. Le comportement est IDENTIQUE
+    en DEMO et REAL (fidélité) : arrondi d'exécution au min notional, borné à
+    80% du capital — un ordre sous le min serait rejeté par l'exchange en REAL
+    aussi, et le pipeline a déjà validé le trade (qty > 0)."""
     from core.paper_execution import min_notional_for_capital, simulate_paper_fill
     from core.risk_pipeline import apply_risk_pipeline
     from risk.risk_manager import RiskManager
@@ -307,3 +309,21 @@ def test_micro_50usd_trade_survives_pipeline_and_min_notional(monkeypatch):
                                 "Binance", balance=capital)
     assert paper.get("rejected") is False, f"fill rejeté: {paper.get('reason')}"
     assert paper["fill_price"] > 0
+
+
+def test_min_notional_rounding_is_mode_independent():
+    """Fidélité DEMO == REAL : le bloc d'arrondi au min notional ne doit PAS
+    être conditionné au mode DEMO (sinon la DEMO traderait un comportement
+    que le REAL n'aurait pas)."""
+    src = open("main.py").read()
+    marker = "FIX (trading micro 50$)"
+    idx = src.find(marker)
+    assert idx != -1, "bloc d'arrondi introuvable"
+    block = src[idx:idx + 2000]
+    assert 'active_mode == "DEMO"' not in block, \
+        "l'arrondi min-notional est DEMO-only -> infidèle au REAL"
+    # le log doit mentionner le mode réel (preuve que le code est partagé)
+    assert "{active_mode}" in block
+    # bornes de sécurité présentes
+    assert "* 0.80" in block or "0.80)" in block
+    assert "min_notional_for_capital" in block
