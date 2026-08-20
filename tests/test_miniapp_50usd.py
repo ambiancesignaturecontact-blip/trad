@@ -131,7 +131,8 @@ class TestMicroBudget50:
 class TestSetBalance:
     def test_endpoint_exists(self):
         import main
-        routes = [r.path for r in main.app.routes]
+        from test_support import all_api_paths
+        routes = all_api_paths(main.app)
         assert "/api/set-demo-balance" in routes
 
     def test_endpoint_sets_balance(self):
@@ -187,7 +188,8 @@ class TestMiniAppComplete:
         """Tous les endpoints appelés par la mini-app existent dans main.py."""
         import re
         import main
-        routes = {r.path for r in main.app.routes}
+        from test_support import all_api_paths
+        routes = set(all_api_paths(main.app))
         src = open("templates/telegram_mini_app.html").read()
         api_calls = set(re.findall(r"fetch\('(/api/[^']*)'", src))
         missing = [c for c in api_calls if c not in routes and c not in
@@ -251,7 +253,8 @@ class TestUISync:
         """Tous les endpoints appelés par les deux interfaces existent."""
         import re
         import main
-        routes = {r.path for r in main.app.routes}
+        from test_support import all_api_paths
+        routes = set(all_api_paths(main.app))
         for f in ("templates/dashboard.html", "templates/telegram_mini_app.html"):
             src = open(f).read()
             calls = set(re.findall(r"fetch\('(/api/[^']*)'", src))

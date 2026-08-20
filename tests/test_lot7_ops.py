@@ -199,8 +199,9 @@ class TestCounterpartyRisk:
 # --------------------------------------------------------------------------- #
 class TestReconciliationHalt:
     def test_halt_code_present(self):
-        """En mode REAL, un écart de réconciliation déclenche un HALT."""
-        src = open("main.py").read()
+        """En mode REAL, un écart de réconciliation déclenche un HALT.
+        (LOT 7 : le code de réconciliation vit désormais dans schedulers.py.)"""
+        src = open("main.py").read() + open("schedulers.py").read()
         assert "RECONCILIATION_BALANCE" in src
         assert "RECONCILIATION_POSITIONS" in src
         assert 'risk_state.enter(RiskStateMachine.HALT' in src

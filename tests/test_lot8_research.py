@@ -247,11 +247,12 @@ class TestIntegration:
             assert k in tel
 
     def test_endpoints_exist(self):
-        import inspect
-        src = inspect.getsource(__import__("main", fromlist=["x"]))
+        # LOT 7 : les routes API vivent désormais dans api/routes.py
+        src = open("api/routes.py").read()
         assert 'api_v1_attribution' in src
         assert 'api_v1_stress' in src
-        assert "audit_backtest" in src
+        # le garde-fou anti-biais reste branché dans main.py
+        assert "audit_backtest" in open("main.py").read()
 
     def test_report_has_metrics(self):
         import main

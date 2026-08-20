@@ -109,7 +109,8 @@ class TestTelemetryHonesty:
 
     def test_endpoint_exists(self):
         import main
-        routes = [r.path for r in main.app.routes]
+        from test_support import all_api_paths
+        routes = all_api_paths(main.app)
         assert "/api/v1/honesty" in routes
 
     def test_endpoint_response(self):
