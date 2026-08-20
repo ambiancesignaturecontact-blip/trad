@@ -21,6 +21,7 @@ Dernière mise à jour : 2026-08-20
 | **Triple-barrier labeling** : les sorties réelles (SL/TP/temps) définissent le label, pas un horizon fixe | López de Prado, AFML ch. 3 | `MetaLabelingTripleBarrier` (modèles/lopez_de_prado.py) — utilisé pour l'apprentissage |
 | **Drawdown management** : circuit breakers quotidiens + lifetime, drawdowns par taille de compte | Pratique institutionnelle (risque de ruine) | `RiskManager.check_circuit_breaker()` : 2,5-18 %/jour, 8-35 % lifetime selon le capital |
 | **Déflated Sharpe Ratio (DSR)** : corriger le Sharpe de la sélection/fouille de données | López de Prado, AFML ch. 8 | `calculate_deflated_sharpe_ratio` — promotion challenger OOS + attribution PnL (P1-11) |
+| **Risk budgeting conditionnel au régime** : le budget de risque et la taille des paris s'adaptent à l'état du marché (régime), dans des bornes dures — on ne parie jamais plus de 1.25x la config de base, on resserre les stops en régime défensif | Pratique institutionnelle (Bridgewater regime-based allocation, risk parity conditionnelle) ; voir aussi F2 de l'audit | LOT B : `core/regime_autonomy.py` (facteur lissé EMA + confiance HMM, bornes [0.60, 1.25]) appliqué par `RiskManager` (Kelly, plafond par actif, drawdowns jamais élargis) |
 
 > Ces principes sont des références publiques de qualité ; ils sont appliqués de façon critique :
 > ce qui est robuste (fractional Kelly, DSR, triple-barrier) est en production ; ce qui est
@@ -86,6 +87,7 @@ Dernière mise à jour : 2026-08-20
 | Intelligence Axe 3 | Risk budget CONDITIONNEL au régime : `regime_risk_scale` (Bear High Vol ×0.70, Erratic ×0.80, calme ×1.0, inconnu neutre) intégré à `total_risk_budget`/`rebalance` | `18909c6` |
 | LOT A (F1 conviction) | Plancher anti-empilement **0.15 → 0.25** (signaux calibrés, risque porté par Kelly/CVaR/drawdowns) ; seuil de conviction **adaptatif à la distribution réelle** (base = p25 des \|signaux\| — avant : constante 0.08 qui bornait le seuil à [0.08, 0.14]) ; `active_factors` exposé (transparence de l'empilement). Preuve live : seuil 0.08 → 0.26, échantillons récents à 0.250 | `cf9b25d` · `test_lot_a_conviction.py` |
 | Trading 50 $ prouvé | 44 ordres FILLED sur la session (Grid Trading SOL, allers-retours ~20 s, ~3 $/trade — le min-notional remonté) ; l'impression « ne trade pas » vient de la petitesse/rapidité + NO_TRADE fréquents (régime Bear Trend High Vol, prudence par design) | journal DB 2026-08-20 |
+| LOT B (F2 autonomie) | Auto-adaptation BORNÉE des paramètres de risque au régime HMM : `core/regime_autonomy.py` — mapping {0: 1.10, 1: 0.75, 2: 1.00, 3: 0.85}, **bornes dures [0.60, 1.25]** (jamais > 1.25x), **pull par confiance HMM** (régime incertain → facteur vers 1.0), **lissage EMA** (α=0.30, pas de saut sur un tick bruité), **drawdowns JAMAIS élargis** (×min(f,1), planchers 1.5 %/5 %). Appliqué par `RiskManager.effective_params()` (Kelly, plafond par actif, circuit breakers) + `max_asset_qty` live. DÉMO == RÉAL (aucun flag de mode). Télémétrie `regime_autonomy` (facteur lissé, cible, bornes, effectifs). Preuve live : régime Bull conf. 1.0 → facteur 1.0865, Kelly 0.15→0.163, plafond 0.25→0.2716, drawdowns micro 0.18/0.35 intacts | commit LOT B · `test_lot_b_autonomy.py` (29 tests) |
 
 ---
 
@@ -105,6 +107,7 @@ Dernière mise à jour : 2026-08-20
 | Limite | Détail | Statut |
 |---|---|---|
 | Torch absent du sandbox | GAN (LOT 54) et RLHF (LOT 55) en fallback neutre — cohérent avec l'étiquette ÉDUCATIF | Assumé |
+| Flakiness `check_coverage.py` en sandbox | 2 tests intermittents (`test_routes_health`, `test_smoke`) : `sqlite3.OperationalError` = connexions DB non fermées sous charge + réseau lent (Yahoo 429 / Bybit 403) — pré-existant, reproduit sur HEAD sans LOT B (10 failed) ; la suite complète passe (554) et la couverture mesurée dépasse les seuils (main 56,8 % / engine 88,7 % / risk_pipeline 98,8 %) | Assumé — en CI GitHub Actions le run est fiable |
 | `main.py` encore ~4 700 lignes | Étape 2 partielle faite (télémétrie extraite) ; le cœur `live_trading_loop` reste dans main | Étape 3 optionnelle |
 | `from main import *` dans les modules extraits | Pattern de l'étape 1 du découpage (F405/E402 ignorés per-fichier dans ruff) | À éliminer si découplage fin |
 
