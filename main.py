@@ -40,7 +40,7 @@ from core.volatility_targeting import volatility_scale_factor
 from core.signal_library import SIGNAL_LIBRARY, evaluate_all_signals, evaluate_signal
 from core.execution_router import ExecutionAlpha, SlippageModel, decide_style
 from core.copy_mirror import fetch_trader_positions, build_mirror_orders, mirror_status_text
-from core.paper_execution import simulate_paper_fill
+from core.paper_execution import simulate_paper_fill, estimate_slippage_bps_from_book
 from core.world_model import (compute_regime_probs, compute_market_state,
                               discover_causal_parents, build_causal_feature_df, counterfactual_alpha)
 from core.mixture_experts import MixtureOfExperts, risk_adjusted_reward, curriculum_sort
@@ -1492,10 +1492,13 @@ def evaluate_real_safety_gate(symbol: str) -> bool:
     return True
 
 
-async def pick_best_venue_net(symbol: str, side: str) -> dict:
+async def pick_best_venue_net(symbol: str, side: str, qty: float = None) -> dict:
     """
     LOT 3 (PDF Pilier H-3) : SOR multi-venue — compare les venues sur le COÛT
     NET TOTAL (prix + frais + slippage attendu), pas seulement le prix.
+    P1-13 (audit §4.6) : quand la taille du trade est fournie, le slippage de
+    chaque venue est estimé par BOOK-WALKING de son carnet réel (si dispo),
+    sinon par le modèle des fills réels, sinon fallback prudent 5 bps.
 
     Retourne le meilleur choix avec le détail des coûts (audit). Si aucune
     venue ne répond, retourne un choix neutre (venue par défaut) — jamais
@@ -1512,10 +1515,33 @@ async def pick_best_venue_net(symbol: str, side: str) -> dict:
             if side == "BUY":
                 gross = q.ask * (1.0 + q.fee_rate)
                 slip = slippage_model.expected_slippage_bps(q.exchange.capitalize(), symbol, fallback=5.0) / 1e4
+                # P1-13 : book-walking du carnet réel de CETTE venue quand dispo
+                if qty is not None and qty > 0:
+                    try:
+                        _ex_key = q.exchange.lower()
+                        _book = STATE.get("exchange_order_books", {}).get(_ex_key, {}).get(symbol)
+                        if _book is None:  # consolidation BBO toutes venues
+                            _book = STATE.get("order_books", {}).get(symbol)
+                        _bps = estimate_slippage_bps_from_book(side, qty, _book, q.ask)
+                        if _bps is not None:
+                            slip = _bps / 1e4
+                    except Exception:
+                        pass
                 net = gross * (1.0 + slip)
             else:
                 gross = q.bid * (1.0 - q.fee_rate)
                 slip = slippage_model.expected_slippage_bps(q.exchange.capitalize(), symbol, fallback=5.0) / 1e4
+                if qty is not None and qty > 0:
+                    try:
+                        _ex_key = q.exchange.lower()
+                        _book = STATE.get("exchange_order_books", {}).get(_ex_key, {}).get(symbol)
+                        if _book is None:
+                            _book = STATE.get("order_books", {}).get(symbol)
+                        _bps = estimate_slippage_bps_from_book(side, qty, _book, q.bid)
+                        if _bps is not None:
+                            slip = _bps / 1e4
+                    except Exception:
+                        pass
                 net = gross * (1.0 - slip)
             detail.append({"venue": q.exchange, "net_price": round(net, 6),
                            "fee_rate": q.fee_rate, "latency_ms": round(q.latency_ms, 1),
@@ -4426,11 +4452,28 @@ async def live_trading_loop():
                     except Exception:
                         pass
                     # 14. Tradabilité / slippage attendu
+                    # P1-13 (audit §4.6) : le slippage est d'abord estimé par
+                    # BOOK-WALKING du carnet consolidé réel (profondeur réelle,
+                    # taille du trade), puis par le modèle des fills réels,
+                    # puis fallback prudent 5 bps. Fini le slippage fixe seul.
                     _trad_s = 1.0
                     try:
-                        _slip_avg = slippage_model.expected_slippage_bps(
-                            "Binance" if symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT") else "Bybit",
-                            symbol, fallback=5.0)
+                        _slip_avg = None
+                        try:
+                            _book = STATE.get("order_books", {}).get(symbol)
+                            _side = "BUY" if final_signal > 0 else "SELL"
+                            _slip_avg = estimate_slippage_bps_from_book(
+                                _side, target_qty, _book, current_price)
+                            if _slip_avg is not None:
+                                STATE["book_slippage_bps"] = {
+                                    "symbol": symbol, "bps": round(float(_slip_avg), 2),
+                                    "method": "book_walk", "ts": time.time()}
+                        except Exception:
+                            _slip_avg = None
+                        if _slip_avg is None:
+                            _slip_avg = slippage_model.expected_slippage_bps(
+                                "Binance" if symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT") else "Bybit",
+                                symbol, fallback=5.0)
                         _trad_s = tradability_factor(_slip_avg)
                     except Exception:
                         pass
@@ -4665,7 +4708,7 @@ async def live_trading_loop():
                                     # LOT 3 (PDF Pilier H-3) : SOR — choisir la venue au
                                     # coût NET (prix + frais + slippage), audité.
                                     try:
-                                        _sor = await pick_best_venue_net(symbol, side)
+                                        _sor = await pick_best_venue_net(symbol, side, qty=trade_qty_formatted)
                                         STATE["last_sor_choice"] = _sor
                                         if _sor.get("venue"):
                                             logger.info(

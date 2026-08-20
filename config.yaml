@@ -20,7 +20,9 @@ risk:
   halt_cooldown_minutes: 15.0      # cool-down avant redémarrage après HALT
   # ===== Plafonds existants =====
   max_exposure_micro: 0.85         # 85% max pour micro-capital
-  max_exposure_normal: 0.25
+  # P1-14 (audit §2.7) : exposition TOTALE max 75% (vs 25% PAR ACTIF) —
+  # 3-4 positions simultanées possibles sans épuiser le budget total.
+  max_exposure_normal: 0.75
   daily_drawdown_micro: 0.18
   daily_drawdown_normal: 0.025
   max_per_asset_pct: 0.25          # plafond dur 25% du capital sur un actif

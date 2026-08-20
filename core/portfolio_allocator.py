@@ -166,7 +166,20 @@ class PortfolioAllocator:
             if equity <= 0:
                 return 1.0
             exposure = invested / equity
+            # P1-14 (audit §2.7) : le plafond TOTAL explicite (config
+            # risk.max_exposure_normal, défaut 0.75) complète la réserve cash
+            # (1 - cash_reserve) — le plus strict des deux s'applique. Avant,
+            # seul cash_reserve bridait (0.85) et max_exposure_normal (0.25)
+            # était une constante morte à la même valeur que le plafond par
+            # actif : une position de 25 % épuisait « tout » le budget.
             max_exposure = 1.0 - self.cash_reserve_pct
+            try:
+                max_exposure = min(
+                    max_exposure,
+                    settings.get_float("risk", "max_exposure_normal", 0.75),
+                )
+            except Exception:
+                pass
             if exposure >= max_exposure:
                 return 0.0   # plus de cash disponible -> pas de nouveau trade
             return max(0.0, (max_exposure - exposure) / max_exposure)

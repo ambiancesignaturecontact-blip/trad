@@ -81,6 +81,27 @@ def _book_walk_price(side: str, qty: float, order_book: Optional[dict]):
     return cost / filled, filled  # VWAP fill price + filled qty
 
 
+def estimate_slippage_bps_from_book(side: str, qty: float, order_book: Optional[dict],
+                                    arrival_price: float) -> Optional[float]:
+    """
+    P1-13 (audit §4.6) : estimation du slippage RÉEL par book-walking du carnet
+    consolidé live. Réutilise _book_walk_price (le book-walking existait déjà
+    pour les fills paper ; il est maintenant branché sur l'estimation live).
+
+    Retourne les bps d'exécution (prix VWAP vs prix d'arrivée) ou None quand le
+    carnet est absent/trop mince pour un jugement fiable — jamais une invention.
+    """
+    if qty <= 0 or arrival_price <= 0:
+        return None
+    vwap, filled = _book_walk_price(side, qty, order_book)
+    if vwap is None or filled <= 0:
+        return None
+    # garde : écart > 10 % = carnet d'un autre actif ou périmé (régression EURUSD)
+    if abs(vwap - arrival_price) / max(arrival_price, 1e-9) > 0.10:
+        return None
+    return abs(vwap - arrival_price) / arrival_price * 1e4
+
+
 def simulate_paper_fill(symbol: str, side: str, qty: float, arrival_price: float,
                         order_book: Optional[dict], venue: str = "Binance",
                         volatility: float = 0.002, liquidity_score: float = 1.0,

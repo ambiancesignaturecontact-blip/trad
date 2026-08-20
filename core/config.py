@@ -31,7 +31,11 @@ _DEFAULTS: Dict[str, Any] = {
     },
     "risk": {
         "max_exposure_micro": 0.85,
-        "max_exposure_normal": 0.25,
+        # P1-14 (audit §2.7) : plafond d'exposition TOTALE du portefeuille —
+        # nettement supérieur au plafond PAR ACTIF (max_per_asset_pct=0.25)
+        # pour permettre 3-4 positions diversifiées simultanées (75 % total
+        # / 25 % par actif, exactement la fourchette 70-80 % recommandée).
+        "max_exposure_normal": 0.75,
         "daily_drawdown_micro": 0.18,
         "daily_drawdown_normal": 0.025,
         "max_per_asset_pct": 0.25,
