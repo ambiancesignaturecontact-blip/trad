@@ -1,7 +1,19 @@
 import numpy as np
 
+from core.config import settings
 from core.risk_pipeline import (REWARD_RISK_RATIO, ROUND_TRIP_COST_PCT,
                                 WIN_RATE_FLOOR, kelly_dynamic)
+
+
+# P1-8 (audit §3) : drawdowns par taille de compte branchés sur config.yaml.
+# Défauts strictement identiques aux valeurs historiques.
+_DAILY_MICRO = settings.get_float("risk", "daily_drawdown_micro", 0.18)
+_DAILY_SMALL = settings.get_float("risk", "daily_drawdown_small", 0.10)
+_DAILY_NORMAL = settings.get_float("risk", "daily_drawdown_normal", 0.025)
+_TOTAL_MICRO = settings.get_float("risk", "max_total_drawdown_micro", 0.35)
+_TOTAL_SMALL = settings.get_float("risk", "max_total_drawdown_small", 0.20)
+_TOTAL_NORMAL = settings.get_float("risk", "max_total_drawdown_normal", 0.08)
+_KELLY_MULT = settings.get_float("risk", "kelly_multiplier_default", 0.15)
 
 
 class RiskManager:
@@ -17,10 +29,10 @@ class RiskManager:
     """
     def __init__(self, params=None):
         self.params = params or {
-            'max_daily_drawdown_pct': 0.025,   # 2.5% daily circuit breaker
-            'max_total_drawdown_pct': 0.08,     # 8% global lifetime drawdown limit
-            'max_exposure_per_asset_pct': 0.25, # 25% max total AUM in single asset
-            'fractional_kelly_multiplier': 0.15, # conservative Kelly fraction
+            'max_daily_drawdown_pct': _DAILY_NORMAL,   # 2.5% daily circuit breaker
+            'max_total_drawdown_pct': _TOTAL_NORMAL,   # 8% global lifetime drawdown limit
+            'max_exposure_per_asset_pct': settings.get_float("risk", "max_per_asset_pct", 0.25),
+            'fractional_kelly_multiplier': _KELLY_MULT,  # conservative Kelly fraction
             'max_correlation_threshold': 0.75, # reject positions in assets too correlated
             'deviation_limit_pct': 0.05,       # 5% max deviation from current mid-price
             'round_trip_cost_pct': ROUND_TRIP_COST_PCT,
@@ -45,16 +57,16 @@ class RiskManager:
 
         if capital < 1000.0:
             # micro-account: 18% daily / 35% lifetime (config.yaml micro values)
-            self.params['max_daily_drawdown_pct'] = 0.18
-            self.params['max_total_drawdown_pct'] = 0.35
+            self.params['max_daily_drawdown_pct'] = _DAILY_MICRO
+            self.params['max_total_drawdown_pct'] = _TOTAL_MICRO
         elif capital < 100000.0:
             # small account: 10% daily / 20% lifetime
-            self.params['max_daily_drawdown_pct'] = 0.10
-            self.params['max_total_drawdown_pct'] = 0.20
+            self.params['max_daily_drawdown_pct'] = _DAILY_SMALL
+            self.params['max_total_drawdown_pct'] = _TOTAL_SMALL
         else:
             # institutional: 2.5% daily / 8% lifetime (tightest)
-            self.params['max_daily_drawdown_pct'] = 0.025
-            self.params['max_total_drawdown_pct'] = 0.08
+            self.params['max_daily_drawdown_pct'] = _DAILY_NORMAL
+            self.params['max_total_drawdown_pct'] = _TOTAL_NORMAL
 
     def check_circuit_breaker(self, current_equity):
         """

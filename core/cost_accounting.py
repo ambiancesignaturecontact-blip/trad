@@ -17,11 +17,13 @@ import logging
 import time
 from typing import Dict, List, Optional
 
+from core.config import settings
+
 logger = logging.getLogger("CostAccounting")
 
-# Défauts réalistes (documentés, ajustables)
-DEFAULT_FEE_RATE = 0.001       # 0.1% taker
-DEFAULT_SLIPPAGE_BPS = 5.0     # 5 bps moyen
+# P1-8 (audit §3) : constantes branchées sur core/config.py (config.yaml).
+DEFAULT_FEE_RATE = settings.get_float("costs", "default_fee_rate", 0.001)
+DEFAULT_SLIPPAGE_BPS = settings.get_float("costs", "default_slippage_bps", 5.0)
 
 
 class CostAccounting:

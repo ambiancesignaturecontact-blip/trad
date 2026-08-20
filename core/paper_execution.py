@@ -28,7 +28,13 @@ VENUE_FEES = {
 # FIX (logs prod) : le min notional n'est plus en dur — il est dérivé du
 # capital (config.yaml : 3$ < 200$, 5$ < 1000$, 10$ sinon) pour que les
 # micro-comptes et les paires à petit notionnel (EURUSD) puissent trader.
+# P1-8 (audit §3) : fallback branché sur config.yaml lui aussi.
 MIN_NOTIONAL_USD = 10.0
+try:
+    from core.config import settings as _settings
+    MIN_NOTIONAL_USD = _settings.get_float("trading", "min_notional_usd_normal", 10.0)
+except Exception:
+    pass
 
 
 def min_notional_for_capital(capital: float) -> float:

@@ -25,21 +25,22 @@ import time
 from collections import deque
 from typing import Dict, List, Optional, Tuple
 
+from core.config import settings
+
 logger = logging.getLogger("OrderFlow")
 
+# P1-8 (audit §3) : constantes branchées sur core/config.py (config.yaml).
 # Fenêtres de calcul (secondes)
-DELTA_WINDOW = 60.0          # delta agressif sur 60s
-CASCADE_WINDOW = 30.0        # fenêtre de détection de cascade
-ABSORPTION_WINDOW = 30.0     # fenêtre d'absorption
+DELTA_WINDOW = settings.get_float("orderflow", "delta_window_seconds", 60.0)
+CASCADE_WINDOW = settings.get_float("orderflow", "cascade_window_seconds", 30.0)
+ABSORPTION_WINDOW = settings.get_float("orderflow", "absorption_window_seconds", 30.0)
 
 # Seuils (calibrés, documentés)
-TOXIC_DELTA_RATIO = 0.35     # |delta| / volume_total > 35% -> flux dominant
-MIN_TOXIC_VOLUME_USD = 100000.0  # volume minimum (60s) pour juger la toxicité
-                                 # (en dessous : échantillon trop petit = bruit,
-                                 # jamais de signal fabriqué — mentalité n°20)
-CASCADE_MIN_EVENTS = 3       # >= 3 liquidations dans la fenêtre -> cascade
-CASCADE_MIN_NOTIONAL = 200000.0  # >= $200k de liquidations -> cascade significative
-ABSORPTION_VOLUME_USD = 300000.0 # >= $300k de volume sans mouvement -> absorption
+TOXIC_DELTA_RATIO = settings.get_float("orderflow", "toxic_delta_ratio", 0.35)
+MIN_TOXIC_VOLUME_USD = settings.get_float("orderflow", "min_toxic_volume_usd", 100000.0)
+CASCADE_MIN_EVENTS = settings.get_int("orderflow", "cascade_min_events", 3)
+CASCADE_MIN_NOTIONAL = settings.get_float("orderflow", "cascade_min_notional_usd", 200000.0)
+ABSORPTION_VOLUME_USD = settings.get_float("orderflow", "absorption_volume_usd", 300000.0)
 
 
 class OrderFlowEngine:

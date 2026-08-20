@@ -23,18 +23,18 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+from core.config import settings
+
 logger = logging.getLogger("PortfolioAllocator")
 
-# Réserve de cash par défaut (PDF : 10-20 %)
-CASH_RESERVE_PCT = 0.15
-# Vol cible annualisée du portefeuille (défaut institutionnel prudent)
-TARGET_VOL_ANNUAL = 0.10
-# Rebalancing : intervalle (heures)
-REBALANCE_HOURS = 24.0
-# Capacité : participation max du volume quotidien d'un actif
-MAX_PARTICIPATION_PCT = 0.01      # 1 % du volume 24h (mentalité n°11)
-# Corrélation au-delà de laquelle 2 stratégies sont jugées REDONDANTES
-REDUNDANT_CORR = 0.85
+# P1-8 (audit §3) : constantes branchées sur core/config.py (config.yaml).
+# Les défauts restent STRICTEMENT identiques aux valeurs historiques — un
+# opérateur peut maintenant les surcharger sans toucher au code.
+CASH_RESERVE_PCT = settings.get_float("portfolio", "cash_reserve_pct", 0.15)
+TARGET_VOL_ANNUAL = settings.get_float("portfolio", "target_vol_annual", 0.10)
+REBALANCE_HOURS = settings.get_float("portfolio", "rebalance_hours", 24.0)
+MAX_PARTICIPATION_PCT = settings.get_float("portfolio", "max_participation_pct", 0.01)
+REDUNDANT_CORR = settings.get_float("portfolio", "redundant_corr", 0.85)
 
 
 class PortfolioAllocator:

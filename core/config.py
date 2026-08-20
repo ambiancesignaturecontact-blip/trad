@@ -48,12 +48,57 @@ _DEFAULTS: Dict[str, Any] = {
         # P0-4 (audit §2.1) : plancher anti-empilement de la réduction
         # cumulative des overlays (0.8^15 ≈ 3,5 % sans plancher).
         "final_scale_floor": 0.15,
+        # P1-8 (audit §3) : drawdowns par taille de compte (RiskManager)
+        "daily_drawdown_small": 0.10,
+        "max_total_drawdown_micro": 0.35,
+        "max_total_drawdown_small": 0.20,
+        "max_total_drawdown_normal": 0.08,
+        "kelly_multiplier_default": 0.15,
     },
     "data": {
         "use_real_data_only": True,
         "yahoo_fallback": True,
         "bybit_fallback": True,
         "yahoo_cache_ttl_seconds": 20.0,
+        # P1-8 (audit §3) : seuil de divergence multi-sources (futures vs spot)
+        "divergence_threshold_pct": 1.00,
+    },
+    # P1-8 (audit §3) : branchement de core/config.py — les constantes en dur
+    # des modules cœur passent par settings (défauts = valeurs historiques).
+    "portfolio": {
+        "cash_reserve_pct": 0.15,
+        "target_vol_annual": 0.10,
+        "rebalance_hours": 24.0,
+        "max_participation_pct": 0.01,   # 1 % du volume 24h
+        "redundant_corr": 0.85,
+    },
+    "counterparty": {
+        "max_capital_per_exchange_pct": 0.40,
+        "alert_spread_bps": 25.0,
+        "alert_volume_drop_pct": 0.30,
+    },
+    "costs": {
+        "default_fee_rate": 0.001,       # 0.1 % taker
+        "default_slippage_bps": 5.0,     # 5 bps moyen
+    },
+    "orderflow": {
+        "delta_window_seconds": 60.0,
+        "cascade_window_seconds": 30.0,
+        "absorption_window_seconds": 30.0,
+        "toxic_delta_ratio": 0.35,
+        "min_toxic_volume_usd": 100000.0,
+        "cascade_min_events": 3,
+        "cascade_min_notional_usd": 200000.0,
+        "absorption_volume_usd": 300000.0,
+    },
+    "vol_targeting": {
+        "target_tick_vol": 0.0004,
+        "realized_window": 40,
+        "min_scale": 0.25,
+        "max_scale": 2.0,
+    },
+    "execution": {
+        "cvar_limit_pct": 0.025,
     },
     "strategies": {
         "all_enabled": True,

@@ -7,6 +7,8 @@ import pandas as pd
 import logging
 from typing import Dict, List
 
+from core.config import settings
+
 logger = logging.getLogger("CVaROptimizer")
 
 class CVaRPortfolioOptimizer:
@@ -16,8 +18,12 @@ class CVaRPortfolioOptimizer:
     and limits position sizing accordingly.
     """
     
-    def __init__(self, covariance_engine, cvar_limit_pct: float = 0.025):
+    def __init__(self, covariance_engine,
+                 cvar_limit_pct: float = None):
         self.covariance_engine = covariance_engine
+        # P1-8 (audit §3) : défaut branché sur core/config.py (config.yaml)
+        if cvar_limit_pct is None:
+            cvar_limit_pct = settings.get_float("execution", "cvar_limit_pct", 0.025)
         self.cvar_limit_pct = cvar_limit_pct  # e.g. 2.5% daily CVaR limit
 
     def calculate_current_cvar(self, positions: List[Dict], 

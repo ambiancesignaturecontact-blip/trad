@@ -26,6 +26,8 @@ from typing import Dict, List, Optional, Tuple
 
 import httpx
 
+from core.config import settings
+
 logger = logging.getLogger("MultiSourcePrice")
 
 # Seuils de divergence par actif (en %) — au-delà, GEL du trading
@@ -44,7 +46,7 @@ DIVERGENCE_THRESHOLDS = {
     "AAPL": 1.00,
     "TSLA": 1.00,
 }
-DEFAULT_THRESHOLD_PCT = 1.00
+DEFAULT_THRESHOLD_PCT = settings.get_float("data", "divergence_threshold_pct", 1.00)
 
 # Mapping des identifiants par source
 _COINBASE_SYM = {"BTCUSDT": "BTC-USD", "ETHUSDT": "ETH-USD", "SOLUSDT": "SOL-USD"}

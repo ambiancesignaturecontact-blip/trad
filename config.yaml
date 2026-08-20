@@ -27,6 +27,53 @@ risk:
   # P0-4 (audit §2.1) : plancher anti-empilement de la réduction cumulative
   # des overlays (0.8^15 ≈ 3,5% sans plancher — les blocages durs à 0 restent)
   final_scale_floor: 0.15
+  # ===== P1-8 (audit §3) : drawdowns par taille de compte (RiskManager) =====
+  daily_drawdown_small: 0.10       # capital 1 000 - 100 000 $ (10% quotidien)
+  max_total_drawdown_micro: 0.35   # 35% lifetime pour micro-comptes
+  max_total_drawdown_small: 0.20   # 20% lifetime comptes moyens
+  max_total_drawdown_normal: 0.08  # 8% lifetime institutionnel
+  kelly_multiplier_default: 0.15   # Kelly fractionnel par défaut (RiskManager)
+
+# ===== P1-8 (audit §3) : allocation de portefeuille (PortfolioAllocator) =====
+portfolio:
+  cash_reserve_pct: 0.15           # réserve de cash minimale (jamais 100% investi)
+  target_vol_annual: 0.10          # volatilité cible annualisée du portefeuille
+  rebalance_hours: 24.0            # rebalancing quotidien
+  max_participation_pct: 0.01      # 1% du volume 24h (capacité / impact de marché)
+  redundant_corr: 0.85             # corrélation = stratégies redondantes
+
+# ===== P1-8 (audit §3) : risque de contrepartie =====
+counterparty:
+  max_capital_per_exchange_pct: 0.40   # jamais > 40% du capital sur 1 exchange
+  alert_spread_bps: 25.0               # spread > 25 bps = marché perturbé
+  alert_volume_drop_pct: 0.30          # volume < 30% de la normale = liquidité fuyante
+
+# ===== P1-8 (audit §3) : comptabilité des coûts =====
+costs:
+  default_fee_rate: 0.001          # 0.1% taker
+  default_slippage_bps: 5.0        # 5 bps moyen
+
+# ===== P1-8 (audit §3) : order flow (fenêtres + seuils de toxicité) =====
+orderflow:
+  delta_window_seconds: 60.0       # delta agressif sur 60s
+  cascade_window_seconds: 30.0     # fenêtre de détection de cascade
+  absorption_window_seconds: 30.0  # fenêtre d'absorption
+  toxic_delta_ratio: 0.35          # |delta|/volume > 35% = flux dominant
+  min_toxic_volume_usd: 100000.0   # volume min (60s) pour juger la toxicité
+  cascade_min_events: 3            # >= 3 liquidations -> cascade
+  cascade_min_notional_usd: 200000.0  # >= $200k liquidations -> cascade
+  absorption_volume_usd: 300000.0  # >= $300k volume sans mouvement -> absorption
+
+# ===== P1-8 (audit §3) : vol targeting (overlay) =====
+vol_targeting:
+  target_tick_vol: 0.0004          # vol cible par tick (0.04%)
+  realized_window: 40              # fenêtre de vol réalisée (ticks)
+  min_scale: 0.25                  # réduction minimale autorisée
+  max_scale: 2.0                   # amplification maximale autorisée
+
+# ===== P1-8 (audit §3) : exécution =====
+execution:
+  cvar_limit_pct: 0.025            # limite CVaR quotidienne (2.5%)
 
 autopilot:
   # P0-6 (audit §5-P0-6) : 4-8 semaines de paper-trading DATÉ et CONTINU avant REAL
@@ -37,6 +84,7 @@ data:
   use_real_data_only: true         # Toujours utiliser données réelles
   yahoo_fallback: true
   bybit_fallback: true
+  divergence_threshold_pct: 1.00   # seuil de divergence multi-sources (défaut)
 
 strategies:
   all_enabled: true

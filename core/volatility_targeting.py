@@ -8,14 +8,22 @@ Works on per-tick vol so it is independent of the loop frequency.
 import logging
 import numpy as np
 
+from core.config import settings
+
 logger = logging.getLogger("VolTargeting")
+
+# P1-8 (audit §3) : défauts branchés sur core/config.py (config.yaml).
+_TARGET_TICK_VOL = settings.get_float("vol_targeting", "target_tick_vol", 0.0004)
+_REALIZED_WINDOW = settings.get_int("vol_targeting", "realized_window", 40)
+_MIN_SCALE = settings.get_float("vol_targeting", "min_scale", 0.25)
+_MAX_SCALE = settings.get_float("vol_targeting", "max_scale", 2.0)
 
 
 def volatility_scale_factor(equity_history: list,
-                            target_tick_vol: float = 0.0004,
-                            realized_window: int = 40,
-                            min_scale: float = 0.25,
-                            max_scale: float = 2.0) -> float:
+                            target_tick_vol: float = _TARGET_TICK_VOL,
+                            realized_window: int = _REALIZED_WINDOW,
+                            min_scale: float = _MIN_SCALE,
+                            max_scale: float = _MAX_SCALE) -> float:
     """
     Returns the multiplier to apply to position sizes.
     target_tick_vol is the desired std of equity returns per loop iteration

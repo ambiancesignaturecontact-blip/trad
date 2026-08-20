@@ -17,13 +17,14 @@ import logging
 import time
 from typing import Dict, Optional
 
+from core.config import settings
+
 logger = logging.getLogger("CounterpartyRisk")
 
-# Limite de capital par exchange (défaut 40 % — réparti Binance/Bybit/DEX)
-MAX_CAPITAL_PER_EXCHANGE_PCT = 0.40
-# Seuils d'alerte (calibrés, documentés)
-ALERT_SPREAD_BPS = 25.0        # spread > 25 bps = marché perturbé
-ALERT_VOLUME_DROP_PCT = 0.30   # volume < 30% de la normale = liquidité fuyante
+# P1-8 (audit §3) : constantes branchées sur core/config.py (config.yaml).
+MAX_CAPITAL_PER_EXCHANGE_PCT = settings.get_float("counterparty", "max_capital_per_exchange_pct", 0.40)
+ALERT_SPREAD_BPS = settings.get_float("counterparty", "alert_spread_bps", 25.0)
+ALERT_VOLUME_DROP_PCT = settings.get_float("counterparty", "alert_volume_drop_pct", 0.30)
 
 
 class CounterpartyRiskManager:
