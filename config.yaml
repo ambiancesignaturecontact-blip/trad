@@ -36,6 +36,24 @@ risk:
   max_total_drawdown_small: 0.20   # 20% lifetime comptes moyens
   max_total_drawdown_normal: 0.08  # 8% lifetime institutionnel
   kelly_multiplier_default: 0.15   # Kelly fractionnel par défaut (RiskManager)
+  # ===== LOT B (F2) : autonomie stratégique =====
+  # Auto-adaptation BORNÉE des paramètres de risque (Kelly, plafond par
+  # actif, drawdowns) au régime HMM. Le facteur ne dépasse JAMAIS 1.25x
+  # (ni ne descend sous 0.60x) la config de base ; les drawdowns ne sont
+  # jamais élargis (uniquement resserrés en régime défensif). DÉMO == RÉAL.
+  autonomy_enabled: true
+  autonomy_aggressiveness: {0: 1.10, 1: 0.75, 2: 1.00, 3: 0.85}
+  autonomy_factor_min: 0.60
+  autonomy_factor_max: 1.25
+  autonomy_ema_alpha: 0.30
+  autonomy_confidence_min: 0.30
+  autonomy_confidence_full: 0.80
+  autonomy_kelly_min: 0.05
+  autonomy_kelly_max: 0.25
+  autonomy_max_per_asset_min: 0.10
+  autonomy_max_per_asset_max: 0.30
+  autonomy_daily_drawdown_floor: 0.015
+  autonomy_total_drawdown_floor: 0.05
 
 # ===== P1-8 (audit §3) : allocation de portefeuille (PortfolioAllocator) =====
 portfolio:

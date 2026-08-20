@@ -166,6 +166,10 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         # P0-6 (audit §5) : paper-trading daté et continu avant REAL
         "paper_validation": _paper_validation_stats(),
         "regime_confidence": STATE.get("regime_confidence", {}),
+        # LOT B (F2) : autonomie stratégique — facteur d'agressivité lissé
+        # (borné [0.60, 1.25]) + paramètres de risque EFFECTIFS appliqués
+        # (Kelly, plafond par actif, drawdowns jamais élargis).
+        "regime_autonomy": STATE.get("regime_autonomy", {}),
         "hmm_validation": STATE.get("hmm_validation", {}),
         "expert_contribution": mixture_of_experts.expert_contribution_report(),
         "sleeping_experts": list(mixture_of_experts.sleeping),

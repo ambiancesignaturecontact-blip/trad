@@ -61,6 +61,22 @@ _DEFAULTS: dict[str, Any] = {
         "max_total_drawdown_small": 0.20,
         "max_total_drawdown_normal": 0.08,
         "kelly_multiplier_default": 0.15,
+        # LOT B (F2) : autonomie stratégique — auto-adaptation BORNÉE des
+        # paramètres de risque au régime HMM (facteur jamais > 1.25x ni
+        # < 0.60x la base ; drawdowns jamais élargis). DÉMO == RÉAL.
+        "autonomy_enabled": True,
+        "autonomy_aggressiveness": {0: 1.10, 1: 0.75, 2: 1.00, 3: 0.85},
+        "autonomy_factor_min": 0.60,
+        "autonomy_factor_max": 1.25,
+        "autonomy_ema_alpha": 0.30,
+        "autonomy_confidence_min": 0.30,
+        "autonomy_confidence_full": 0.80,
+        "autonomy_kelly_min": 0.05,
+        "autonomy_kelly_max": 0.25,
+        "autonomy_max_per_asset_min": 0.10,
+        "autonomy_max_per_asset_max": 0.30,
+        "autonomy_daily_drawdown_floor": 0.015,
+        "autonomy_total_drawdown_floor": 0.05,
     },
     "data": {
         "use_real_data_only": True,

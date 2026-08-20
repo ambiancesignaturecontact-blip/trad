@@ -1,6 +1,23 @@
 
 from core.config import settings
+
+# LOT B (F2) : autonomie stratégique — bornes partagées du facteur de régime
+# et des paramètres effectifs (source unique : core/regime_autonomy.py).
+from core.regime_autonomy import (
+    DAILY_DD_FLOOR,
+    FACTOR_MAX,
+    FACTOR_MIN,
+    KELLY_MAX,
+    KELLY_MIN,
+    MAX_PER_ASSET_MAX,
+    MAX_PER_ASSET_MIN,
+    TOTAL_DD_FLOOR,
+)
 from core.risk_pipeline import REWARD_RISK_RATIO, ROUND_TRIP_COST_PCT, WIN_RATE_FLOOR, kelly_dynamic
+
+
+def _clamp(value: float, lo: float, hi: float) -> float:
+    return max(lo, min(hi, value))
 
 # P1-8 (audit §3) : drawdowns par taille de compte branchés sur config.yaml.
 # Défauts strictement identiques aux valeurs historiques.
@@ -24,7 +41,7 @@ class RiskManager:
     (source unique de vérité, alignée sur les stops réels). Plus jamais de
     0.55 / 1.5 codés en dur. Mentalité n°1 : survivre d'abord.
     """
-    def __init__(self, params=None):
+    def __init__(self, params=None, regime_factor: float = 1.0):
         self.params = params or {
             'max_daily_drawdown_pct': _DAILY_NORMAL,   # 2.5% daily circuit breaker
             'max_total_drawdown_pct': _TOTAL_NORMAL,   # 8% global lifetime drawdown limit
@@ -35,9 +52,49 @@ class RiskManager:
             'round_trip_cost_pct': ROUND_TRIP_COST_PCT,
         }
 
+        # LOT B (F2) : facteur d'autonomie stratégique (régime HMM), borné dur
+        # [FACTOR_MIN, FACTOR_MAX] — jamais plus de 1.25x la config de base.
+        # Appliqué via apply_regime_factor() ; les paramètres EFFECTIFS sont
+        # calculés à la volée (les paramètres de base restent intacts, les
+        # tests et l'opérateur peuvent toujours lire la config).
+        self.regime_factor: float = _clamp(float(regime_factor), FACTOR_MIN, FACTOR_MAX)
+
         self.daily_start_equity = 100000.0
         self.peak_equity = 100000.0
         self.circuit_breaker_active = False
+
+    def apply_regime_factor(self, factor: float) -> dict:
+        """
+        LOT B (F2) : applique le facteur d'agressivité du régime HMM (déjà
+        lissé EMA par core.regime_autonomy). Borné dur : jamais < FACTOR_MIN
+        ni > FACTOR_MAX (1.25x). Retourne les paramètres effectifs.
+        """
+        self.regime_factor = _clamp(float(factor), FACTOR_MIN, FACTOR_MAX)
+        return self.effective_params()
+
+    def effective_params(self) -> dict:
+        """
+        Paramètres de risque EFFECTIFS (LOT B, F2) :
+          - Kelly et plafond par actif : × facteur (borné, jamais > 1.25x).
+          - Drawdowns : × min(facteur, 1.0) — JAMAIS élargis (on resserre les
+            circuit breakers en régime défensif, on ne les assouplit jamais),
+            avec planchers durs (DAILY_DD_FLOOR / TOTAL_DD_FLOOR).
+        Les paramètres de base (self.params) restent la vérité de config.
+        """
+        f = self.regime_factor
+        return {
+            'fractional_kelly_multiplier': _clamp(
+                self.params['fractional_kelly_multiplier'] * f, KELLY_MIN, KELLY_MAX),
+            'max_exposure_per_asset_pct': _clamp(
+                self.params['max_exposure_per_asset_pct'] * f,
+                MAX_PER_ASSET_MIN, MAX_PER_ASSET_MAX),
+            'max_daily_drawdown_pct': _clamp(
+                self.params['max_daily_drawdown_pct'] * min(f, 1.0),
+                DAILY_DD_FLOOR, self.params['max_daily_drawdown_pct']),
+            'max_total_drawdown_pct': _clamp(
+                self.params['max_total_drawdown_pct'] * min(f, 1.0),
+                TOTAL_DD_FLOOR, self.params['max_total_drawdown_pct']),
+        }
 
     def set_initial_capital(self, capital):
         """
@@ -77,17 +134,19 @@ class RiskManager:
         if current_equity > self.peak_equity:
             self.peak_equity = current_equity
 
-        # 1. Daily drawdown
+        # 1. Daily drawdown (LOT B : limite EFFECTIVE — resserrée en régime
+        # défensif, jamais élargie)
+        _eff = self.effective_params()
         daily_loss_pct = (self.daily_start_equity - current_equity) / self.daily_start_equity
-        if daily_loss_pct >= self.params['max_daily_drawdown_pct']:
+        if daily_loss_pct >= _eff['max_daily_drawdown_pct']:
             self.circuit_breaker_active = True
-            return True, f"DAILY DRAWDOWN BREACHED ({daily_loss_pct*100:.2f}% / {self.params['max_daily_drawdown_pct']*100:.2f}%). Triggering KILL SWITCH."
+            return True, f"DAILY DRAWDOWN BREACHED ({daily_loss_pct*100:.2f}% / {_eff['max_daily_drawdown_pct']*100:.2f}%). Triggering KILL SWITCH."
 
         # 2. Lifetime drawdown (from peak)
         total_loss_pct = (self.peak_equity - current_equity) / self.peak_equity
-        if total_loss_pct >= self.params['max_total_drawdown_pct']:
+        if total_loss_pct >= _eff['max_total_drawdown_pct']:
             self.circuit_breaker_active = True
-            return True, f"MAX LIFETIME DRAWDOWN BREACHED ({total_loss_pct*100:.2f}% / {self.params['max_total_drawdown_pct']*100:.2f}%). Triggering KILL SWITCH."
+            return True, f"MAX LIFETIME DRAWDOWN BREACHED ({total_loss_pct*100:.2f}% / {_eff['max_total_drawdown_pct']*100:.2f}%). Triggering KILL SWITCH."
 
         return False, "Risk within normal parameters."
 
@@ -111,10 +170,13 @@ class RiskManager:
         # 1. Fractional Kelly Sizing - NET OF FEES (VISION §6 + LOT 2)
         # Kelly % = (p * R - (1-p)) / R, avec R réduit du coût aller-retour.
         # win_rate None -> plancher prudent 0.45 (mentalité n°1 : survivre).
+        # LOT B (F2) : la fraction Kelly est EFFECTIVE = config × facteur de
+        # régime (bornée [KELLY_MIN, KELLY_MAX], jamais > 1.25x la base).
         p = float(win_rate) if win_rate is not None else WIN_RATE_FLOOR
         R = float(reward_risk_ratio) if reward_risk_ratio is not None else REWARD_RISK_RATIO
+        _eff = self.effective_params()
         kelly_fraction = kelly_dynamic(p, R,
-                                       fraction=self.params.get('fractional_kelly_multiplier', 0.15))
+                                       fraction=_eff['fractional_kelly_multiplier'])
         kelly_size_usd = capital * kelly_fraction
 
         # 2. Volatility sizing (ATR-based position sizing)
@@ -141,8 +203,9 @@ class RiskManager:
             else:
                 final_size_usd = min(final_size_usd, max_allowed_usd)
         else:
-            # Standard institutional limits
-            max_allowed_usd = capital * self.params['max_exposure_per_asset_pct']
+            # Standard institutional limits (LOT B : plafond EFFECTIF par actif,
+            # borné — jamais plus de 1.25x la config de base)
+            max_allowed_usd = capital * _eff['max_exposure_per_asset_pct']
             final_size_usd = min(final_size_usd, max_allowed_usd)
 
         # Safe-guard: never exceed available capital

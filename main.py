@@ -52,6 +52,10 @@ from core.position_manager import (
     partial_take_profit,
     position_age_hours,
 )
+
+# LOT B (F2) : autonomie stratégique — auto-adaptation bornée des paramètres
+# de risque au régime HMM (facteur lissé EMA, borné [0.60, 1.25]).
+from core.regime_autonomy import RegimeAutonomy
 from core.research_discipline import live_p_value, meta_label_filter
 from core.risk_committee import RiskCommittee, daily_risk_budget
 from core.risk_pipeline import (
@@ -223,6 +227,11 @@ meta_engine = MetaAllocationEngine(strategies=strategies_list, regime_allocator=
 regime_detector = MarketRegimeDetector()
 price_predictor = LSTMLikePredictor(input_dim=5, hidden_dim=24)  # deeper LSTM (audit B9-1)
 ppo_agent = PPOTRAgent(state_dim=4, action_dim=1)
+
+# LOT B (F2) : autonomie stratégique — facteur d'agressivité de risque piloté
+# par le régime HMM (jamais > 1.25x la config de base, drawdowns jamais
+# élargis). Appliqué à risk_manager via apply_regime_factor() à chaque tick.
+regime_autonomy = RegimeAutonomy()
 
 # MLOps Auto-Trainer
 mlops_trainer = MLOpsAutoTrainer(regime_detector, price_predictor, db)
@@ -508,6 +517,7 @@ STATE = {
     "ab_vol": [],                     # A/B paper: vol-targeted hypothetical equity
     "regime_probs": {},               # VISION §1a: soft HMM probabilities
     "regime_confidence": {"confidence": 0.5, "regime_id": 2},  # LOT 4: certitude du régime
+    "regime_autonomy": {},            # LOT B (F2): autonomie stratégique (facteur + effectifs)
     "hmm_validation": {},             # LOT 4: validation HMM multi-actifs
     "causal_analyzed": False,         # LOT 4: l'analyse causale a-t-elle tourné ?
     "market_state": {},               # VISION §1b: joint market state
@@ -3334,6 +3344,26 @@ async def live_trading_loop():
                     except Exception:
                         pass
 
+                    # LOT B (F2) : AUTONOMIE STRATÉGIQUE — auto-adaptation BORNÉE
+                    # des paramètres de risque au régime HMM. Facteur lissé EMA,
+                    # borné [FACTOR_MIN, FACTOR_MAX] (jamais > 1.25x la config de
+                    # base) ; les drawdowns ne sont JAMAIS élargis. Même chemin
+                    # de code en DEMO et en REAL (aucun flag de mode ici).
+                    try:
+                        _regime_conf = STATE.get("regime_confidence", {})
+                        _rconf = float(_regime_conf.get("confidence", 0.5)) \
+                            if isinstance(_regime_conf, dict) else 0.5
+                        regime_autonomy.update(STATE["regime_id"], _rconf)
+                        risk_manager.apply_regime_factor(regime_autonomy.factor)
+                        STATE["regime_autonomy"] = dict(regime_autonomy.to_dict())
+                        STATE["regime_autonomy"]["regime_name"] = STATE.get("regime_name", "")
+                        STATE["regime_autonomy"]["effective"] = risk_manager.effective_params()
+                    except Exception as _ra_e:
+                        # Jamais bloquant : sans autonomie, on retombe sur la
+                        # config de base (facteur 1.0 = comportement pré-LOT B).
+                        logger.warning(f"Regime autonomy failed ({_ra_e}) — facteur 1.0 (config de base).")
+                        STATE["regime_autonomy"] = {"enabled": False, "error": str(_ra_e)}
+
                     # Predict temporal change using our true pure NumPy LSTM Deep Neural Network!
                     seq_features = df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0).values[-5:]
                     STATE["ml_prediction_pct"] = float(price_predictor.predict(seq_features))
@@ -3670,8 +3700,15 @@ async def live_trading_loop():
                         max_loss_usd=STATE[active_balance_key] * 0.02
                     )
 
-                    # 2. MAX PER-ASSET CAP 25 % (plafond dur, étape 2 du pipeline)
-                    max_asset_pct = settings.get_float("risk", "max_per_asset_pct", 0.25)
+                    # 2. MAX PER-ASSET CAP 25 % (plafond dur, étape 2 du pipeline).
+                    # LOT B (F2) : plafond EFFECTIF — config de base × facteur de
+                    # régime (borné [0.10, 0.30], jamais > 1.25x la base). La
+                    # même valeur effective est appliquée par RiskManager au
+                    # sizing et affichée en télémétrie (une seule source).
+                    try:
+                        max_asset_pct = risk_manager.effective_params()["max_exposure_per_asset_pct"]
+                    except Exception:
+                        max_asset_pct = settings.get_float("risk", "max_per_asset_pct", 0.25)
                     try:
                         _user_max = float(os.getenv("USER_MAX_EXPOSURE_PCT", "0"))
                         if 0 < _user_max < 1:
