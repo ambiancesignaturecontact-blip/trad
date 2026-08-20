@@ -224,3 +224,36 @@ def test_existing_admin_password_not_generated(fake_db, monkeypatch, tmp_path):
     # pas de hash en DB -> avec env fourni, on ne génère rien de nouveau
     _run_ensure(str(tmp_path / "creds_test"))
     assert os.environ.get("ADMIN_PASSWORD") == "MyEnvPass123!"
+
+
+# --------------------------------------------------------------------------- #
+# Régression : AUTH_ENABLED=false explicite désactive l'auth (sandbox/preview)
+# --------------------------------------------------------------------------- #
+
+def test_explicit_auth_false_overrides_remote_detection(monkeypatch):
+    """Un AUTH_ENABLED=false EXPLICITE prime sur la détection PORT/RAILWAY :
+    indispensable pour les sandbox de dev/preview (sinon l'UI est inutilisable
+    — '❌ Authentication required' sur toutes les routes d'action)."""
+    monkeypatch.setenv("AUTH_ENABLED", "false")
+    monkeypatch.setenv("PORT", "8080")
+    old_mode = main.STATE["mode"]
+    main.STATE["mode"] = "DEMO"
+    try:
+        assert main._is_remote_deployment() is True      # la détection voit PORT
+        assert main.auth_enforced() is False             # mais le choix explicite prime
+        res = main.require_auth(None)                    # pas de 401
+        assert res.get("role") == main.Roles.ADMIN
+    finally:
+        main.STATE["mode"] = old_mode
+
+
+def test_explicit_auth_false_in_real_mode_still_forces(monkeypatch):
+    """Même avec AUTH_ENABLED=false explicite, le mode REAL reste protégé
+    (l'argent réel ne se contrôle jamais sans session)."""
+    monkeypatch.setenv("AUTH_ENABLED", "false")
+    old_mode = main.STATE["mode"]
+    main.STATE["mode"] = "REAL"
+    try:
+        assert main.auth_enforced() is True
+    finally:
+        main.STATE["mode"] = old_mode

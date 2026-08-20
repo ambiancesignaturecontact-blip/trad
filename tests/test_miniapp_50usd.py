@@ -265,3 +265,45 @@ class TestUISync:
         for s in ("order flow", "état risque", "honnêteté", "attribution", "stress", "coûts"):
             assert s in dash, f"'{s}' manquant dans dashboard"
             assert s in mini, f"'{s}' manquant dans mini-app"
+
+
+# --------------------------------------------------------------------------- #
+# Régression : le trading micro 50$ ne doit plus être rejeté (min notional)
+# --------------------------------------------------------------------------- #
+
+def test_micro_50usd_trade_survives_pipeline_and_min_notional(monkeypatch):
+    """FIX : avec un signal faible (conviction ~0.10), la taille post-pipeline
+    tombait sous le min notional (1,50$ < 3$) -> simulate_paper_fill rejetait
+    -> le bot ne tradait JAMAIS sur petit compte. En DEMO, la taille doit être
+    remontée au min notional (bornée 80% du capital) et le fill accepté."""
+    from core.paper_execution import min_notional_for_capital, simulate_paper_fill
+    from core.risk_pipeline import apply_risk_pipeline
+    from risk.risk_manager import RiskManager
+
+    capital = 50.0
+    price = 170.0  # SOL
+    atr = price * 0.008
+    rm = RiskManager()
+    rm.set_initial_capital(capital)
+    base_qty = rm.calculate_position_size(capital=capital, atr=atr, current_price=price,
+                                          win_rate=0.45, reward_risk_ratio=1.8)
+    assert base_qty * price == 10.0  # sizing micro force 10$ (>= min 10)
+
+    _pipe = apply_risk_pipeline(
+        base_qty=base_qty, cvar_qty=1e9, max_asset_qty=1e9,
+        conviction=0.10, risk_state_scale=0.8, news_scale=0.8, macro_scale=0.8,
+        onchain_scale=0.8, corr_scale=0.8, order_flow_scale=0.8,
+        regime_confidence_scale=0.8, capacity_scale=0.8, cash_reserve_scale=0.8,
+        reason_attribution_scale=0.8, confidence_scale=0.8, org_scale=0.8,
+        vol_scale=1.0, tradability_scale=0.8)
+    qty = _pipe["qty"]
+    mn = min_notional_for_capital(capital)
+    assert qty * price < mn, "précondition : la taille post-pipeline est sous le min"
+
+    # FIX simulé : remontée bornée (80% du capital) puis fill
+    bumped = min(mn / price, (capital * 0.80) / price)
+    book = {"bids": [[price - 0.1, 50.0]], "asks": [[price + 0.1, 50.0]]}
+    paper = simulate_paper_fill("SOLUSDT", "BUY", bumped, price, book,
+                                "Binance", balance=capital)
+    assert paper.get("rejected") is False, f"fill rejeté: {paper.get('reason')}"
+    assert paper["fill_price"] > 0

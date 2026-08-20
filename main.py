@@ -40,7 +40,7 @@ from core.middleware import (
 )
 from core.mixture_experts import MixtureOfExperts, curriculum_sort, risk_adjusted_reward
 from core.organization import Organization
-from core.paper_execution import estimate_slippage_bps_from_book, simulate_paper_fill
+from core.paper_execution import estimate_slippage_bps_from_book, min_notional_for_capital, simulate_paper_fill
 from core.portfolio_allocator import PortfolioAllocator
 from core.position_manager import (
     PositionProtection,
@@ -783,14 +783,19 @@ def _is_remote_deployment() -> bool:
 def auth_enforced() -> bool:
     """
     L'authentification est-elle exigée sur les routes d'action ?
-     - AUTH_ENABLED=true explicite, OU
-     - mode REAL (argent réel : jamais contrôlable sans session), OU
-     - déploiement non-local (PORT/RAILWAY_* -> URL publique, P0-2).
+     - AUTH_ENABLED=true explicite -> OUI (priorité absolue)
+     - AUTH_ENABLED=false explicite -> NON (choix assumé de l'opérateur,
+       ex. sandbox de dev/preview ; prioritaire sur la détection d'environnement)
+     - sinon : mode REAL (argent réel : jamais contrôlable sans session) OU
+       déploiement non-local (PORT/RAILWAY_* -> URL publique, P0-2) -> OUI.
     """
-    if os.getenv("AUTH_ENABLED", "").lower() == "true":
+    explicit = os.getenv("AUTH_ENABLED", "").strip().lower()
+    if explicit in ("1", "true", "yes", "on"):
         return True
     if STATE["mode"] == "REAL":
         return True
+    if explicit in ("0", "false", "no", "off"):
+        return False
     return _is_remote_deployment()
 
 
@@ -3834,6 +3839,27 @@ async def live_trading_loop():
                         # + facteur limitant (idée n°1) à partir des steps du pipeline
                         _record_final_scale(symbol, _pipe["final_scale"], len(_pipe["steps"]),
                                             steps=_pipe.get("steps"))
+                        # FIX (trading micro 50$) : avec un signal faible, la taille
+                        # post-pipeline tombe SOUS le min notional (ex. 1,50$ < 3$)
+                        # -> simulate_paper_fill REJETTE -> le bot ne trade JAMAIS
+                        # sur petit compte. En DEMO : on remonte au min notional
+                        # (borné 80% du capital, comme calculate_position_size) pour
+                        # que le bot puisse trader et apprendre (philosophie méta-label
+                        # DEMO). En REAL : JAMAIS de remontée — le pipeline est sacré.
+                        try:
+                            if active_mode == "DEMO" and target_qty > 0:
+                                _mn = min_notional_for_capital(STATE[active_balance_key])
+                                _notional = target_qty * current_price
+                                if _notional < _mn:
+                                    _cap_qty = (STATE[active_balance_key] * 0.80) / current_price
+                                    _bumped = min(_mn / current_price, _cap_qty)
+                                    if _bumped > target_qty:
+                                        logger.info(
+                                            f"DEMO micro-budget {symbol}: notional {_notional:.2f}$ < min {_mn:.2f}$ "
+                                            f"-> taille remontée à {_bumped*current_price:.2f}$ (apprentissage continu).")
+                                        target_qty = _bumped
+                        except Exception:
+                            pass
                     except Exception as _pe:
                         logger.error(f"Risk pipeline failed ({_pe}) — using conservative path")
                         target_qty = min(target_qty, cvar_qty, max_asset_qty) * abs(final_signal)
