@@ -1,7 +1,7 @@
 import pytest
 from models.oms_ems import OrderManagementSystem, ExecutionManagementSystem, OrderStatus, Fill
 from adapters.exchange_adapter import BinanceExchangeAdapter, BybitExchangeAdapter
-from db_manager import DBManager
+from database.db_manager import DBManager
 
 def test_oms_and_ems_lifecycle_flow():
     db = DBManager()

@@ -36,7 +36,7 @@ class TestRealIP:
         assert 'db.add_audit_log("' in src
 
     def test_no_hardcoded_in_telegram_bot(self):
-        src = open("models/telegram_bot.py").read()
+        src = open("bot/telegram_bot.py").read()
         assert '"127.0.0.1"' not in src
 
     def test_middleware_sets_request_ip(self):

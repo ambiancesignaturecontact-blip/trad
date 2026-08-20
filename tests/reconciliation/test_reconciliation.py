@@ -1,6 +1,6 @@
 import pytest
 from models.oms_ems import ReconciliationEngine
-from db_manager import DBManager
+from database.db_manager import DBManager
 
 def test_reconciliation_balance_success():
     db = DBManager()

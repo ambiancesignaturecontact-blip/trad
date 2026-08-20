@@ -11,7 +11,7 @@ from backtester.engine import EventDrivenBacktester
 from backtester.bias_audit import audit_backtest
 from backtester.live_candles import fetch_real_candles
 from models.mlops_pipeline import MLOpsAutoTrainer
-from db_manager import DBManager
+from database.db_manager import DBManager
 
 def execute_walk_forward_analysis():
     print("=========================================================================")

@@ -74,7 +74,7 @@ from strategies.engine import (
 )
 from copytrading.manager import CopyTradingManager
 from risk.risk_manager import RiskManager
-from db_manager import DBManager
+from database.db_manager import DBManager
 from backtester.engine import EventDrivenBacktester
 
 # NEW ADVANCED MODELS
@@ -86,7 +86,7 @@ from models.risk_covariance import RiskCovarianceEngine
 from market_data.multi_source import MultiSourcePriceEngine
 from market_data.order_flow import OrderFlowEngine
 from models.volatility_arbitrage import OptionsVolatilityArbitrageEngine
-from models.telegram_bot import TelegramBotManager
+from bot.telegram_bot import TelegramBotManager
 from models.funding_arbitrage import FundingRateArbitrageEngine
 from models.dex_cex_arbitrage import DexCexArbitrageEngine
 from models.monte_carlo import MonteCarloStressTester

@@ -2,9 +2,10 @@
 Macroeconomic Scheduled Events Calendar Engine — DONNÉES 100% RÉELLES.
 
 Faille 1 corrigée (PDF — mentalité n°5 : « la confiance dans le signal compte
-autant que le signal ») : l'ancienne version simulait des événements avec
-`time.time() + 3600 * 4`, ce qui déclenchait des réductions de risque sur des
-annonces inventées (FOMC « dans 4h » en boucle éternelle).
+autant que le signal ») : l'ancienne version simulait des événements en
+ajoutant quelques heures à l'horloge du process, ce qui déclenchait des
+réductions de risque sur des annonces inventées (FOMC « dans 4h » recréé en
+boucle éternelle à chaque démarrage).
 
 Nouveau comportement (honnête et sûr) :
 1. Source PRIMAIRE : fichier `data/macro_events.json` (daté UTC, maintenu à la

@@ -1,5 +1,5 @@
 import pytest
-from db_manager import DBManager
+from database.db_manager import DBManager
 
 def test_capital_persistence_flow():
     db = DBManager()

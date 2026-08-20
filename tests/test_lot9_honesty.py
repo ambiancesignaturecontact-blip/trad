@@ -131,17 +131,17 @@ class TestTelemetryHonesty:
 # --------------------------------------------------------------------------- #
 class TestTelegramBot:
     def test_honesty_command(self):
-        src = open("models/telegram_bot.py").read()
+        src = open("bot/telegram_bot.py").read()
         assert '"/honesty"' in src
         assert "HONNÊTETÉ DES MODULES" in src
 
     def test_help_mentions_honesty(self):
-        src = open("models/telegram_bot.py").read()
+        src = open("bot/telegram_bot.py").read()
         assert "`/honesty`" in src
 
     def test_risk_status_still_there(self):
         """Les commandes existantes sont préservées (contrainte : ne pas casser)."""
-        src = open("models/telegram_bot.py").read()
+        src = open("bot/telegram_bot.py").read()
         for cmd in ('"/status"', '"/history"', '"/modes"', '"/risk"',
                     '"/pause"', '"/resume"', '"/kill"', '"/approve"', '"/chat "'):
             assert cmd in src, f"commande {cmd} manquante"
