@@ -54,6 +54,11 @@ Dernière mise à jour : 2026-08-20 · Repo : `trad` · Langue : français
 | Fidélité DEMO == REAL | SOR multi-venue exécuté en DEMO + `simulate_paper_fill` TOUJOURS book-walké (avant : prix fixe ±3 bps si carnet présent) | `3fdab5d` · `test_lot7_split.py` |
 | Collecte final_scale | Persistance DB (survit aux redémarrages, perte max 5 min), endpoint `/api/v1/final-scale`, `/api/v1/paper-validation` | `765abfb`, `f2aac61` |
 | Pollution DB par les tests | Tests mockent la DB (leçon : le p50=11,45 % initial était des données de test) | `f2aac61` |
+| Ruff réparé et bloquant | `W503` retiré (règle supprimée de ruff), ~2000 corrections sûres, 3 vrais bugs F821 corrigés (stress test du scheduler autonome ne s'exécutait JAMAIS), **`ruff check .` = 0 erreur**, CI bloquant | `359c13c` · `test_lot4_ci.py` |
+| Test flaky corrigé | `test_meta_allocation_dominance` figé via cache de tirage Thompson (8/8 vertes, avant ~40 % d'échec) | `359c13c` |
+| Warning MLOps éliminé | **Vrai bug trouvé** : `get_setting(key, "défaut")` passait le défaut en `user_id` → `int("")` ; appels corrigés + test de régression | `359c13c` · `test_lot9_educational.py` |
+| Contention SQLite réglée | Tests isolés sur `tests/test_trading.db` (base fraîche par session, `.gitignore`) — pytest peut tourner pendant que le serveur écrit | `359c13c` · `tests/conftest.py` |
+| Étape 2 du découpage | `telemetry.py` extrait (`serialize_helper`, `compile_telemetry_data`, `broadcast_telemetry`) — main.py 4918 → 4696 lignes | `359c13c` |
 
 ---
 
@@ -72,12 +77,9 @@ Dernière mise à jour : 2026-08-20 · Repo : `trad` · Langue : français
 
 | Limite | Détail | Statut |
 |---|---|---|
-| `ruff` cassé | `.ruff.toml` contient une règle inconnue (`W503`) → ruff ne démarre pas ; CI non bloquant, assumé et documenté | Lot dédié nécessaire |
-| Test flaky préexistant | `test_meta_allocation_dominance` dépend du tirage uniforme du bandit (~18 % d'échec théorique) | À corriger (seed ou seuil déterministe) |
-| Warning MLOps | `Challenger/champion comparison failed: invalid literal for int() with base 10: ''` — attrapé, non bloquant | À investiguer (source ≠ `mlops_n_trials`, déjà robuste) |
 | Torch absent du sandbox | GAN (LOT 54) et RLHF (LOT 55) en fallback neutre — cohérent avec l'étiquette ÉDUCATIF | Assumé |
-| `main.py` encore ~4 900 lignes | Étape 1 du découpage seulement (le cœur `live_trading_loop` reste dans main) | Étape 2 optionnelle |
-| Contention SQLite | Ne pas lancer `pytest` pendant que le serveur uvicorn écrit dans la même `trading_platform.db` (500 s+ vs 29 s) | Documenté |
+| `main.py` encore ~4 700 lignes | Étape 2 partielle faite (télémétrie extraite) ; le cœur `live_trading_loop` reste dans main | Étape 3 optionnelle |
+| `from main import *` dans les modules extraits | Pattern de l'étape 1 du découpage (F405/E402 ignorés per-fichier dans ruff) | À éliminer si découplage fin |
 
 ---
 
