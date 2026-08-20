@@ -50,8 +50,11 @@ _DEFAULTS: dict[str, Any] = {
         "atr_mult_sl": 2.0,
         "halt_cooldown_minutes": 15.0,
         # P0-4 (audit §2.1) : plancher anti-empilement de la réduction
-        # cumulative des overlays (0.8^15 ≈ 3,5 % sans plancher).
-        "final_scale_floor": 0.15,
+        # cumulative des overlays. LOT A (F1) : relevé de 0.15 à 0.25 —
+        # les signaux sont désormais calibrés (p50≈0.27), la conviction n'est
+        # plus le frein ; le risque est déjà porté par Kelly ¼, CVaR 2 % et
+        # les drawdowns. Un plancher à 15 % écrasait la taille à chaque tick.
+        "final_scale_floor": 0.25,
         # P1-8 (audit §3) : drawdowns par taille de compte (RiskManager)
         "daily_drawdown_small": 0.10,
         "max_total_drawdown_micro": 0.35,

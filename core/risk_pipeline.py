@@ -53,9 +53,10 @@ HALT_COOLDOWN_MINUTES: float = settings.get_float("risk", "halt_cooldown_minutes
 
 # P0-4 (audit §2.1) : plancher de réduction CUMULATIVE des overlays. 17 facteurs
 # « prudents » en chaîne s'auto-amplifient (0.8^15 ≈ 3,5 %) sans information
-# nouvelle ; on borne la réduction combinée à 15 %. Les blocages durs (facteur
-# = 0.0 : HALT, choc extrême...) restent intégralement respectés.
-FINAL_SCALE_FLOOR: float = settings.get_float("risk", "final_scale_floor", 0.15)
+# nouvelle ; on borne la réduction combinée. LOT A (F1) : 0.25 par défaut —
+# signaux calibrés (p50≈0.27), risque déjà porté par Kelly ¼ / CVaR / drawdowns.
+# Les blocages durs (facteur = 0.0 : HALT, choc extrême...) restent intégraux.
+FINAL_SCALE_FLOOR: float = settings.get_float("risk", "final_scale_floor", 0.25)
 # Étapes de redémarrage : (facteur de taille, minutes depuis le début du restart)
 RESTART_STAGES: list[tuple[float, float]] = [
     (0.25, 0.0),    # 25 % immédiatement après le cool-down
@@ -431,6 +432,13 @@ def apply_risk_pipeline(base_qty: float,
         qty *= f
         steps.append({"step": name, "op": "mul", "value": f, "qty_after": qty})
 
+    # LOT A (F1) : nombre de facteurs multiplicatifs RÉELLEMENT actifs (< 1.0).
+    # Transparence de l'empilement : si beaucoup de facteurs réduisent en même
+    # temps, le plancher anti-empilement est le seul garde-fou — on veut le
+    # VOIR en télémétrie (le diagnostic « c'est quoi qui bloque » de l'audit).
+    active_factors = sum(1 for name in RISK_PIPELINE_ORDER[2:]
+                         if factors.get(name, 1.0) < 1.0)
+
     final_scale = qty / base_qty if base_qty > 0 else 0.0
     # P0-4 (audit indépendant §2.1) : PLANCHE R de réduction cumulative.
     # L'empilement de N facteurs « prudents » s'auto-amplifie (0.8^15 ≈ 3,5 %)
@@ -448,4 +456,5 @@ def apply_risk_pipeline(base_qty: float,
         "qty": max(0.0, qty),
         "final_scale": final_scale,
         "steps": steps,
+        "active_factors": active_factors,
     }

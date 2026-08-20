@@ -3851,7 +3851,8 @@ async def live_trading_loop():
                         target_qty = _pipe["qty"]
                         STATE["risk_pipeline_steps"] = _pipe["steps"]
                         risk_pipeline_last.update({"symbol": symbol, "final_scale": _pipe["final_scale"],
-                                                   "n_steps": len(_pipe["steps"])})
+                                                   "n_steps": len(_pipe["steps"]),
+                                                   "active_factors": _pipe.get("active_factors", 0)})
                         # P0-4 (audit §2.1) : accumulation de la distribution réelle
                         # + facteur limitant (idée n°1) à partir des steps du pipeline
                         _record_final_scale(symbol, _pipe["final_scale"], len(_pipe["steps"]),
@@ -3906,7 +3907,11 @@ async def live_trading_loop():
                     try:
                         STATE["conviction_threshold"] = adaptive_conviction_threshold(
                             STATE["recent_signals"], STATE["recent_returns"],
-                            base_threshold=settings.get_float("trading", "signal_threshold", 0.15))
+                            # LOT A (F1) : base ADAPTATIVE (p25 des |signaux|
+                            # réels) au lieu de la constante 0.08 qui bornait
+                            # le seuil à [0.08, 0.14] — le seuil suit la
+                            # conviction réellement produite par le marché.
+                            base_threshold=None)
                     except Exception:
                         pass
                     target_direction = np.sign(final_signal) if abs(final_signal) > STATE.get("conviction_threshold", 0.15) else 0.0

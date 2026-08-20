@@ -16,16 +16,36 @@ logger = logging.getLogger("MetaCognition")
 
 
 def adaptive_conviction_threshold(recent_signals: list[float], recent_returns: list[float],
-                                  base_threshold: float = 0.15,
+                                  base_threshold: float | None = None,
                                   min_threshold: float = 0.08, max_threshold: float = 0.30) -> float:
     """
-    VISION §4a: threshold = base scaled by recent directional accuracy.
-    If recent signals agreed with realized returns, trust them more (lower bar);
-    if not, demand more evidence (higher bar).
+    VISION §4a + LOT A (F1) : le seuil de conviction s'adapte à DEUX signaux
+    réels :
+      1. La distribution des |signaux| récents (base = percentile p25, bornée)
+         — LOT A : avant, la base était une constante 0.08 (config) ce qui
+         bornait le seuil à [0.08, 0.14] et ignorait la conviction réelle du
+         marché (p50≈0.27). Désormais, si base_threshold est None, on prend
+         le p25 des |signaux| observés : le seuil suit le niveau de signal
+         effectivement produit.
+      2. La précision directionnelle récente (comportement historique) :
+         accuracy élevée -> barre plus basse (on fait confiance), faible ->
+         barre plus haute.
     """
+    # 1. Base adaptative : percentile p25 des |signaux| récents (borné)
+    if base_threshold is None:
+        if recent_signals and len(recent_signals) >= 10:
+            abs_sig = [abs(float(s)) for s in recent_signals
+                       if s is not None and float(s) != 0.0]
+            if abs_sig:
+                base_threshold = float(np.percentile(abs_sig, 25))
+                base_threshold = float(np.clip(base_threshold, min_threshold, max_threshold))
+            else:
+                base_threshold = min_threshold
+        else:
+            base_threshold = min_threshold
     n = min(len(recent_signals), len(recent_returns))
     if n < 10:
-        return base_threshold
+        return float(np.clip(base_threshold, min_threshold, max_threshold))
     correct = sum(1 for i in range(-n, 0) if np.sign(recent_signals[i]) == np.sign(recent_returns[i]))
     accuracy = correct / n
     # accuracy 0.5 -> neutral; >0.55 lowers the bar, <0.45 raises it

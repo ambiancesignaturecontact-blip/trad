@@ -158,6 +158,8 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "strategy_win_rates": STATE.get("strategy_win_rates", {}),
         "strategy_trade_counts": STATE.get("strategy_trade_counts", {}),
         "risk_pipeline_steps": STATE.get("risk_pipeline_steps", [])[-12:],
+        # LOT A (F1) : nb de facteurs réellement actifs (< 1.0) au dernier tick
+        "active_factors_last": main.risk_pipeline_last.get("active_factors", 0),
         # P0-4 (audit §2.1) : distribution observée de final_scale (p10/p50/p90)
         "final_scale_stats": STATE.get("final_scale_stats"),
         "final_scale_samples_count": len(STATE.get("final_scale_samples", [])),

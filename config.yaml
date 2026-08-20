@@ -27,8 +27,9 @@ risk:
   daily_drawdown_normal: 0.025
   max_per_asset_pct: 0.25          # plafond dur 25% du capital sur un actif
   # P0-4 (audit §2.1) : plancher anti-empilement de la réduction cumulative
-  # des overlays (0.8^15 ≈ 3,5% sans plancher — les blocages durs à 0 restent)
-  final_scale_floor: 0.15
+  # des overlays. LOT A (F1) : 0.25 — signaux calibrés, risque porté par
+  # Kelly/CVaR/drawdowns (les blocages durs à 0 restent intégraux).
+  final_scale_floor: 0.25
   # ===== P1-8 (audit §3) : drawdowns par taille de compte (RiskManager) =====
   daily_drawdown_small: 0.10       # capital 1 000 - 100 000 $ (10% quotidien)
   max_total_drawdown_micro: 0.35   # 35% lifetime pour micro-comptes
