@@ -147,6 +147,7 @@
                     <div class="text-xs text-slate-400">CAPITAL ACTUEL</div>
                     <div id="capital-display" class="font-display text-3xl font-bold tabular-nums tracking-tighter">$—</div>
                     <div id="equity-display" class="text-[10px] text-slate-500 font-semibold mt-0.5">Équité: —</div>
+                    <div id="account-ccy" class="text-[9px] text-cyan-400/70 mt-0.5">Devise: USD</div>
                     <div id="data-freshness" class="text-[9px] text-slate-600 mt-0.5">🟡 chargement…</div>
                 </div>
             </div>
@@ -470,8 +471,9 @@
                 state.mode === 'REAL' ? 'font-bold text-xl tracking-tight text-red-400' : 'font-bold text-xl tracking-tight';
             
             // Capital
+            const ccySymbol = (state.ccy === 'EUR') ? '€' : (state.ccy === 'GBP') ? '£' : (state.ccy === 'JPY') ? '¥' : '$';
             document.getElementById('capital-display').innerHTML = 
-                '$' + state.capital.toLocaleString();
+                ccySymbol + state.capital.toLocaleString(undefined, {maximumFractionDigits: 2});
             
             // PnL
             const pnlEl = document.getElementById('pnl-value');
@@ -852,7 +854,15 @@
                 state.lastUpdate = new Date().toLocaleTimeString('fr-FR', {hour:'2-digit', minute:'2-digit', second:'2-digit'});
                 
                 state.mode = telemetry.mode || state.mode;
-                state.capital = telemetry.balance ?? state.capital;
+                // Multi-devise : la devise du compte vient du serveur (taux réels)
+                const ccyEl = document.getElementById('account-ccy');
+                if (ccyEl && telemetry.account_currency) {
+                    ccyEl.textContent = 'Devise: ' + telemetry.account_currency;
+                }
+                // Afficher le capital converti quand le serveur le fournit
+                const balCcy = telemetry.balance_account_ccy;
+                state.capital = (balCcy && balCcy.value != null) ? balCcy.value : (telemetry.balance ?? state.capital);
+                state.ccy = (balCcy && balCcy.currency) ? balCcy.currency : 'USD';
                 // Badges header (mini-app complète)
                 const eqEl = document.getElementById('equity-display');
                 if (eqEl) eqEl.textContent = 'Équité: $' + (telemetry.current_equity ?? 0).toLocaleString(undefined, {maximumFractionDigits: 0});

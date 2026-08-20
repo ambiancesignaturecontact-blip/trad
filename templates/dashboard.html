@@ -827,8 +827,13 @@ window.qpLogin = async function () {
             }
 
             // Cards telemetry
-            safeSetText('val-equity', `$${(data.current_equity || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
-            safeSetText('val-balance', `Solde: $${(data.balance || 0.0).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})}`);
+            // Multi-devise : la devise du compte + valeurs converties viennent
+            // du serveur (taux réels open.er-api.com). Symbole de la devise.
+            const ccySym = data.account_currency === 'EUR' ? '€' : data.account_currency === 'GBP' ? '£' : data.account_currency === 'JPY' ? '¥' : '$';
+            const balCcy = data.balance_account_ccy || {};
+            const eqCcy = data.equity_account_ccy || {};
+            safeSetText('val-equity', `${ccySym}${(eqCcy.value != null ? eqCcy.value : (data.current_equity || 0.0)).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})} ${eqCcy.currency || 'USD'}`);
+            safeSetText('val-balance', `Solde: ${ccySym}${(balCcy.value != null ? balCcy.value : (data.balance || 0.0)).toLocaleString(undefined, {minimumFractionDigits:2, maximumFractionDigits:2})} ${balCcy.currency || 'USD'}`);
             
             // PnL Cards update
             const pnlUsd = data.live_pnl_usd || 0.0;

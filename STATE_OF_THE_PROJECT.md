@@ -7,7 +7,25 @@
 > `docs/archive/audits-2026-08/` (historique conservé, plus aucune ambiguïté
 > sur « quel document fait autorité » : c'est celui-ci).
 
-Dernière mise à jour : 2026-08-20 · Repo : `trad` · Langue : français
+Dernière mise à jour : 2026-08-20
+
+## 🎓 Principes institutionnels appliqués (savoir public de référence)
+
+| Principe | Source publique | Application dans QUANT-PORTAL |
+|---|---|---|
+| **Meta-labeling** : séparer la direction (side) du sizing (taille) — un modèle secondaire filtre les faux positifs et pilote la taille | López de Prado, *Advances in Financial Machine Learning* (2018) ; [Wikipedia Meta-Labeling](https://en.wikipedia.org/wiki/Meta-Labeling) | `meta_label_filter()` : filtre les signaux faibles (en DEMO : réduit la taille ; en REAL : bloque) — la direction vient du méta-moteur, la taille du Kelly + pipeline |
+| **Fractional Kelly** : le Kelly plein maximise la croissance log mais produit des drawdowns sévères ; ½-¼ Kelly sacrifie ~25-56 % de croissance pour réduire massivement la volatilité | Thorp (2011), MacLean et al. (2010) ; pratiques professionnelles (Ernie Chan, AQR) | `KELLY_FRACTION = 0.15` (≈¼ Kelly) + win rate plancher/plafond 0.45-0.65 (estimation d'edge incertaine → réduire) |
+| **Risk parity** : équilibrer le RISQUE entre classes d'actifs, pas le capital | Bridgewater All Weather (1996/2012) ; Bob Prince, "Risk Parity Is About Balance" | `risk_parity_weights()` dans `MetaAllocationEngine` + corrélation des signaux (P1-10) pour ne pas concentrer sur 2-3 facteurs latents |
+| **Volatility targeting** : maintenir une volatilité cible constante, taille = cible/vol réalisée | Pratique institutionnelle (Man AHL, AQR) ; Kelly continu f* = μ/σ² | `volatility_scale_factor()` (cible tick 0.04 %, bornes 0.25-2.0) |
+| **Base currency (multi-devise)** : le portefeuille se mesure dans UNE devise de référence ; chaque valeur étrangère convertie au taux du jour | IFRS (spot rate au jour de transaction) ; pratiques comptables multi-devises | `core/fx.py` : devise de compte configurable, conversion réelle er-api, affichage honnête si FX indisponible |
+| **Triple-barrier labeling** : les sorties réelles (SL/TP/temps) définissent le label, pas un horizon fixe | López de Prado, AFML ch. 3 | `MetaLabelingTripleBarrier` (modèles/lopez_de_prado.py) — utilisé pour l'apprentissage |
+| **Drawdown management** : circuit breakers quotidiens + lifetime, drawdowns par taille de compte | Pratique institutionnelle (risque de ruine) | `RiskManager.check_circuit_breaker()` : 2,5-18 %/jour, 8-35 % lifetime selon le capital |
+| **Déflated Sharpe Ratio (DSR)** : corriger le Sharpe de la sélection/fouille de données | López de Prado, AFML ch. 8 | `calculate_deflated_sharpe_ratio` — promotion challenger OOS + attribution PnL (P1-11) |
+
+> Ces principes sont des références publiques de qualité ; ils sont appliqués de façon critique :
+> ce qui est robuste (fractional Kelly, DSR, triple-barrier) est en production ; ce qui est
+> théorique (Kelly plein, optimisations fragiles) est volontairement écarté ou borné.
+ · Repo : `trad` · Langue : français
 
 ---
 
@@ -62,6 +80,7 @@ Dernière mise à jour : 2026-08-20 · Repo : `trad` · Langue : français
 | Fix prod (logs Railway) | `/api/v1/health` 500 corrigé (imports directs des symboles perdus par le nettoyage ruff F401 — `compute_health_score` etc.) ; supervisor silencieux en pause volontaire ; **test : toutes les routes GET répondent sans NameError** | `ab251aa` · `test_routes_health.py` |
 | Mini-app fiable (mandat) | **Cause trouvée** : pas de polling + état initial 100 % simulé (chiffres fictifs affichés !). Corrigé : polling REST 5 s (parité fallback dashboard), état initial honnête (—/chargement), indicateur de fraîcheur 🟢/🟡/🔴, erreurs visibles. Tests verrouillés | commit mandat · `test_miniapp_50usd.py` |
 | Accès marchés vérifié | Crypto (Coinbase/Kraken/OKX/CoinGecko), Or XAUUSD (Yahoo GC=F + gold-api), Forex EURUSD (Yahoo + er-api), Actions AAPL/TSLA (Yahoo) — toutes les classes d'actifs alimentées par des sources RÉELLES (Binance/Bybit géobloqués en sandbox, OK en prod) | test live 2026-08-20 |
+| Multi-devise (compte) | Devise de compte configurable (`account.currency` : USD/EUR/GBP/JPY/CHF/...) + conversion RÉELLE (open.er-api.com, cache 5 min) de balance/équité/PnL dans la devise du compte (principe base currency IFRS/GAAP) ; l'interne reste en USD ; UI mini-app + dashboard affichent la devise ; FX indisponible -> affichage USD honnête (jamais de taux inventé) | commit multi-devise · `test_multicurrency.py` (11 tests) |
 | Trading 50 $ prouvé | 44 ordres FILLED sur la session (Grid Trading SOL, allers-retours ~20 s, ~3 $/trade — le min-notional remonté) ; l'impression « ne trade pas » vient de la petitesse/rapidité + NO_TRADE fréquents (régime Bear Trend High Vol, prudence par design) | journal DB 2026-08-20 |
 
 ---

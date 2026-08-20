@@ -8,9 +8,27 @@ import json
 import time
 
 import main  # noqa: F401
+from core.fx import convert as _fx_convert  # noqa: F401
+from core.fx import get_account_currency as _fx_ccy
+from core.fx import usd_to as _fx_usd_to
 from core.module_honesty import get_module_status, status_summary  # noqa: F401
 from main import *  # noqa: F401,F403
 from main import _BG_TASKS, _paper_validation_stats  # noqa: F401
+
+# Devise du compte (résolue une fois par appel — le cache FX interne gère la
+# fréquence des appels réseau)
+_acct_ccy = _fx_ccy()
+_fx_rate = _fx_usd_to(_acct_ccy)
+
+
+def _fx_display(value_usd: float) -> dict:
+    """Affichage multi-devise honnête : {value, currency, fx_rate}."""
+    ccy = _acct_ccy
+    rate = _fx_rate
+    if ccy == "USD" or rate is None:
+        return {"value": round(float(value_usd), 2), "currency": ccy if ccy else "USD",
+                "fx_rate": rate}
+    return {"value": round(float(value_usd) * rate, 2), "currency": ccy, "fx_rate": rate}
 
 
 def serialize_helper(obj):
@@ -83,6 +101,14 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "order_book": STATE["order_book"],
         "balance": STATE["balance_demo"] if STATE["mode"] == "DEMO" else STATE["balance_real"],
         "current_equity": STATE["current_equity"],
+        # P2-multi-devise : devise du compte + valeurs converties (l'interne
+        # reste en USD ; l'affichage est converti dans la devise du compte
+        # via des taux RÉELS — principe base currency, jamais de taux inventé).
+        "account_currency": _acct_ccy,
+        "fx_rate_usd_to_account": _fx_rate,
+        "balance_account_ccy": _fx_display(STATE["balance_demo"] if STATE["mode"] == "DEMO" else STATE["balance_real"]),
+        "equity_account_ccy": _fx_display(STATE["current_equity"]),
+        "pnl_account_ccy": _fx_display(live_pnl_usd),
         "equity_history": STATE["equity_history_demo"] if STATE["mode"] == "DEMO" else STATE["equity_history_real"],
         "live_pnl_usd": live_pnl_usd,
         "live_pnl_pct": live_pnl_pct,

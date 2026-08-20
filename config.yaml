@@ -103,3 +103,10 @@ strategies:
 logging:
   level: INFO
   structured: false
+
+# ===== P2-multi-devise : devise de base du compte =====
+# Toutes les valeurs affichées (balance, équité, PnL) sont converties dans
+# cette devise via des taux RÉELS (open.er-api.com). L'interne reste en USD.
+# Valeurs possibles : USD (défaut), EUR, GBP, JPY, CHF, AUD, CAD, CNY
+account:
+  currency: USD

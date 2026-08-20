@@ -123,6 +123,13 @@ _DEFAULTS: dict[str, Any] = {
         "min_paper_validation_days": 28,
         "paper_validation_required": True,
     },
+    # P2-multi-devise : devise de base du compte (USD/EUR/GBP/JPY/CHF/...).
+    # Toutes les valeurs affichées (balance, équité, PnL) sont converties dans
+    # cette devise via des taux RÉELS (open.er-api.com). L'interne reste en USD
+    # (les actifs sont cotés en USD) — seul l'affichage/le compte est converti.
+    "account": {
+        "currency": "USD",
+    },
     "alerts": {
         "daily_digest_enabled": True,
         "daily_digest_hour_utc": 18,
