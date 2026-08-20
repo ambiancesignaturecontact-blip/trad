@@ -17,6 +17,8 @@ Ce module est la SOURCE UNIQUE DE VÉRITÉ du risque. Il corrige :
 import logging
 import time
 
+import numpy as np
+
 from core.config import settings
 
 logger = logging.getLogger("RiskPipeline")
@@ -118,6 +120,44 @@ def kelly_dynamic(win_rate: float | None,
     R_net = max(reward_risk - ROUND_TRIP_COST_PCT, 0.01)
     kelly = (p * R_net - (1.0 - p)) / R_net
     return max(0.0, kelly * fraction)
+
+
+# Bornes du calibrage de conviction (Axe 1 — mission « intelligence »).
+# La conviction = |signal| BRUT ne reflète pas la qualité réelle de la
+# stratégie. On la calibre par le win rate réel (l'edge EST une estimation
+# incertaine — Thorp, MacLean et al. : réduire quand l'estimation est faible).
+# Bornes serrées : jamais plus de 1.25x, jamais moins de 0.6x — le pipeline
+# (plancher 15 %, Kelly, CVaR) garde la main sur la taille finale.
+CONVICTION_CALIB_MIN = 0.60
+CONVICTION_CALIB_MAX = 1.25
+
+
+def calibrated_conviction(signal: float, win_rate: float | None,
+                          wr_floor: float = WIN_RATE_FLOOR,
+                          wr_ceil: float = WIN_RATE_CEIL) -> float:
+    """
+    Calibre la conviction |signal| par le win rate RÉEL de la stratégie
+    dominante (meta-labeling — López de Prado : la taille doit refléter la
+    probabilité calibrée de succès, pas seulement l'intensité du signal).
+
+    - win_rate None (pas d'historique) -> NEUTRE (conviction = |signal|) :
+      on ne punit pas une stratégie neuve, on n'invente pas d'edge.
+    - win_rate au plancher 0.45 -> x0.60 (edge douteux, on réduit)
+    - win_rate 0.50 (coin-flip) -> x~0.76 (pas d'edge démontré, prudence)
+    - win_rate 0.55 -> x~0.93 (edge faible, léger boost)
+    - win_rate au plafond 0.65 -> x1.25 (edge réel, on le laisse s'exprimer)
+
+    Retourne une conviction calibrée bornée [0, CONVICTION_CALIB_MAX].
+    """
+    base = abs(float(signal))
+    if win_rate is None:
+        return base
+    wr = clamp(float(win_rate), wr_floor, wr_ceil)
+    # interpolation linéaire entre (0.45, 0.60) et (0.65, 1.25) :
+    # pente = (1.25 - 0.60) / (0.65 - 0.45) = 3.25 par point de win rate
+    mult = CONVICTION_CALIB_MIN + (wr - wr_floor) * 3.25
+    mult = float(np.clip(mult, CONVICTION_CALIB_MIN, CONVICTION_CALIB_MAX))
+    return float(np.clip(base * mult, 0.0, CONVICTION_CALIB_MAX))
 
 
 # --------------------------------------------------------------------------- #

@@ -62,6 +62,7 @@ from core.risk_pipeline import (
     RiskStateMachine,
     StrategyWinRateTracker,
     apply_risk_pipeline,
+    calibrated_conviction,
     entry_rr_filter,
 )
 from core.robustness import (
@@ -657,6 +658,14 @@ def record_closed_trade(symbol: str, exit_price: float, side: str) -> None:
         # MetaAllocationEngine : pondération par contribution RÉELLE au PnL (Pilier D)
         try:
             meta_engine.update_pnl_attribution(strategy, pnl_pct)
+        except Exception:
+            pass
+        # Axe 2 (mission intelligence) : le RegimeSwitchingAllocator apprend
+        # la performance RÉELLE par (régime, stratégie) — les poids de régime
+        # s'adaptent en ligne, bornés (jamais de sur-réaction au bruit).
+        try:
+            regime_allocator.update_regime_performance(
+                STATE.get("regime_id", 2), strategy, pnl_pct)
         except Exception:
             pass
     except Exception as _ae:
@@ -3813,7 +3822,15 @@ async def live_trading_loop():
                             base_qty=target_qty,
                             cvar_qty=cvar_qty,
                             max_asset_qty=max_asset_qty,
-                            conviction=abs(final_signal),
+                            # Axe 1 (mission intelligence) : conviction CALIBRÉE par le
+                            # win rate réel de la stratégie dominante (meta-labeling —
+                            # la taille reflète la probabilité calibrée de succès, pas
+                            # seulement l'intensité du signal). Le win rate vient du
+                            # tracker réel (lissé EMA, borné 0.45-0.65).
+                            conviction=calibrated_conviction(
+                                final_signal,
+                                win_tracker.get(_dom_kelly) if _dom_kelly else None,
+                            ),
                             risk_state_scale=_risk_scale,
                             news_scale=_news_s,
                             macro_scale=_macro_s,
@@ -4449,7 +4466,8 @@ async def live_trading_loop():
                 portfolio_allocator.rebalance(
                     STATE, STATE[active_balance_key],
                     portfolio_cvar_pct=portfolio_cvar_pct,
-                    realized_vol_annual=None)
+                    realized_vol_annual=None,
+                    regime_id=STATE.get("regime_id"))
             # Corrélation entre STRATÉGIES (Pilier L exigence 2)
             try:
                 _strat_rets = {}

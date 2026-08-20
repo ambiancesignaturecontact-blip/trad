@@ -35,6 +35,23 @@ REBALANCE_HOURS = settings.get_float("portfolio", "rebalance_hours", 24.0)
 MAX_PARTICIPATION_PCT = settings.get_float("portfolio", "max_participation_pct", 0.01)
 REDUNDANT_CORR = settings.get_float("portfolio", "redundant_corr", 0.85)
 
+# Axe 3 (mission intelligence) : scale du budget de risque par régime HMM.
+# Régimes : 0 = Bull Trend (Low Vol), 1 = Bear Trend (High Vol),
+#           2 = Mean-Reverting Range, 3 = Erratic High Volatility.
+# En forte volatilité (1, 3) on réduit le budget (survivre d'abord) ; en
+# régime calme/range on laisse le budget s'exprimer. Scale borné : jamais
+# moins de 0.6 ni plus de 1.0 (on ne peut que RÉDUIRE, jamais amplifier le
+# risque au-delà de la config).
+REGIME_RISK_SCALES = {0: 1.0, 1: 0.70, 2: 1.0, 3: 0.80}
+
+
+def regime_risk_scale(regime_id: int | None) -> float:
+    """Scale du budget de risque conditionnel au régime (régime inconnu ->
+    neutre 1.0 : on ne punit pas une information absente)."""
+    if regime_id is None:
+        return 1.0
+    return float(REGIME_RISK_SCALES.get(int(regime_id), 1.0))
+
 
 class PortfolioAllocator:
     """Orchestrateur top-down du portefeuille (Pilier L)."""
@@ -53,7 +70,8 @@ class PortfolioAllocator:
     # ------------------------------------------------------------------ #
     def total_risk_budget(self, total_capital: float,
                           portfolio_cvar_pct: float | None = None,
-                          realized_vol_annual: float | None = None) -> dict:
+                          realized_vol_annual: float | None = None,
+                          regime_id: int | None = None) -> dict:
         """
         Budget de risque TOTAL :
         1. Réserve de cash OBLIGATOIRE : investissable = capital × (1 - réserve).
@@ -61,6 +79,11 @@ class PortfolioAllocator:
         2. Vol cible : si la vol réalisée dépasse la cible, on réduit
            l'exposition (vol targeting).
         3. CVaR : si le CVaR portfolio est élevé, on réduit (garde prudente).
+        4. Axe 3 (mission intelligence) : RÉGIME — le budget de risque est
+           conditionnel au régime HMM : en régime à forte volatilité (bear
+           high vol, erratic), on réduit le budget ; en régime calme, on le
+           laisse s'exprimer. Principe institutionnel : la taille s'adapte au
+           régime, pas de pari constant.
         """
         if total_capital <= 0:
             return {"investable": 0.0, "budget": 0.0, "cash_reserve_pct": self.cash_reserve_pct}
@@ -75,7 +98,9 @@ class PortfolioAllocator:
             # CVaR > 5 % -> réduction ; CVaR <= 2 % -> pas de pénalité
             cvar_scale = max(0.3, min(1.0, 1.0 - (portfolio_cvar_pct - 0.02) / 0.08))
 
-        budget = investable * vol_scale * cvar_scale
+        regime_scale = regime_risk_scale(regime_id)
+
+        budget = investable * vol_scale * cvar_scale * regime_scale
         return {
             "investable": round(investable, 2),
             "budget": round(budget, 2),
@@ -83,6 +108,8 @@ class PortfolioAllocator:
             "cash_reserve_usd": round(total_capital * self.cash_reserve_pct, 2),
             "vol_scale": round(vol_scale, 4),
             "cvar_scale": round(cvar_scale, 4),
+            "regime_scale": round(regime_scale, 4),
+            "regime_id": regime_id,
         }
 
     # ------------------------------------------------------------------ #
@@ -195,13 +222,15 @@ class PortfolioAllocator:
 
     def rebalance(self, state: dict, total_capital: float,
                   portfolio_cvar_pct: float | None = None,
-                  realized_vol_annual: float | None = None) -> dict:
+                  realized_vol_annual: float | None = None,
+                  regime_id: int | None = None) -> dict:
         """
         Recalcule le budget top-down et le stocke dans STATE pour la
         télémétrie et le sizing (anti-drift : on revient vers les cibles).
+        Axe 3 : le régime HMM module le budget (forte vol -> budget réduit).
         """
         budget = self.total_risk_budget(total_capital, portfolio_cvar_pct,
-                                        realized_vol_annual)
+                                        realized_vol_annual, regime_id=regime_id)
         self.allocation = {
             "ts": time.time(),
             "total_risk_budget": budget,
@@ -212,7 +241,8 @@ class PortfolioAllocator:
         logger.info(
             f"💼 PORTEFEUILLE: budget investissable {budget['budget']:,.0f}$ "
             f"sur {total_capital:,.0f}$ (réserve cash {self.cash_reserve_pct*100:.0f}%, "
-            f"vol scale {budget['vol_scale']:.2f}, cvar scale {budget['cvar_scale']:.2f})")
+            f"vol scale {budget['vol_scale']:.2f}, cvar scale {budget['cvar_scale']:.2f}, "
+            f"régime scale {budget['regime_scale']:.2f})")
         return self.allocation
 
     def to_dict(self) -> dict:
