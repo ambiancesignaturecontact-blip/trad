@@ -321,6 +321,16 @@ async def api_edge_decay():
     return main.edge_decay.report() if hasattr(main, "edge_decay") else {"per_strategy": {}}
 
 
+@router.get("/api/v1/meta-allocator")
+async def api_meta_allocator():
+    """LOT 5 (mandat) : meta-allocator hiérarchique — regret + familles + poids."""
+    return {
+        "regret": main.meta_engine.regret_tracker.to_dict(),
+        "hierarchical": main.meta_engine.hierarchical.last_allocation,
+        "pnl_weights": dict(main.meta_engine.pnl_weights),
+    }
+
+
 @router.get("/api/v1/ab")
 async def api_ab(_auth: dict = Depends(require_auth)):
     """VISION §7.5: A/B paper comparison (baseline vs vol-targeted config)."""

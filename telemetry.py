@@ -184,6 +184,12 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "decision_journal_summary": db.decision_journal_summary(),
         # LOT 4 (mandat) : edge decay — états des stratégies + scales appliqués
         "edge_decay": edge_decay.report(),
+        # LOT 5 (mandat) : meta-allocator hiérarchique — regret par stratégie
+        # + allocation famille (EMA, scales)
+        "hierarchical_allocator": {
+            "regret": meta_engine.regret_tracker.to_dict(),
+            "family": meta_engine.hierarchical.last_allocation,
+        },
         "moe_gate": STATE.get("moe_gate", {}),
         "risk_budget": STATE.get("risk_budget", {}),
         "risk_state": STATE.get("risk_state", {}),

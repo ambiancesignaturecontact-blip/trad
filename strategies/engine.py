@@ -367,6 +367,32 @@ class MetaAllocationEngine:
         # inter-stratégies — l'angle mort dénoncé par l'audit).
         self.signal_history = {s.name: deque(maxlen=SIGNAL_HISTORY_MAXLEN)
                                for s in self.strategies}
+        # LOT 5 (mandat) : regret non-stationnaire + allocation hiérarchique
+        # par famille (niveau 2) — voir core/hierarchical_allocator.py.
+        from core.hierarchical_allocator import HierarchicalAllocator, RegretTracker
+        self.regret_tracker = RegretTracker()
+        self.hierarchical = HierarchicalAllocator()
+
+    def record_regret(self, strategy: str, pnl_pct: float) -> None:
+        """LOT 5 : enregistre le regret d'un trade clôturé (non-stationnaire,
+        oubli exponentiel). JAMAIS bloquant."""
+        try:
+            self.regret_tracker.record(strategy, pnl_pct)
+        except Exception:
+            pass
+
+    def hierarchical_scales(self, pnl_by_strategy: dict[str, float] | None = None) -> dict[str, float]:
+        """
+        LOT 5 : scales de pondération hiérarchiques — scale de famille ×
+        exploration regret (bornés par core/hierarchical_allocator.py).
+        """
+        try:
+            base = {s.name: 1.0 for s in self.strategies}
+            weights = self.hierarchical.allocate(base, pnl_by_strategy or {},
+                                                 self.regret_tracker)
+            return {s: w for s, w in weights.items()}
+        except Exception:
+            return {s.name: 1.0 for s in self.strategies}
 
     def _sample_bandit(self, i: int) -> float:
         """P1-12 (§2.2) : tirage Thompson FIGÉ par cycle de décision —
@@ -509,6 +535,8 @@ class MetaAllocationEngine:
         if strategy not in self.pnl_history:
             self.pnl_history[strategy] = deque(maxlen=PNL_HISTORY_MAXLEN)
         self.pnl_history[strategy].append(float(pnl_pct))
+        # LOT 5 : regret non-stationnaire (écart cumulé à la meilleure ex post)
+        self.record_regret(strategy, float(pnl_pct))
 
         # Score = Sharpe DÉFLATÉ par stratégie (probabilité de significativité)
         scores = {}
@@ -565,7 +593,8 @@ class MetaAllocationEngine:
         return weights
 
     def allocate(self, market_data, regime_state_id, ml_prediction, ppo_action,
-                 edge_decay_scales: dict | None = None):
+                 edge_decay_scales: dict | None = None,
+                 hierarchical_scales: dict | None = None):
         """
         Calculates final combined trade signal and capital allocation.
         Enforces Thompson Sampling (Multi-Armed Bandit) weighting over classical strategies
@@ -577,6 +606,9 @@ class MetaAllocationEngine:
           de chaque stratégie est multiplié par son scale d'edge decay (borné
           [0.30, 1.0] par core/edge_decay.py). Absent -> 1.0 (comportement
           pré-LOT 4 strictement conservé).
+        + LOT 5 (mandat) : hierarchical_scales={strategy: scale} — scale de
+          famille + exploration regret (core/hierarchical_allocator.py).
+          Absent -> 1.0 (comportement pré-LOT 5 strictement conservé).
         """
         signals_dict = {}
         conf_dict = {}
@@ -677,6 +709,11 @@ class MetaAllocationEngine:
             # stratégie dont l'edge se dégrade (jamais de suppression).
             if edge_decay_scales:
                 weight *= float(edge_decay_scales.get(s.name, 1.0))
+            # LOT 5 (mandat) : scale hiérarchique par FAMILLE (niveau 2) +
+            # exploration par regret (niveau 3). Optionnel et borné — si le
+            # paramètre est absent, weight est STRICTEMENT le poids pré-LOT 5.
+            if hierarchical_scales:
+                weight *= float(hierarchical_scales.get(s.name, 1.0))
             classical_signal += signals_dict.get(s.name, 0.0) * weight
 
         mean_confidence = conf_dict.get(dominant_strategy, 0.5)

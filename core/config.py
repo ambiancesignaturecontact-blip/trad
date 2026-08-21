@@ -148,6 +148,17 @@ _DEFAULTS: dict[str, Any] = {
     },
     # LOT 4 (mandat) : Edge Decay Engine — détection de la dégradation
     # de l'edge par stratégie (états HEALTHY->DEGRADED->WARNING->DISABLED->RECOVERY)
+    # LOT 5 (mandat) : Hierarchical Meta-Allocator — familles, regret, bornes
+    "hierarchical": {
+        "regret_decay": 0.98,
+        "regret_min_samples": 10,
+        "regret_exploration_weight": 0.15,
+        "family_ema_alpha": 0.20,
+        "min_weight": 0.02,
+        "max_weight": 0.45,
+        "family_scale_min": 0.60,
+        "family_scale_max": 1.20,
+    },
     "edge_decay": {
         "min_samples": 10,
         "ema_alpha": 0.20,

@@ -2884,7 +2884,10 @@ async def live_trading_loop():
                     # LOT 4 : scales d'edge decay (bornés, réversibles)
                     consensus = meta_engine.allocate(
                         market_data, STATE["regime_id"], STATE["ml_prediction_pct"],
-                        STATE["ppo_action"], edge_decay_scales=edge_decay.scales())
+                        STATE["ppo_action"],
+                        edge_decay_scales=edge_decay.scales(),
+                        # LOT 5 : scales hiérarchiques (famille × regret, bornés)
+                        hierarchical_scales=meta_engine.hierarchical_scales())
                     final_signal = consensus["final_signal"]
                     # VISION_FUTUR §1: derive the dominant strategy early (desk capital mapping)
                     _dom_early = "META_MODEL"

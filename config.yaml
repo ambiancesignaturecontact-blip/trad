@@ -136,6 +136,17 @@ conviction:
   low_regime_confidence: 0.35          # confiance régime < 0.35 -> x0.95
 
 # ===== LOT 4 (mandat) : Edge Decay Engine =====
+# ===== LOT 5 (mandat) : Hierarchical Meta-Allocator =====
+hierarchical:
+  regret_decay: 0.98               # oubli exponentiel du regret (non-stationnaire)
+  regret_min_samples: 10           # pas d'exploration regret sous 10 trades
+  regret_exploration_weight: 0.15  # part max de l'exploration dans le poids
+  family_ema_alpha: 0.20           # EMA de performance par famille
+  min_weight: 0.02                 # bornes dures du poids final par stratégie
+  max_weight: 0.45
+  family_scale_min: 0.60           # bornes du scale de famille
+  family_scale_max: 1.20
+
 edge_decay:
   min_samples: 10               # pas de jugement sous 10 trades clôturés
   ema_alpha: 0.20
