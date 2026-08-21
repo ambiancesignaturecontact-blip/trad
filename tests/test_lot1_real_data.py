@@ -233,6 +233,10 @@ class TestHistoricalRealOnly:
     async def test_returns_empty_df_when_all_sources_down(self, monkeypatch):
         import main
 
+        # LOT C : les fonctions fetch vivent dans market_data.historical_fetch
+        # (main ne fait que ré-exporter) — on patche la VRAIE source.
+        import market_data.historical_fetch as hf
+
         class FakeResp:
             status_code = 451
         class FakeClient:
@@ -243,9 +247,10 @@ class TestHistoricalRealOnly:
             async def get(self, *a, **k):
                 return FakeResp()
 
-        monkeypatch.setattr("main.httpx.AsyncClient", lambda *a, **k: FakeClient())
+        monkeypatch.setattr("market_data.historical_fetch.httpx.AsyncClient",
+                            lambda *a, **k: FakeClient())
         # Yahoo aussi down
-        monkeypatch.setattr(main, "fetch_yahoo_finance_candles",
+        monkeypatch.setattr(hf, "fetch_yahoo_finance_candles",
                             lambda *a, **k: main.pd.DataFrame())
         df = await main.fetch_historical_market_data("BTCUSDT")
         assert df.empty, "Aucune source réelle -> DataFrame vide, jamais de données fabriquées"

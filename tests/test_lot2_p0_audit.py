@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
+import core.observability as observability  # LOT C : fonctions extraites
 import main
 
 # ---------------------------------------------------------------- P0-5 ----
@@ -91,7 +92,7 @@ def _clean_final_scale_state(monkeypatch):
     # LEÇON APPRISE (P0-4) : AUCUN test de ce fichier ne doit écrire dans la
     # vraie DB — sinon les données de test polluent la collecte réelle
     # (c'est ce qui a faussé le p50=11,45% au boot).
-    monkeypatch.setattr(main, "db", _StoreDB())
+    _patch_db(monkeypatch, _StoreDB())
     main.STATE["final_scale_samples"] = []
     main.STATE["final_scale_last_ts"] = {}
     main.STATE.pop("final_scale_stats", None)
@@ -120,7 +121,7 @@ def test_record_final_scale_downsample_per_symbol(monkeypatch):
 def test_record_final_scale_upper_bound(monkeypatch):
     # borne réduite pour un test rapide (la sérialisation JSON complète à
     # chaque persist est O(n) — 25 000 échantillons réels restent OK en prod)
-    monkeypatch.setattr(main, "FINAL_SCALE_MAX_SAMPLES", 100)
+    monkeypatch.setattr(observability, "FINAL_SCALE_MAX_SAMPLES", 100)  # LOT C : constante lue par le module extrait
     clock = {"t": 1_000_000.0}
     monkeypatch.setattr(main.time, "time", lambda: clock["t"])
     for _ in range(1100):
@@ -145,13 +146,18 @@ def test_final_scale_stats_percentiles():
     assert stats["p90"] == pytest.approx(0.455, abs=1e-3)
     assert stats["min"] == 0.05 and stats["max"] == 0.50
     assert stats["span_hours"] == pytest.approx(9.0, abs=0.01)
+def _patch_db(monkeypatch, store):
+    """LOT C : patch db sur main ET core.observability (les fonctions
+    extraites utilisent leur propre référence au module)."""
+    monkeypatch.setattr(main, "db", store)
+    monkeypatch.setattr(observability, "db", store)
 
 
 def test_final_scale_report_logs_distribution(caplog, monkeypatch):
     import logging
     # NE JAMAIS écrire dans la vraie DB (les données de test pollueraient la
     # collecte réelle — leçon apprise : c'est ce qui a faussé le p50 au boot)
-    monkeypatch.setattr(main, "db", _StoreDB())
+    _patch_db(monkeypatch, _StoreDB())
     t0 = main.time.time()
     for i in range(60):
         # 60 échantillons étalés sur ~46h (dans la fenêtre 48h) : tous conservés
@@ -169,7 +175,7 @@ def test_final_scale_report_logs_distribution(caplog, monkeypatch):
 def test_final_scale_p50_below_threshold_warns(caplog, monkeypatch):
     """p50 < 20% -> warning explicite (diagnostic audit §2.1)."""
     import logging
-    monkeypatch.setattr(main, "db", _StoreDB())
+    _patch_db(monkeypatch, _StoreDB())
     t0 = main.time.time()
     for i in range(30):
         main.STATE["final_scale_samples"].append(
@@ -218,7 +224,7 @@ class _StoreDB:
 def test_final_scale_persistence_survives_restart(monkeypatch):
     """L'observation 24-48h ne doit PAS repartir de zéro à chaque redémarrage."""
     sdb = _StoreDB()
-    monkeypatch.setattr(main, "db", sdb)
+    _patch_db(monkeypatch, sdb)
     t0 = main.time.time()
     main.STATE["final_scale_samples"] = [
         {"ts": t0 - 3600, "symbol": "BTCUSDT", "final_scale": 0.30, "n_steps": 17},
@@ -237,7 +243,7 @@ def test_final_scale_persistence_survives_restart(monkeypatch):
 def test_final_scale_load_ignores_corrupted_data(monkeypatch):
     sdb = _StoreDB()
     sdb.s["final_scale_samples_json"] = "not json at all {{{"
-    monkeypatch.setattr(main, "db", sdb)
+    _patch_db(monkeypatch, sdb)
     main.STATE["final_scale_samples"] = []
     main._load_final_scale_samples()  # ne doit pas lever
     assert main.STATE["final_scale_samples"] == []
@@ -370,7 +376,7 @@ def _make_days(days):
 def test_paper_validation_marks_only_real_runtime(monkeypatch):
     """Un jour n'est compté que si le bot tourne réellement ce jour-là."""
     pdb = _PaperDB()
-    monkeypatch.setattr(main, "db", pdb)
+    _patch_db(monkeypatch, pdb)
     main._mark_paper_validation_day()
     stats = main._paper_validation_stats()
     assert stats["active_days"] == 1
@@ -382,7 +388,7 @@ def test_paper_validation_marks_only_real_runtime(monkeypatch):
 def test_paper_validation_streak_and_validation(monkeypatch):
     """Série consécutive calculée ; validated uniquement si streak >= requis."""
     pdb = _PaperDB()
-    monkeypatch.setattr(main, "db", pdb)
+    _patch_db(monkeypatch, pdb)
     pdb.s["paper_validation_days"] = __import__("json").dumps(_make_days([0, 1, 2, 3]))
     pdb.s["paper_validation_start_ts"] = "1000.0"
     stats = main._paper_validation_stats()
@@ -396,7 +402,7 @@ def test_paper_validation_streak_and_validation(monkeypatch):
 def test_paper_validation_interruption_breaks_streak(monkeypatch):
     """Un jour manquant (bot arrêté) casse la série continue."""
     pdb = _PaperDB()
-    monkeypatch.setattr(main, "db", pdb)
+    _patch_db(monkeypatch, pdb)
     # jours 0,1,2 puis trou (3), puis 4,5,6,7
     pdb.s["paper_validation_days"] = __import__("json").dumps(_make_days([0, 1, 2, 4, 5, 6, 7]))
     stats = main._paper_validation_stats()
@@ -521,7 +527,7 @@ def test_allocate_modulate_ignores_out_of_bounds_vpin(monkeypatch):
 def test_final_scale_persists_every_5min(monkeypatch):
     """P0-4 : persistance toutes les ~5 min (perte max 5 min au lieu de 60)."""
     sdb = _StoreDB()
-    monkeypatch.setattr(main, "db", sdb)
+    _patch_db(monkeypatch, sdb)
     clock = {"t": 1_000_000.0}
     monkeypatch.setattr(main.time, "time", lambda: clock["t"])
     main.STATE["final_scale_last_persist"] = 0.0

@@ -10,7 +10,6 @@ import time
 import uuid
 from pathlib import Path
 
-import ccxt
 import httpx
 import numpy as np
 import pandas as pd
@@ -22,7 +21,7 @@ from pydantic import BaseModel, Field, field_validator
 
 from bot.telegram_bot import TelegramBotManager
 from copytrading.manager import CopyTradingManager
-from core.attribution import PerformanceAttribution, quality_metrics
+from core.attribution import PerformanceAttribution
 from core.confidence_index import compute_confidence_index
 from core.config import settings
 from core.cost_accounting import CostAccounting
@@ -38,7 +37,7 @@ from core.middleware import (
     SecurityHeadersMiddleware,
     install_cors,
 )
-from core.mixture_experts import MixtureOfExperts, curriculum_sort, risk_adjusted_reward
+from core.mixture_experts import MixtureOfExperts, risk_adjusted_reward
 from core.organization import Organization
 from core.paper_execution import estimate_slippage_bps_from_book, min_notional_for_capital, simulate_paper_fill
 from core.portfolio_allocator import PortfolioAllocator
@@ -57,7 +56,7 @@ from core.position_manager import (
 # de risque au régime HMM (facteur lissé EMA, borné [0.60, 1.25]).
 from core.regime_autonomy import RegimeAutonomy
 from core.research_discipline import live_p_value, meta_label_filter
-from core.risk_committee import RiskCommittee, daily_risk_budget
+from core.risk_committee import RiskCommittee
 from core.risk_pipeline import (
     ATR_MULT_SL,
     REWARD_RISK_RATIO,
@@ -72,22 +71,14 @@ from core.risk_pipeline import (
 from core.robustness import (
     Supervisor,
     restore_state_snapshot,
-    save_state_snapshot,
-)
-from core.self_assessment import (
-    meta_attribution,
-    reason_weight_from_attribution,
-    simulation_divergence,
 )
 from core.volatility_targeting import volatility_scale_factor
 from core.world_model import (
-    build_causal_feature_df,
     compute_market_state,
     compute_regime_probs,
     compute_structural_regimes,
     counterfactual_alpha,
     cross_asset_bias,
-    discover_causal_parents,
 )
 from database.db_manager import DBManager
 from market_data.multi_source import MultiSourcePriceEngine
@@ -97,7 +88,6 @@ from models.defi_wallet import NonCustodialDeFiWallet
 from models.dex_cex_arbitrage import DexCexArbitrageEngine
 from models.execution_slicer import SmartOrderSlicer
 from models.funding_arbitrage import FundingRateArbitrageEngine
-from models.lopez_de_prado import calculate_deflated_sharpe_ratio
 from models.macro_calendar import MacroeconomicCalendarEngine
 from models.microstructure_edge import MicrostructureEdgeEngine
 from models.mlops_pipeline import MLOpsAutoTrainer
@@ -372,7 +362,7 @@ logger.info("✅ LOT 61: Prometheus /metrics registry initialized")
 # === LOT 63: Centralized outbound API rate limiting ===
 from fastapi.security import HTTPBearer
 
-from core.rate_limits import bybit_limiter, yahoo_limiter
+from core.rate_limits import bybit_limiter
 from database.auth import AuthManager, Roles
 
 # Optional bearer: when no Authorization header is present, credentials is None
@@ -382,7 +372,6 @@ logger.info("✅ LOT 63: Outbound API rate limiters initialized")
 
 # React dashboard served at /app when built (audit B14-1: one modern UI, one classic)
 import os as _os
-from datetime import UTC
 
 if _os.path.isdir(_os.path.join(_os.getcwd(), "frontend", "dist")):
     try:
@@ -991,253 +980,12 @@ FINAL_SCALE_WINDOW_HOURS = 48.0     # fenêtre glissante de référence
 FINAL_SCALE_MAX_SAMPLES = 25000     # borne dure mémoire
 
 
-def _record_final_scale(symbol: str, final_scale: float, n_steps: int,
-                        steps: list = None) -> None:
-    """Accumule un échantillon (downsamplé à 1/min/symbole) de final_scale.
-    Si les steps du pipeline sont fournis, le facteur LE PLUS RÉDUCTEUR
-    (contrainte dominante — idée n°1 de l'audit) est mémorisé pour agréger
-    « quel facteur bloque le trading » sur 24-48h."""
-    try:
-        now = time.time()
-        last_ts = STATE.setdefault("final_scale_last_ts", {})
-        if now - last_ts.get(symbol, 0.0) < FINAL_SCALE_DOWNSAMPLE_SEC:
-            return
-        last_ts[symbol] = now
-        limiting = None
-        if steps:
-            best_name, best_val = None, 1.0
-            for s in steps:
-                if s.get("op") == "mul" and s.get("step") != "cumulative_floor":
-                    v = float(s.get("value", 1.0))
-                    if v < best_val:
-                        best_name, best_val = s.get("step"), v
-            if best_name is not None:
-                limiting = {"factor": best_name, "value": best_val}
-        samples = STATE.setdefault("final_scale_samples", [])
-        samples.append({"ts": now, "symbol": symbol,
-                        "final_scale": float(final_scale), "n_steps": int(n_steps),
-                        "limit_factor": limiting["factor"] if limiting else None,
-                        "limit_value": limiting["value"] if limiting else None})
-        if len(samples) > FINAL_SCALE_MAX_SAMPLES:
-            del samples[: len(samples) - FINAL_SCALE_MAX_SAMPLES]
-        # P0-4 : persistance FRÉQUENTE (5 min) — si le process meurt entre deux
-        # rapports 60 min, on ne perd que ~5 min de collecte au lieu de 60.
-        if now - STATE.get("final_scale_last_persist", 0.0) >= 300.0:
-            STATE["final_scale_last_persist"] = now
-            _persist_final_scale_samples()
-    except Exception:
-        pass  # l'instrumentation ne doit jamais casser la boucle de trading
-
-
-def _purge_final_scale_samples(max_age_sec: float) -> None:
-    samples = STATE.get("final_scale_samples", [])
-    if not samples:
-        return
-    cutoff = time.time() - max_age_sec
-    # purge amortie : les échantillons sont horodatés de façon croissante
-    while samples and samples[0]["ts"] < cutoff:
-        samples.pop(0)
-
-
-def _limiting_factor_stats() -> dict:
-    """Agrège, sur l'échantillon accumulé, le facteur le plus souvent
-    limitant (contrainte dominante) + sa réduction médiane — idée n°1 de
-    l'audit : « c'est cash_reserve qui bloque 80 % du temps »."""
-    samples = STATE.get("final_scale_samples", [])
-    by_factor: dict = {}
-    for s in samples:
-        f = s.get("limit_factor")
-        if not f:
-            continue
-        e = by_factor.setdefault(f, [])
-        e.append(float(s.get("limit_value", 1.0)))
-    if not by_factor:
-        return {"n": 0, "top": []}
-    rows = []
-    for f, vals in by_factor.items():
-        rows.append({"factor": f, "count": len(vals),
-                     "pct_of_samples": round(100.0 * len(vals) / max(len(samples), 1), 1),
-                     "median_value": round(float(np.median(vals)), 4)})
-    rows.sort(key=lambda r: -r["count"])
-    return {"n": len(samples), "top": rows[:5]}
-
-
-def _final_scale_stats() -> dict:
-    """Calcule p10/p50/p90/min/max sur l'échantillon accumulé (>= 5 points)."""
-    samples = STATE.get("final_scale_samples", [])
-    if len(samples) < 5:
-        return None
-    vals = np.array([s["final_scale"] for s in samples], dtype=float)
-    p10, p50, p90 = np.percentile(vals, [10, 50, 90])
-    return {
-        "n": len(samples),
-        "span_hours": round((samples[-1]["ts"] - samples[0]["ts"]) / 3600.0, 2),
-        "p10": round(float(p10), 4),
-        "p50": round(float(p50), 4),
-        "p90": round(float(p90), 4),
-        "min": round(float(vals.min()), 4),
-        "max": round(float(vals.max()), 4),
-    }
-
-
-def _persist_final_scale_samples() -> None:
-    """Persiste l'échantillon final_scale en DB pour survivre aux redémarrages
-    (l'observation 24-48h de l'audit §2.1 ne doit pas repartir de zéro à chaque
-    déploiement). Appelé à chaque rapport (toutes les 60 min) : perte max 60 min."""
-    try:
-        samples = STATE.get("final_scale_samples", [])
-        db.save_setting("final_scale_samples_json", json.dumps(samples))
-    except Exception:
-        pass  # jamais bloquant
-
-
-def _load_final_scale_samples() -> None:
-    """Recharge l'échantillon persisté au démarrage (fenêtre 48h appliquée)."""
-    try:
-        raw = db.get_setting("final_scale_samples_json")
-        if not raw:
-            return
-        parsed = json.loads(raw)
-        if not isinstance(parsed, list):
-            return
-        samples = []
-        for s in parsed:
-            try:
-                samples.append({"ts": float(s["ts"]), "symbol": str(s["symbol"]),
-                                "final_scale": float(s["final_scale"]),
-                                "n_steps": int(s.get("n_steps", 0))})
-            except Exception:
-                continue
-        if samples:
-            STATE["final_scale_samples"] = samples
-            _purge_final_scale_samples(FINAL_SCALE_WINDOW_HOURS * 3600.0)
-            logger.info(
-                f"📊 FINAL_SCALE : {len(STATE['final_scale_samples'])} échantillons "
-                f"chargés depuis la DB (observation persistée)."
-            )
-    except Exception as e:
-        logger.warning(f"FINAL_SCALE : rechargement impossible ({e})")
-
-
-def _signal_stats() -> dict:
-    """Distribution de |final_signal| sur la fenêtre glissante (diagnostic
-    conviction : si p50 est ~0.1, les signaux sont faibles juste au-dessus du
-    seuil 0.08 — la question d'ajuster conviction se tranche sur CES données)."""
-    sigs = [float(s) for s in STATE.get("recent_signals", []) if s is not None]
-    if len(sigs) < 5:
-        return {"n": len(sigs), "note": "échantillon insuffisant"}
-    v = np.abs(np.array(sigs))
-    return {
-        "n": len(sigs),
-        "abs_p10": round(float(np.percentile(v, 10)), 4),
-        "abs_p50": round(float(np.percentile(v, 50)), 4),
-        "abs_p90": round(float(np.percentile(v, 90)), 4),
-        "threshold": STATE.get("conviction_threshold", 0.15),
-        "entry_threshold": 0.08,
-        "note": "p50 proche de 0.1 = signaux faibles juste au-dessus du seuil d'entrée.",
-    }
-
-
-def _final_scale_report() -> dict:
-    """Purge + calcul + log périodique de la distribution de final_scale."""
-    _purge_final_scale_samples(FINAL_SCALE_WINDOW_HOURS * 3600.0)
-    stats = _final_scale_stats()
-    if stats and stats["n"] >= 10:
-        logger.info(
-            f"📊 FINAL_SCALE distribution (n={stats['n']} sur {stats['span_hours']}h) : "
-            f"p10={stats['p10']:.4f} p50={stats['p50']:.4f} p90={stats['p90']:.4f} "
-            f"[min={stats['min']:.4f}, max={stats['max']:.4f}]"
-        )
-        if stats["p50"] < 0.20:
-            logger.warning(
-                "⚠️ FINAL_SCALE p50 < 20% : la chaîne de facteurs du pipeline de risque "
-                "s'auto-amplifie (diagnostic audit §2.1) — le problème n'est pas le seuil "
-                "de signal mais l'empilement de prudence."
-            )
-    else:
-        logger.info(f"📊 FINAL_SCALE : échantillon insuffisant (n={stats['n'] if stats else 0}) — collecte en cours.")
-    STATE["final_scale_stats"] = stats
-    # idée n°1 audit : le facteur qui bloque le plus souvent le trading
-    lim = _limiting_factor_stats()
-    STATE["limiting_factor_stats"] = lim
-    if lim and lim["top"]:
-        t = lim["top"][0]
-        top_str = ", ".join(
-            "{} ({:.0f}%)".format(r["factor"], r["pct_of_samples"]) for r in lim["top"]
-        )
-        logger.info(
-            "📊 FACTEUR LIMITANT (n={}) : '{}' contraint {:.1f}% des échantillons "
-            "(valeur médiane {:.2f}). Top: {}".format(
-                lim["n"], t["factor"], t["pct_of_samples"], t["median_value"], top_str)
-        )
-    _persist_final_scale_samples()
-    return stats
-
-
 # ============ P0-6 (audit §5-P0-6) : suivi du paper-trading DATÉ ============
 # L'historique de paper-trading validé avant REAL doit être réel, daté et
 # CONTINU (4-8 semaines). Ce tracker marque chaque jour où le bot tourne
 # (persisté en DB) et expose la série + le statut de validation — un chiffre
 # de vérité que le code ne peut pas truquer : si le bot ne tourne pas, le
 # jour n'est pas compté.
-
-def _mark_paper_validation_day() -> None:
-    """Marque le jour UTC courant comme jour de paper-trading actif (le bot
-    tourne réellement). Persisté en DB : la série survit aux redémarrages."""
-    try:
-        from datetime import datetime
-        today = datetime.now(UTC).strftime("%Y-%m-%d")
-        days = json.loads(db.get_setting("paper_validation_days") or "[]")
-        if not isinstance(days, list):
-            days = []
-        days = sorted(set(d for d in days if isinstance(d, str) and len(d) == 10))
-        if today not in days:
-            days.append(today)
-            days.sort()
-            db.save_setting("paper_validation_days", json.dumps(days))
-        if not db.get_setting("paper_validation_start_ts"):
-            db.save_setting("paper_validation_start_ts", str(time.time()))
-    except Exception as e:
-        logger.warning(f"paper validation mark failed: {e}")
-
-
-def _paper_validation_stats() -> dict:
-    """Jours actifs, série consécutive la plus récente, exigence, statut."""
-    try:
-        days = json.loads(db.get_setting("paper_validation_days") or "[]")
-        start_ts = float(db.get_setting("paper_validation_start_ts") or 0.0)
-    except Exception:
-        days, start_ts = [], 0.0
-    try:
-        required = int(settings.get("autopilot", "min_paper_validation_days", 7))
-    except Exception:
-        required = 7
-    days = sorted(set(d for d in days if isinstance(d, str) and len(d) == 10))
-
-    # série consécutive la plus récente (fin = dernier jour enregistré)
-    streak = 0
-    if days:
-        from datetime import datetime, timedelta
-        try:
-            cur = datetime.strptime(days[-1], "%Y-%m-%d").date()
-            day_set = set(days)
-            streak = 1
-            while (cur - timedelta(days=1)).strftime("%Y-%m-%d") in day_set:
-                streak += 1
-                cur = cur - timedelta(days=1)
-        except Exception:
-            streak = 0
-
-    return {
-        "start_ts": start_ts,
-        "active_days": len(days),
-        "days": days,
-        "latest_streak_days": streak,
-        "required_days": required,
-        "validated": streak >= required,
-        "rule": "Le mode REAL exige une série CONTINUE de paper-trading daté "
-                "(les jours où le bot n'a pas tourné ne comptent pas).",
-    }
 
 execution_bandit = ExecutionStyleBandit()
 strategy_exec_attr = StrategyExecutionAttribution()
@@ -1247,213 +995,10 @@ organization = Organization(STATE)
 supervisor = Supervisor(STATE)
 
 # CCXT Exchange Client Cache
-ccxt_client = None
-
-def get_ccxt_client():
-    """
-    Dynamically loads and instantiates the CCXT Binance/Bybit client
-    using securely encrypted keys from the database.
-    """
-    global ccxt_client
-    if ccxt_client is not None:
-        return ccxt_client
-
-    api_key = db.get_setting("binance_api_key", decrypt=True)
-    secret_key = db.get_setting("binance_secret_key", decrypt=True)
-
-    if api_key and secret_key:
-        try:
-            ccxt_client = ccxt.binance({
-                'apiKey': api_key,
-                'secret': secret_key,
-                'enableRateLimit': True,
-                'options': {
-                    'defaultType': 'future'  # Default to perpetual futures
-                }
-            })
-            ccxt_client.fetch_balance()
-            logger.info("CCXT Exchange Client successfully instantiated and authenticated.")
-            return ccxt_client
-        except Exception as e:
-            logger.error(f"Failed to authenticate with real exchange API: {str(e)}")
-            ccxt_client = None
-    return None
-
-
-def format_exchange_size(symbol, quantity, price):
-    """
-    Formats the order size according to the exact lot size filters
-    and precision limits of the exchange to avoid API execution rejections.
-    """
-    client = get_ccxt_client()
-    if not client:
-        return round(quantity, 5) # Safe fallback
-
-    try:
-        if symbol not in client.markets:
-            client.load_markets()
-
-        market = client.market(symbol)
-        min_qty = market['limits']['amount']['min'] or 0.0001
-        max_qty = market['limits']['amount']['max'] or 999999.0
-
-        formatted_qty = client.amount_to_precision(symbol, quantity)
-        formatted_qty = float(formatted_qty)
-        formatted_qty = max(min_qty, min(formatted_qty, max_qty))
-        return formatted_qty
-    except Exception as e:
-        logger.warning(f"Error formatting lot size precision: {str(e)}. Using safe rounding.")
-        return round(quantity, 5)
 
 
 # AUDIT B6-1: short TTL cache for Yahoo chart calls (rate-limit friendly)
 _yahoo_cache: dict = {}
-
-
-async def fetch_yahoo_finance_candles(ticker: str, interval="1h", range_str="5d") -> pd.DataFrame:
-    """
-    Queries Yahoo Finance API with a secure browser User-Agent
-    to fetch 100% genuine real-time and historical candles for Gold, Forex, and Stocks!
-    """
-    url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker}?interval={interval}&range={range_str}"
-    headers = {
-        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36'
-    }
-
-    # AUDIT B6-1: serve fresh-enough cached bars instead of hammering Yahoo
-    _cache_key = f"{ticker}|{interval}|{range_str}"
-    _cached = _yahoo_cache.get(_cache_key)
-    if _cached is not None and (time.time() - _cached[0]) < settings.get_float("data", "yahoo_cache_ttl_seconds", 20.0):
-        return _cached[1].copy()
-
-    try:
-        async with yahoo_limiter:
-            async with httpx.AsyncClient() as client:
-                resp = await client.get(url, headers=headers)
-        if resp.status_code == 200:
-            result = resp.json().get("chart", {}).get("result", [])[0]
-            timestamps = result.get("timestamp", [])
-            if timestamps is None:
-                logger.info(f"Yahoo Finance: Market for {ticker} is currently closed or has no active trades (Weekend/Closed).")
-                return pd.DataFrame()
-
-            indicators = result.get("indicators", {}).get("quote", [])[0]
-
-            opens = indicators.get("open", [])
-            highs = indicators.get("high", [])
-            lows = indicators.get("low", [])
-            closes = indicators.get("close", [])
-            volumes = indicators.get("volume", [])
-
-            data = []
-            for idx, t in enumerate(timestamps):
-                if opens[idx] is not None and closes[idx] is not None:
-                    data.append({
-                        "timestamp": pd.to_datetime(t, unit='s'),
-                        "open": float(opens[idx]),
-                        "high": float(highs[idx]),
-                        "low": float(lows[idx]),
-                        "close": float(closes[idx]),
-                        "volume": float(volumes[idx]) if volumes[idx] else 10.0
-                    })
-            df = pd.DataFrame(data).set_index("timestamp")
-            _yahoo_cache[_cache_key] = (time.time(), df)
-            if len(_yahoo_cache) > 64:
-                _yahoo_cache.pop(next(iter(_yahoo_cache)))
-            logger.info(f"Successfully loaded {len(df)} actual real-world market bars from Yahoo Finance for {ticker}!")
-            return df
-    except Exception as e:
-        logger.error(f"Failed to fetch Yahoo Finance candles for {ticker}: {str(e)}")
-    return pd.DataFrame()
-
-
-def _klines_to_df(data: list) -> pd.DataFrame:
-    """Convertit une réponse klines (Binance ou Bybit) en DataFrame OHLCV réel."""
-    bars = []
-    for b in data:
-        bars.append({
-            "timestamp": pd.to_datetime(b[0], unit='ms'),
-            "open": float(b[1]),
-            "high": float(b[2]),
-            "low": float(b[3]),
-            "close": float(b[4]),
-            "volume": float(b[5])
-        })
-    df = pd.DataFrame(bars).set_index("timestamp")
-    return df
-
-
-async def fetch_bybit_klines(symbol: str, interval: str = "1h", limit: int = 120) -> pd.DataFrame:
-    """Barres OHLCV RÉELLES via l'API publique Bybit v5 (secours Binance)."""
-    try:
-        async with bybit_limiter:
-            async with httpx.AsyncClient(timeout=8.0) as client:
-                resp = await client.get(
-                    f"https://api.bybit.com/v5/market/kline?category=spot&symbol={symbol}"
-                    f"&interval={interval}&limit={limit}"
-                )
-        if resp.status_code == 200 and resp.json().get("retCode") == 0:
-            rows = resp.json().get("result", {}).get("list", [])
-            if rows:
-                # Bybit renvoie les barres de la plus récente à la plus ancienne
-                rows = list(reversed(rows))
-                bars = []
-                for b in rows:
-                    bars.append({
-                        "timestamp": pd.to_datetime(int(b[0]), unit='ms'),
-                        "open": float(b[1]), "high": float(b[2]),
-                        "low": float(b[3]), "close": float(b[4]),
-                        "volume": float(b[5]),
-                    })
-                df = pd.DataFrame(bars).set_index("timestamp")
-                logger.info(f"Fetched {len(df)} barres RÉELLES Bybit pour {symbol} ({interval}).")
-                return df
-    except Exception as e:
-        logger.warning(f"Bybit klines failed for {symbol}: {e}")
-    return pd.DataFrame()
-
-
-async def fetch_historical_market_data(symbol="BTCUSDT"):
-    """
-    Fetches real historical price candles (OHLCV) from real APIs (Binance, puis
-    Bybit en secours, puis Yahoo pour les actifs non-crypto). AUCUNE donnée
-    simulée : si toutes les sources réelles échouent, renvoie un DataFrame vide
-    (l'appelant marque l'actif UNAVAILABLE et ne trade pas).
-    """
-    # 1) Binance (source primaire)
-    try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=120"
-        async with httpx.AsyncClient(timeout=8.0) as client:
-            response = await client.get(url)
-        if response.status_code == 200:
-            df = _klines_to_df(response.json())
-            if not df.empty:
-                logger.info(f"Successfully fetched {len(df)} real bars from Binance for {symbol}.")
-                return df
-    except Exception as e:
-        logger.warning(f"Binance historical fetch failed for {symbol}: {e}")
-
-    # 2) Bybit (secours réel pour les cryptos)
-    if symbol in CRYPTO_SYMBOLS:
-        df = await fetch_bybit_klines(symbol, interval="1h", limit=120)
-        if not df.empty:
-            return df
-
-    # 3) Yahoo Finance (secours réel pour Or/FX/Actions — et cryptos en dernier recours)
-    try:
-        y_ticker = "GC=F" if symbol == "XAUUSD" else "EURUSD=X" if symbol == "EURUSD" else \
-                   ("BTC-USD" if symbol == "BTCUSDT" else "ETH-USD" if symbol == "ETHUSDT"
-                    else "SOL-USD" if symbol == "SOLUSDT" else symbol)
-        df_y = await fetch_yahoo_finance_candles(y_ticker, interval="1h", range_str="5d")
-        if not df_y.empty:
-            logger.info(f"Fetched {len(df_y)} real bars from Yahoo Finance for {symbol}.")
-            return df_y
-    except Exception as e:
-        logger.warning(f"Yahoo historical fetch failed for {symbol}: {e}")
-
-    # HONNÊTETÉ (mentalité n°5) : aucune source réelle -> vide, pas de simulé.
-    logger.warning(f"NO REAL HISTORICAL DATA AVAILABLE for {symbol} — marked UNAVAILABLE.")
-    return pd.DataFrame()
 
 
 def train_ai_models(df):
@@ -2154,336 +1699,6 @@ def validate_startup_config():
     # non-local (PORT/RAILWAY_* -> URL publique) ; aucun secret loggé en clair.
     if production_auth:
         _ensure_auth_secrets()
-
-
-async def autonomous_ai_scheduler():
-    """
-    LOT 66: FULLY AUTONOMOUS AI.
-    Periodic self-improvement cycle (every 6h):
-      1. Refresh real market data (Binance -> Yahoo fallback)
-      2. MLOps pipeline: retrain HMM + LSTM + genetic tuning + model registry
-      3. Autonomous PPO training from the live experience buffer (real outcomes)
-      4. Walk-forward validation (champion/challenger) - only deploy if it improves
-      5. Audit log + Telegram notification
-    """
-    while True:
-        await asyncio.sleep(6 * 3600)
-        try:
-            logger.info("🤖 AUTONOMOUS AI CYCLE STARTING (self-retrain + validate + deploy)")
-
-            # 1) Fresh real data
-            df = STATE.get("historical_bars")
-            if df is None or df.empty or len(df) < 120:
-                df2 = await fetch_historical_market_data("BTCUSDT")
-                if df2 is not None and not df2.empty and len(df2) >= 120:
-                    df = df2
-                    STATE["historical_bars"] = df
-            if df is None or df.empty or len(df) < 120:
-                logger.warning("🤖 Autonomous AI: insufficient market data, skipping cycle.")
-                continue
-
-            # 2) MLOps pipeline (retrain + registry, auto-deploy in DEMO)
-            try:
-                pipe_res = mlops_trainer.execute_pipeline(df)
-                logger.info(f"🤖 Autonomous AI: MLOps pipeline -> {pipe_res.get('status')}")
-            except Exception as pe:
-                logger.warning(f"🤖 Autonomous AI: MLOps pipeline error: {pe}")
-
-            # 3) Autonomous PPO training from real collected experiences
-            buf = STATE.get("ppo_buffer") or []
-            platform_metrics.AI_PPO_BUFFER.set(len(buf))
-            if len(buf) >= 50:
-                try:
-                    ppo_agent.train_step(
-                        states=[b["state"] for b in buf],
-                        actions=[b["action"] for b in buf],
-                        log_probs_old=[b["log_prob"] for b in buf],
-                        rewards=[b["reward"] for b in buf],
-                        next_states=[b["next_state"] for b in buf],
-                        terminals=[b["terminal"] for b in buf],
-                    )
-                    logger.info(f"🤖 Autonomous AI: PPO self-trained on {len(buf)} real experiences.")
-                    STATE["ppo_buffer"] = []
-                except Exception as ppo_err:
-                    logger.warning(f"🤖 Autonomous AI: PPO training error: {ppo_err}")
-                # LOT 4 (PDF Pilier C) : mise en sommeil périodique des experts
-                # MoE inutiles (contribution PnL négative sur échantillon suffisant)
-                try:
-                    _sleepy = mixture_of_experts.sleep_useless_experts(min_samples=5, min_contrib_pct=0.0)
-                    if _sleepy:
-                        logger.warning(f"🧟 Experts MoE mis en sommeil: {_sleepy}")
-                except Exception:
-                    pass
-                # LOT 8 (PDF Pilier N/Q) : métriques de qualité + stress crises
-                # réelles + bootstrap du Sharpe (chaque cycle autonome)
-                try:
-                    _eq = STATE["equity_history_demo"] if STATE["mode"] == "DEMO" else STATE["equity_history_real"]
-                    _trades = attribution.trades[-200:]
-                    _qm = quality_metrics(_eq, _trades)
-                    STATE["quality_metrics"] = _qm
-                    # Stress test : crises réelles sur le portefeuille complet
-                    # FIX (ruff F821) : active_balance_key n'était PAS défini
-                    # dans cette fonction — le bloc levait NameError attrapée
-                    # silencieusement, le stress test ne s'exécutait JAMAIS ici.
-                    _positions = db.get_positions()
-                    _prices = STATE.get("last_known_prices", {})
-                    _bal_key = "balance_demo" if STATE["mode"] == "DEMO" else "balance_real"
-                    STATE["stress_test_report"] = scenario_tester.run_stress(
-                        _positions, STATE[_bal_key], _prices)
-                    # Bootstrap : le Sharpe observé est-il dû à la chance ?
-                    if len(_eq) >= 30:
-                        STATE["bootstrap_sharpe"] = monte_carlo_tester.bootstrap_sharpe_significance(
-                            _eq, n_permutations=1000, seed=42)
-                except Exception as _qe:
-                    logger.debug(f"Quality metrics/stress failed: {_qe}")
-                # LOT 7 (PDF Pilier K) : méta-attribution -> RÉDUCTION AUTOMATIQUE
-                # du poids des mauvaises raisons (quelles raisons gagnent ?)
-                try:
-                    _attr = meta_attribution(STATE.get("decision_log", []))
-                    if len(_attr) >= 2:
-                        _rw = reason_weight_from_attribution(_attr)
-                        STATE["reason_weights"] = _rw
-                        # facteur global : moyenne des poids (bornée 0.5..1.1)
-                        _avg = sum(_rw.values()) / max(len(_rw), 1)
-                        STATE["reason_weights_factor"] = max(0.5, min(1.1, _avg))
-                        logger.info(f"🧠 MÉTA-ATTRIBUTION: {len(_rw)} raisons pesées, facteur {_avg:.2f}")
-                except Exception:
-                    pass
-            else:
-                logger.info(f"🤖 Autonomous AI: PPO buffer {len(buf)}/50 - collecting more experiences.")
-
-            # 3a0) VISION §1c: causal discovery on REAL features -> store parents
-            try:
-                md_c = {"vpin": STATE.get("market_state", {}).get("vpin", 0.5),
-                        "kyle_lambda": 0.0, "sentiment": _neutral(STATE.get("sentiment_index")),
-                        "onchain_risk": _neutral(STATE.get("onchain_risk_score"), 0.5),
-                        "funding_rates": STATE.get("funding_rates", {}),
-                        "symbol": "BTCUSDT"}
-                fdf = build_causal_feature_df(STATE, df, md_c)
-                if fdf is not None and len(fdf) >= 40:
-                    parents = discover_causal_parents(fdf, target="returns")
-                    STATE["causal_parents"] = parents
-                    STATE["causal_analyzed"] = True   # LOT 4 : l'analyse causale a tourné
-                    db.save_setting("causal_parents", json.dumps(parents))
-                    logger.info(
-                        f"🔗 ANALYSE CAUSALE: {len(parents)} parent(s) causal(aux) "
-                        f"trouvé(s) {parents} -> "
-                        f"{'signaux actifs' if parents else 'AUCUN parent causal -> réduction des signaux (LOT 4)'}")
-                    logger.info(f"🧠 Causal parents of returns: {parents}")
-            except Exception as ce:
-                logger.warning(f"Causal discovery skipped: {ce}")
-
-            # 3a1) VISION §2c/2d: OFFLINE RL on the replayable event journal
-            try:
-                events = db.list_events(event_type="paper_fill", limit=500)
-                samples = []
-                for e in events:
-                    try:
-                        p = json.loads(e["payload"])
-                        samples.append({
-                            "state": np.array([0.0, float(p.get("slippage_bps", 0.0)) / 100.0, 0.0, 0.0]),
-                            "action": 1.0 if p.get("side") == "BUY" else -1.0,
-                            "log_prob": 0.0,
-                            "reward": -float(p.get("slippage_bps", 0.0)) / 10000.0,
-                            "next_state": np.array([0.0, 0.0, 0.0, 0.0]),
-                            "terminal": False,
-                            "vol": 0.01,
-                        })
-                    except Exception:
-                        continue
-                if len(samples) >= 30:
-                    for _h, _exp in mixture_of_experts.experts.items():
-                        n = _exp.train_offline(curriculum_sort(samples))
-                        if n:
-                            logger.info(f"🧠 OFFLINE RL: {_h} expert trained on {n} journal samples")
-            except Exception as oe:
-                logger.warning(f"Offline RL skipped: {oe}")
-
-            # 3a2) VISION §3: autonomous research cycle (invent -> test -> promote)
-            try:
-                md_r = {"vpin": STATE.get("market_state", {}).get("vpin", 0.5),
-                        "kyle_lambda": 0.0, "sentiment": _neutral(STATE.get("sentiment_index")),
-                        "onchain_risk": _neutral(STATE.get("onchain_risk_score"), 0.5),
-                        "funding_rates": STATE.get("funding_rates", {}),
-                        "market_avg_return": 0.0}
-                _research = hypothesis_generator.run_research_cycle(df, md_r, n_candidates=6)
-                logger.info(f"🧪 RESEARCH CYCLE: {_research['candidates']} tested, "
-                            f"{len(_research['promoted'])} promoted, admitted={len(_research['admitted'])}")
-            except Exception as re:
-                logger.warning(f"Research cycle skipped: {re}")
-
-            # 3a3) VISION §6: risk committee veto + daily risk budget
-            try:
-                _vetoes = risk_committee.evaluate(meta_engine, STATE)
-                for v in _vetoes:
-                    db.add_audit_log("RISK_COMMITTEE", audit_ip(), f"{v['action']} {v['strategy']} (score {v['score']})")
-                try:
-                    _stress_corr = float(db.get_setting("autonomous_last_stress_corr") or 0.5)
-                except Exception:
-                    _stress_corr = 0.5
-                _budget = daily_risk_budget(meta_engine.recent_performance, _stress_corr)
-                STATE["risk_budget"] = _budget
-            except Exception as kce:
-                logger.warning(f"Risk committee skipped: {kce}")
-
-            # 3a3b) VISION_FUTUR §1: organization reallocation (internal capital market)
-            try:
-                _stress_corr2 = float(STATE.get("market_state", {}).get("correlation", 0.5) or 0.5)
-                organization.reallocate(stress_correlation=_stress_corr2)
-                logger.info(f"🏛️ ORGANIZATION: allocations={organization.status()['allocations']}")
-            except Exception as oe:
-                logger.warning(f"Organization reallocate skipped: {oe}")
-
-            # 3a3c) VISION_FUTUR §5a: state snapshot (event-sourcing lite)
-            try:
-                save_state_snapshot(db, STATE)
-            except Exception:
-                pass
-
-            # 3a3d) VISION_FUTUR §4: global curriculum - GAN scenarios become
-            # training episodes for the experts (labeled scenarios, not live trades)
-            try:
-                _scen = generative_engine.generate_extreme_scenarios(n_scenarios=50, stress_factor=2.0)
-                for i in range(min(20, len(_scen))):
-                    _s = _scen[i]
-                    mixture_of_experts.collect_experience(
-                        state=np.array([_s[0], abs(_s[1]), _s[2], 0.0]),
-                        action=float(np.clip(_s[3], -1, 1)) if len(_s) > 3 else 0.0,
-                        logp=0.0,
-                        reward=-abs(_s[0]) * 0.1,  # scenarios are stress episodes
-                        next_state=np.array([_s[0], abs(_s[1]), _s[2], 0.0]),
-                        horizon="position",
-                    )
-                logger.info("🎓 CURRICULUM: GAN stress episodes added to position expert buffer")
-            except Exception as ce:
-                logger.warning(f"GAN curriculum skipped: {ce}")
-
-            # 3a4) VISION §7: self-assessment (meta-attribution of reasons + divergence)
-            try:
-                from core.reporting import build_daily_report
-                _rep = build_daily_report(STATE, db)
-                _reasons_log = []
-                for _o in db.list_events(event_type="order", limit=200):
-                    try:
-                        _p = json.loads(_o["payload"])
-                        _reasons_log.append({"reasons": [r.get("feature", "") for r in (_p.get("reasoning") or [])[:3]],
-                                             "pnl": 0.0})
-                    except Exception:
-                        continue
-                if _reasons_log:
-                    _attr = meta_attribution(_reasons_log)
-                    db.save_setting("reason_effectiveness", json.dumps(_attr))
-                    logger.info(f"🔍 Meta-attribution: {len(_attr)} reasons tracked")
-                _real_slip = execution_alpha.avg_slippage_bps("market") or 3.0
-                _div = simulation_divergence(3.0, _real_slip)  # modeled baseline 3bps
-                STATE["sim_divergence"] = _div
-                db.save_setting("sim_divergence", str(_div))
-                logger.info(f"🔍 Sim vs live slippage divergence: {_div:.2f}")
-            except Exception as sae:
-                logger.warning(f"Self-assessment skipped: {sae}")
-
-            # 3a) MONTE-CARLO DAILY STRESS (audit B10-2): measure tail risk continuously
-            try:
-                hist = STATE.get("historical_bars")
-                if hist is not None and len(hist) > 30:
-                    _mc_price = STATE.get("last_known_prices", {}).get("BTCUSDT") or STATE.get("last_price")
-                    if _mc_price is None:
-                        logger.warning("Skipping Monte-Carlo stress test: no real BTC price available yet.")
-                    else:
-                        mc = monte_carlo_tester.execute_stress_test(
-                            initial_capital=STATE["balance_demo"] if STATE["mode"] == "DEMO" else STATE["balance_real"],
-                            current_price=float(_mc_price),
-                            historical_volatility=float(hist["close"].pct_change().dropna().std() or 0.02),
-                        )
-                        ruin_pct = float(mc.get("ruin_probability") or mc.get("ruin_prob") or 0.0)
-                        platform_metrics.RISK_CVAR.set(ruin_pct * 100.0)
-                    ruin_pct = float(mc.get("ruin_probability") or mc.get("ruin_prob") or 0.0)
-                    platform_metrics.RISK_CVAR.set(ruin_pct * 100.0)
-                    logger.info(f"🤖 Monte-Carlo stress: ruin probability = {ruin_pct*100:.2f}% | {mc.get('summary','')}")
-            except Exception as mce:
-                logger.warning(f"Monte-Carlo stress skipped: {mce}")
-
-            # 3b) GAN EXTREME-SCENARIO STRESS (audit B9-4): the torch GAN generates
-            # tail scenarios used to scale portfolio risk budget for the next period.
-            try:
-                gen_scen = generative_engine.generate_extreme_scenarios(n_scenarios=500, stress_factor=2.5)
-                tail_vol = float(np.std(gen_scen[:, 0])) if gen_scen.size else 0.0
-                base_vol = float(np.std(df["close"].pct_change().dropna().values[-200:])) if len(df) > 10 else 0.0
-                if base_vol > 0 and tail_vol > 0:
-                    stress_ratio = float(np.clip(tail_vol / base_vol, 1.0, 3.0))
-                    STATE["gan_stress_ratio"] = stress_ratio
-                    platform_metrics.RISK_CVAR.set(stress_ratio)
-                    logger.info(f"🤖 GAN stress: tail/base vol ratio = {stress_ratio:.2f}")
-            except Exception as ge:
-                logger.warning(f"GAN stress skipped: {ge}")
-
-            # 4) Walk-forward champion/challenger validation (audit B8-4: multi-asset)
-            try:
-                from backtester.engine import EventDrivenBacktester, WalkForwardValidator
-                wf = WalkForwardValidator(train_ratio=0.7)
-                bt = EventDrivenBacktester(initial_capital=STATE.get("balance_demo", 100000.0))
-                strat = TrendFollowingStrategy()
-                meta_local = MetaAllocationEngine(strategies=[strat])
-                risk_local = RiskManager()
-                det_local = MarketRegimeDetector()
-                # P0-5 (audit §4.9) : même archi que le live (hidden_dim=24),
-                # sinon la validation walk-forward ne vaut pas pour le déploiement.
-                pred_local = LSTMLikePredictor(input_dim=5, hidden_dim=24)
-                ppo_local = PPOTRAgent(state_dim=4, action_dim=1)
-
-                # Primary asset + optional secondary assets from the DB candle cache
-                _wf_datasets = {"BTCUSDT": df}
-                for _sym in ("ETHUSDT", "SOLUSDT", "XAUUSD"):
-                    try:
-                        _d = db.load_candles(_sym, limit=400)
-                        if _d is not None and not _d.empty and len(_d) >= 150:
-                            _wf_datasets[_sym] = _d
-                    except Exception:
-                        pass
-
-                _oos_sharpe_agg = 0.0
-                for _sym, _data in _wf_datasets.items():
-                    try:
-                        _res = wf.run_validation(_data, bt, meta_local, risk_local, det_local, pred_local, ppo_local)
-                        _oos = _res.get("out_of_sample_metrics", {}) or {}
-                        _oos_sharpe_agg += float(_oos.get("sharpe_ratio") or 0.0)
-                    except Exception as _we:
-                        logger.warning(f"Walk-forward {_sym} skipped: {_we}")
-                oos_sharpe = _oos_sharpe_agg / max(len(_wf_datasets), 1)
-                platform_metrics.AI_OOS_SHARPE.set(oos_sharpe)
-                platform_metrics.AI_LAST_CYCLE.set(time.time())
-                prev_sharpe = float(db.get_setting("autonomous_last_oos_sharpe") or 0.0)
-                # VISION §4.4: Deflated Sharpe gate - is this OOS result statistically
-                # better than luck across the number of strategies/models tried?
-                try:
-                    _dsr = calculate_deflated_sharpe_ratio(
-                        observed_sharpe=oos_sharpe,
-                        num_trials=max(len(strategies_list), 8),
-                        trials_variance_sharpe=0.1,
-                        sample_length=200,
-                    )
-                except Exception:
-                    _dsr = 0.0
-                trend = "IMPROVED" if (oos_sharpe >= prev_sharpe and _dsr >= 0.95) else "DEGRADED"
-                db.save_setting("autonomous_last_oos_sharpe", str(oos_sharpe))
-                db.save_setting("autonomous_last_dsr", str(_dsr))
-                logger.info(f"🤖 Autonomous AI: OOS Sharpe {oos_sharpe:.3f} vs {prev_sharpe:.3f} | DSR {_dsr:.3f} (gate 0.95) -> {trend}")
-                try:
-                    await telegram_bot.send_push_notification(
-                        f"🤖 *CYCLE IA AUTONOME*\n"
-                        f"━━━━━━━━━━━━━━━━━━━━━\n"
-                        f"📊 Sharpe out-of-sample : *{oos_sharpe:.3f}*\n"
-                        f"📈 Tendance : *{trend}*\n"
-                        f"🧠 PPO : entraîné sur {len(buf)} expériences réelles"
-                    )
-                except Exception:
-                    pass
-            except Exception as ve:
-                logger.warning(f"🤖 Autonomous AI: walk-forward validation error: {ve}")
-
-            db.add_audit_log("AUTONOMOUS_AI_CYCLE", audit_ip(), "Completed autonomous self-retrain/validate cycle.")
-        except Exception as e:
-            logger.error(f"🤖 Autonomous AI cycle failed: {e}")
 
 
 class MacroOverrideRequest(BaseModel):
@@ -4585,62 +3800,6 @@ async def live_trading_loop():
         await asyncio.sleep(settings.get_float("trading", "loop_sleep_seconds", 2.5))  # config-driven tick
 
 
-def explain_last_decision(consensus) -> list:
-    """
-    VISION §4.5: top-5 contributing features/reasons of the last decision.
-    Returns a ranked list of {feature, contribution} derived from real data.
-    """
-    out = []
-    try:
-        contribs = consensus.get("contributions", {}) or {}
-        ranked = sorted(contribs.items(), key=lambda kv: abs(kv[1].get("signal", 0.0) * kv[1].get("weight", 0.0)), reverse=True)
-        for name, c in ranked[:5]:
-            out.append({
-                "feature": name,
-                "signal": round(float(c.get("signal", 0.0)), 4),
-                "weight": round(float(c.get("weight", 0.0)), 4),
-                "contribution": round(float(c.get("signal", 0.0)) * float(c.get("weight", 0.0)), 4),
-            })
-        # append market-state features
-        extras = [
-            ("VPIN", consensus.get("modulate_factor", 1.0) if consensus.get("modulate_factor", 1.0) < 1.0 else 0.0),
-        ]
-        for fname, val in extras:
-            if abs(val) > 1e-6:
-                out.append({"feature": fname, "signal": round(val, 4), "weight": 1.0, "contribution": round(val, 4)})
-    except Exception:
-        pass
-    return out
-
-
-def update_metrics_from_state():
-    """
-    Pushes the current STATE snapshot into the Prometheus registry (LOT 61).
-    Called at the end of every trading-loop tick and on demand.
-    """
-    active_mode = STATE["mode"]
-    active_balance_key = "balance_demo" if active_mode == "DEMO" else "balance_real"
-    _lp = STATE["last_price"]
-    platform_metrics.MARKET_LAST_PRICE.labels(symbol="BTCUSDT").set(_lp if _lp is not None else 0.0)
-    platform_metrics.MARKET_EQUITY.labels(mode=active_mode).set(STATE["current_equity"])
-    platform_metrics.MARKET_BALANCE.labels(mode=active_mode).set(STATE[active_balance_key])
-
-    initial_cap = STATE["initial_capital_demo"] if active_mode == "DEMO" else STATE["initial_capital_real"]
-    live_pnl_usd = STATE["current_equity"] - initial_cap if initial_cap > 0 else 0.0
-    live_pnl_pct = (live_pnl_usd / initial_cap) * 100.0 if initial_cap > 0 else 0.0
-    platform_metrics.MARKET_PNL_USD.labels(mode=active_mode).set(live_pnl_usd)
-    platform_metrics.MARKET_PNL_PCT.labels(mode=active_mode).set(live_pnl_pct)
-
-    platform_metrics.REGIME_ID.set(STATE["regime_id"])
-    platform_metrics.RISK_EXPOSURE.set(
-        (STATE["current_equity"] / STATE[active_balance_key] - 1.0) * 100.0 if STATE[active_balance_key] > 0 else 0.0
-    )
-    platform_metrics.POSITIONS_OPEN.set(len(STATE.get("cached_positions") or []))
-    platform_metrics.SENTIMENT_INDEX.set(_neutral(STATE.get("sentiment_index")))
-    platform_metrics.ONCHAIN_RISK.set(_neutral(STATE.get("onchain_risk_score"), 0.5))
-    platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
-
-
 async def task_watchdog_loop():
     """
     LOT 7 (PDF Faille 6 + Pilier K) : WATCHDOG des tâches de fond.
@@ -4768,6 +3927,19 @@ async def websocket_endpoint(websocket: WebSocket):
             STATE["connected_websockets"].remove(websocket)
             platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
 
+# ============ LOT C (F3) : gros blocs extraits ============
+# Les définitions ont été déplacées vers des modules dédiés ; on
+# ré-exporte les noms pour préserver l'espace de noms de main (tests,
+# TASK_FACTORIES, api/routes.py, schedulers.py, telemetry.py). Ordre
+# de dépendances respecté (autonomous_ai dépend de fetch_* ré-exporté).
+# CE BLOC VIENT AVANT les imports de schedulers/telemetry/routes : ceux-ci
+# consomment les ré-exports (ex. schedulers importe _final_scale_report).
+from core.observability import _final_scale_report, _final_scale_stats, _limiting_factor_stats, _load_final_scale_samples, _mark_paper_validation_day, _paper_validation_stats, _persist_final_scale_samples, _purge_final_scale_samples, _record_final_scale, _signal_stats  # noqa: F401,E402
+from core.ccxt_client import format_exchange_size, get_ccxt_client  # noqa: F401,E402
+from market_data.historical_fetch import _klines_to_df, fetch_bybit_klines, fetch_historical_market_data, fetch_yahoo_finance_candles  # noqa: F401,E402
+from core.autonomous_ai import autonomous_ai_scheduler  # noqa: F401,E402
+from core.decision_explain import explain_last_decision, update_metrics_from_state  # noqa: F401,E402
+
 # ============ étape 2 du découpage (LOT 7) : télémétrie ============
 # ============ LOT 7 (P1-7 audit §4.1) : modules extraits ============
 # Les définitions ont été déplacées vers api/routes.py et schedulers.py ;
@@ -4785,4 +3957,3 @@ from schedulers import (  # noqa: F401,E402
 from telemetry import broadcast_telemetry, compile_telemetry_data, serialize_helper  # noqa: F401,E402
 
 app.include_router(_api_router)
-

@@ -8,7 +8,9 @@ refactorer les dépendances.
 """
 import os
 import time
+import uuid
 
+import httpx
 import numpy as np
 import pandas as pd
 import pyotp  # noqa: F401
@@ -34,7 +36,62 @@ from core.module_honesty import get_module_status, status_summary  # noqa: F401
 from core.reporting import build_daily_report, compute_health_score  # noqa: F401
 from core.robustness import chaos_cut_feed  # noqa: F401
 from core.signal_library import evaluate_all_signals  # noqa: F401
-from main import *  # noqa: F401,F403  (symboles partagés, étape 1 du découpage)
+# LOT C (F3) : fin du 'from main import *' — imports EXPLICITES des symboles
+# utilisés par ces routes (vérifiés par AST + test_routes_health).
+from main import (  # noqa: F401
+    AskRequest,
+    AuthManager,
+    BotToggleRequest,
+    CopyTradeRequest,
+    ExperimentCreate,
+    FINAL_SCALE_WINDOW_HOURS,
+    KeyStorage,
+    LSTMLikePredictor,
+    LoginRequest,
+    MacroOverrideRequest,
+    MarketRegimeDetector,
+    PPOTRAgent,
+    PriceAlertCreate,
+    ReplayRequest,
+    RiskSettingsUpdate,
+    RiskStateMachine,
+    Roles,
+    STATE,
+    SetBalanceRequest,
+    SignalEvalRequest,
+    StrategyToggle,
+    SwitchModeRequest,
+    UserCreateRequest,
+    WebhookTradeRequest,
+    audit_ip,
+    copy_manager,
+    db,
+    execution_bandit,
+    fetch_historical_market_data,
+    fetch_yahoo_finance_candles,
+    format_exchange_size,
+    get_ccxt_client,
+    hypothesis_generator,
+    logger,
+    meta_engine,
+    mixture_of_experts,
+    mlops_trainer,
+    monte_carlo_tester,
+    organization,
+    platform_metrics,
+    require_admin,
+    require_auth,
+    risk_committee,
+    risk_manager,
+    risk_state,
+    run_market_replay,
+    scenario_tester,
+    settings,
+    strategies_list,
+    strategy_exec_attr,
+    submit_order_via_oms,
+    supervisor,
+)
 from main import (  # noqa: F401
     _alerts_persist,
     _final_scale_report,

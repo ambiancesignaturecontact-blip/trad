@@ -12,7 +12,25 @@ from core.fx import convert as _fx_convert  # noqa: F401
 from core.fx import get_account_currency as _fx_ccy
 from core.fx import usd_to as _fx_usd_to
 from core.module_honesty import get_module_status, status_summary  # noqa: F401
-from main import *  # noqa: F401,F403
+# LOT C (F3) : fin du 'from main import *' — imports EXPLICITES des symboles
+# utilisés par ce module (vérifiés par AST + test_routes_health).
+from main import (  # noqa: F401
+    STATE,
+    capital_allocator,
+    copy_manager,
+    cost_accounting,
+    counterparty_risk,
+    db,
+    hypothesis_generator,
+    logger,
+    macro_calendar,
+    meta_engine,
+    mixture_of_experts,
+    model_selector,
+    order_flow,
+    platform_metrics,
+    supervisor,
+)
 from main import _BG_TASKS, _paper_validation_stats  # noqa: F401
 
 # Devise du compte (résolue une fois par appel — le cache FX interne gère la

@@ -15,9 +15,24 @@ import main  # noqa: F401
 from core.copy_mirror import build_mirror_orders, fetch_trader_positions  # noqa: F401
 from core.llm_narrative import daily_market_narrative_async  # noqa: F401
 from core.reporting import build_concierge_message, build_daily_report  # noqa: F401
-from main import *  # noqa: F401,F403
-
-# helpers _privés de main utilisés par ces schedulers (non couverts par `*`)
+# LOT C (F3) : fin du 'from main import *' — imports EXPLICITES des symboles
+# utilisés par ces schedulers (vérifiés par AST + test_routes_health).
+from main import (  # noqa: F401
+    RiskStateMachine,
+    STATE,
+    audit_ip,
+    copy_manager,
+    counterparty_risk,
+    db,
+    get_ccxt_client,
+    logger,
+    platform_metrics,
+    reconciler,
+    risk_state,
+    settings,
+    submit_order_via_oms,
+    telegram_bot,
+)
 from main import _final_scale_report, _load_final_scale_samples, _mark_paper_validation_day  # noqa: F401
 
 

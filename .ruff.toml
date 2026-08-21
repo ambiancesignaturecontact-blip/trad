@@ -9,13 +9,19 @@ select = ["E", "F", "W", "I", "UP"]
 ignore = ["E501", "E203"]
 
 [lint.per-file-ignores]
-# main.py : imports après load_dotenv() (volontaire, ordre des secrets)
-"main.py" = ["E402"]
-# Modules extraits au LOT 7 (étape 1 du découpage) : ils accèdent aux
-# symboles de main via `from main import *` (F405) et s'importent en fin de
-# main.py (E402). Pattern documenté — à éliminer à l'étape 2 du découpage.
-"api/routes.py" = ["E402", "F405"]
-"schedulers.py" = ["E402", "F405"]
-"telemetry.py" = ["E402", "F405"]
+# main.py : imports après load_dotenv() (volontaire, ordre des secrets) et
+# bloc de ré-exports en fin de fichier (LOT C) — I001 couvre le tri isort.
+"main.py" = ["E402", "I001"]
+# LOT C (F3) : les modules extraits importent leurs symboles de main de façon
+# EXPLICITE (fini le `from main import *`) et s'importent en fin de main.py.
+# E402/I001 couvrent les imports placés après les imports standards.
+"api/routes.py" = ["E402", "I001"]
+"schedulers.py" = ["E402", "I001"]
+"telemetry.py" = ["E402", "I001"]
+"core/observability.py" = ["E402", "I001"]
+"core/ccxt_client.py" = ["E402", "I001"]
+"market_data/historical_fetch.py" = ["E402", "I001"]
+"core/autonomous_ai.py" = ["E402", "I001"]
+"core/decision_explain.py" = ["E402", "I001"]
 # database/db_manager.py : imports après le chargement d'environnement
 "database/db_manager.py" = ["E402"]
