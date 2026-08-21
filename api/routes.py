@@ -337,6 +337,13 @@ async def api_adversarial():
     return main.STATE.get("last_adversarial", {}) if hasattr(main, "STATE") else {}
 
 
+@router.get("/api/v1/execution-intel")
+async def api_execution_intel():
+    """LOT 7 (mandat) : Execution Intelligence — IS, prévision vs réalité,
+    venue quality (slippage, latence, fill ratio par venue)."""
+    return main.execution_intel.report() if hasattr(main, "execution_intel") else {"n": 0}
+
+
 @router.get("/api/v1/ab")
 async def api_ab(_auth: dict = Depends(require_auth)):
     """VISION §7.5: A/B paper comparison (baseline vs vol-targeted config)."""

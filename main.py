@@ -71,6 +71,8 @@ from core.conviction_engine import ConvictionEngine, TradeOpportunityEngine
 from core.edge_decay import EdgeDecayEngine
 # LOT 6 : Adversarial Decision Engine (robustesse d'une décision sous stress)
 from core.adversarial_engine import AdversarialDecisionEngine
+# LOT 7 : Execution Intelligence (IS + venue quality)
+from core.execution_intel import ExecutionIntel
 # LOT 3 (mandat) : Decision Journal / Trade Intelligence Database
 from core.decision_journal import (
     close_journal_entry,
@@ -992,6 +994,8 @@ win_tracker = StrategyWinRateTracker(STATE)  # LOT 2: win rates RÉELS par strat
 edge_decay = EdgeDecayEngine(strategies=[s.name for s in strategies_list])
 # LOT 6 : Adversarial — verdict ROBUST/FRAGILE par décision
 adversarial_engine = AdversarialDecisionEngine()
+# LOT 7 : Execution Intelligence (IS, prévision/réalité, venue quality)
+execution_intel = ExecutionIntel()
 # LOT 2 : conviction calibrée + TRADE/WAIT explicite (calibration mesurée dans STATE)
 conviction_engine = ConvictionEngine(STATE)
 trade_opportunity = TradeOpportunityEngine()
@@ -2084,9 +2088,7 @@ async def live_trading_loop():
                 STATE["sentiment_available"] = False
                 STATE["sentiment_index"] = None
 
-        # Check scheduled macroeconomic calendar for approaching shocks
-        # LOT 5 (PDF Pilier I) : gestion des phases AVANT / PENDANT / APRÈS
-        # (mentalité n°4 : on ne trade pas l'événement, on trade la réaction)
+        # Macro calendar : phases AVANT/PENDANT/APRÈS (on ne trade pas l'événement)
         try:
             macro_res = macro_calendar.check_upcoming_macro_shocks()
             STATE["macro_phase"] = macro_res.get("phase", "NONE")
@@ -2217,9 +2219,7 @@ async def live_trading_loop():
                 # Fetch 100% real-world price ticks for Gold, Forex, Stocks, and Cryptos!
                 # (faille 1 corrigée : plus de prix inventé — mark_real_price uniquement)
                 try:
-                    # ===== PRIX CONSENSUS MULTI-SOURCES (PDF : redondance 2+ sources croisées) =====
-                    # Crypto : Binance + Bybit + Coinbase + Kraken + OKX (+ CoinGecko/CryptoCompare 60s)
-                    # Or/FX/Actions : Yahoo + gold-api (XAU) / er-api (EURUSD) ; AAPL/TSLA = Yahoo seul (SINGLE_SOURCE honnête)
+                    # ===== PRIX CONSENSUS MULTI-SOURCES (2+ sources croisées ; SINGLE_SOURCE honnête) =====
                     if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
                         cons = await price_engine.get_consensus(symbol)
                         STATE.setdefault("price_consensus", {})[symbol] = cons
@@ -2325,9 +2325,7 @@ async def live_trading_loop():
                 except Exception as _ke:
                     logger.debug(f"Kline refresh failed for {symbol}: {_ke}")
 
-                # EVALUATE GENUINE FUNDING RATE ARBITRAGE (100% Real-World API data)
-                # (faille 1 corrigée : funding 8h JAMAIS inventé — si la source
-                #  échoue, l'arbitrage de funding est simplement ignoré)
+                # FUNDING RATE ARBITRAGE (funding 8h RÉEL ; source échouée -> ignoré)
                 if symbol in ["BTCUSDT", "ETHUSDT", "SOLUSDT"]:
                     funding_8h = None
                     # Funding croisé Binance <-> Bybit (PDF : 2 sources indépendantes)
@@ -2478,9 +2476,7 @@ async def live_trading_loop():
                                         audit_ip(),
                                         f"Cross-Venue {symbol} arbitrage broadcast on-chain. Tx: {bcast.get('tx_hash', '?')}"
                                     )
-                                    # P0-1 (audit §2.3): message honnête — la tx est
-                                    # broadcastée mais AUCUNE protection anti-sandwich
-                                    # on-chain n'est active (contrat non déployé).
+                                    # P0-1 : tx broadcastée mais AUCUNE protection anti-sandwich on-chain
                                     await telegram_bot.send_push_notification(
                                         f"✅ *ARBITRAGE DEX-CEX EXÉCUTÉ* (broadcast on-chain)\n"
                                         f"-----------------------------------------\n"
@@ -2545,9 +2541,7 @@ async def live_trading_loop():
                     try:
                         STATE["regime_probs"] = compute_regime_probs(regime_detector, np.array([[ret_mean, vol_mean]]))
                         STATE["market_state"] = compute_market_state(STATE, STATE["regime_probs"], vol_mean)
-                        # LOT 4 (PDF Pilier B) : mesure de la qualité d'inférence
-                        # du régime (confiance + stabilité) — ne trader qu'avec un
-                        # régime suffisamment certain (mentalité n°5 : je ne sais pas)
+                        # LOT 4 : confiance + stabilité du régime (ne trader que si certain)
                         try:
                             STATE["regime_confidence"] = regime_detector.regime_confidence(
                                 np.array([[ret_mean, vol_mean]]))
@@ -3256,9 +3250,7 @@ async def live_trading_loop():
                                                 [_casc_reason], STATE["no_trade_stats"], db)
                                 target_direction = 0.0
 
-                    # LOT 6 (PDF Pilier M) : PYRAMIDING CONTRÔLÉ + NETTING
-                    # Pyramiding : ajouter UNIQUEMENT sur les gagnants, RR
-                    # favorable, max 2 ajouts ; JAMAIS de moyenne à la baisse.
+                    # LOT 6 : PYRAMIDING CONTRÔLÉ (gagnants, RR, max 2 ; JAMAIS moyenne à la baisse)
                     try:
                         if target_direction != 0.0 and pos_qty != 0.0:
                             _same_dir = (target_direction > 0 and pos_qty > 0) or \
@@ -3444,7 +3436,14 @@ async def live_trading_loop():
                                             raise Exception(res_order.get("reason", "OMS rejected order"))
                                     platform_metrics.EXEC_FILLS.labels(style=_style).inc()
                                     _slip = execution_alpha.record(symbol, side, _arrival_price, execution_price, _style)
-                                    slippage_model.update("Binance" if symbol in ("BTCUSDT","ETHUSDT","SOLUSDT") else "Bybit", symbol, _slip)
+                                    _venue = "Binance" if symbol in ("BTCUSDT", "ETHUSDT", "SOLUSDT") else "Bybit"
+                                    _exp_slip = slippage_model.expected_slippage_bps(_venue, symbol, fallback=5.0)
+                                    slippage_model.update(_venue, symbol, _slip)
+                                    # LOT 7 : Execution Intelligence (IS + prévision vs réalité)
+                                    execution_intel.record(_venue, symbol, side, trade_qty_formatted,
+                                                           _arrival_price, execution_price, _style,
+                                                           expected_slippage_bps=_exp_slip,
+                                                           realized_slippage_bps=_slip, db=db)
                                     platform_metrics.EXEC_SLIPPAGE_BPS.labels(style=_style).set(execution_alpha.avg_slippage_bps(_style))
                                     try:
                                         _volr2 = STATE.get("market_state", {}).get("vol_regime", "normal")
@@ -3483,14 +3482,8 @@ async def live_trading_loop():
                                 # so paper validation is statistically meaningful.
                                 _paper_fee = None
                                 if active_mode == "DEMO":
-                                    # LOT 7 (fidélité DEMO == REAL) : le SOR multi-venue est
-                                    # exécuté en DEMO aussi (venue choisie au coût net, prix +
-                                    # frais + slippage book-walké — comme en REAL), et le fill
-                                    # paper passe TOUJOURS par simulate_paper_fill : book-walking
-                                    # réel du carnet de la venue, partial fills, rejets liquidité.
-                                    # (Avant : le fill était au prix fixe ±3 bps quand un carnet
-                                    # était présent — simulate_paper_fill n'était appelé que si
-                                    # le carnet était ABSENT. L'inverse de la haute fidélité.)
+                                    # LOT 7 : SOR multi-venue exécuté en DEMO aussi (coût net,
+                                    # book-walking réel, partial fills) — fidélité DEMO == REAL.
                                     _sor_venue = None
                                     try:
                                         _sor = await pick_best_venue_net(symbol, side, qty=trade_qty_formatted)
@@ -3534,7 +3527,14 @@ async def live_trading_loop():
                                         trade_qty_formatted = _paper["fill_qty"]  # respect partial fills
                                     # execution-quality tracking learns from paper too
                                     execution_alpha.record(symbol, side, current_price, execution_price, "paper")
+                                    _exp_slip_p = slippage_model.expected_slippage_bps(_paper_venue, symbol, fallback=5.0)
                                     slippage_model.update(_paper_venue, symbol, _paper["slippage_bps"])
+                                    # LOT 7 : Execution Intelligence (paper — DEMO == REAL)
+                                    execution_intel.record(_paper_venue, symbol, side, trade_qty_formatted,
+                                                           current_price, execution_price, "paper",
+                                                           expected_slippage_bps=_exp_slip_p,
+                                                           realized_slippage_bps=_paper["slippage_bps"],
+                                                           latency_ms=_paper.get("latency_ms"), db=db)
                                     platform_metrics.EXEC_SLIPPAGE_BPS.labels(style="paper").set(execution_alpha.avg_slippage_bps("paper"))
                                     try:
                                         db.add_event(time.time(), "paper_fill", json.dumps({

@@ -31,7 +31,7 @@ from main import (  # noqa: F401
     platform_metrics,
     supervisor,
 )
-from main import _BG_TASKS, _paper_validation_stats, _signal_stats, conviction_engine, edge_decay  # noqa: F401
+from main import _BG_TASKS, _paper_validation_stats, _signal_stats, conviction_engine, edge_decay, execution_intel  # noqa: F401
 
 # Devise du compte (résolue une fois par appel — le cache FX interne gère la
 # fréquence des appels réseau)
@@ -193,6 +193,9 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         # LOT 6 (mandat) : adversarial — verdict de robustesse de la dernière
         # décision (ROBUST/FRAGILE, pire scénario sous stress)
         "adversarial": STATE.get("last_adversarial", {}),
+        # LOT 7 (mandat) : Execution Intelligence — IS, prévision vs réalité,
+        # venue quality par venue/style
+        "execution_intel": execution_intel.report(),
         "moe_gate": STATE.get("moe_gate", {}),
         "risk_budget": STATE.get("risk_budget", {}),
         "risk_state": STATE.get("risk_state", {}),
