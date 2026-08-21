@@ -92,6 +92,25 @@ vol_targeting:
   min_scale: 0.25                  # réduction minimale autorisée
   max_scale: 2.0                   # amplification maximale autorisée
 
+# ===== LOT D (F4) : détection de drift par PSI (online learning) =====
+# PSI (Population Stability Index) entre la distribution de RÉFÉRENCE
+# (fenêtre longue) et la distribution RÉCENTE des features clés (returns,
+# vol, volume, momentum — cohérentes avec le feature store). Seuils
+# standards : < 0.10 stable, 0.10-0.25 modéré, > 0.25 sévère. En drift
+# sévère, l'oubli du bandit Thompson est accéléré (decay plus fort) pour
+# ne plus récompenser un edge mort.
+drift:
+  psi_n_bins: 10                   # nb de bins du PSI
+  psi_stable_threshold: 0.10
+  psi_severe_threshold: 0.25
+  psi_window_reference: 400        # fenêtre longue (barres)
+  psi_window_recent: 150           # fenêtre récente (barres)
+  bandit_decay_stable: 0.98        # nominal (demi-vie ~34 MAJ)
+  bandit_decay_drift: 0.92         # drift sévère (demi-vie ~8 MAJ)
+  bandit_decay_min: 0.85           # borne dure (jamais d'oubli total)
+  bandit_decay_max: 0.995
+  psi_interval_seconds: 900.0      # recalcul dans la boucle live (15 min)
+
 # ===== P1-8 (audit §3) : exécution =====
 execution:
   cvar_limit_pct: 0.025            # limite CVaR quotidienne (2.5%)

@@ -188,6 +188,9 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         # (borné [0.60, 1.25]) + paramètres de risque EFFECTIFS appliqués
         # (Kelly, plafond par actif, drawdowns jamais élargis).
         "regime_autonomy": STATE.get("regime_autonomy", {}),
+        # LOT D (F4) : drift de distribution (PSI) — max_psi, statut
+        # STABLE/MODERATE/SEVERE, decay du bandit appliqué.
+        "drift_psi": STATE.get("drift_psi", {}),
         "hmm_validation": STATE.get("hmm_validation", {}),
         "expert_contribution": mixture_of_experts.expert_contribution_report(),
         "sleeping_experts": list(mixture_of_experts.sleeping),

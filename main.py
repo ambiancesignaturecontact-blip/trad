@@ -55,6 +55,9 @@ from core.position_manager import (
 # LOT B (F2) : autonomie stratégique — auto-adaptation bornée des paramètres
 # de risque au régime HMM (facteur lissé EMA, borné [0.60, 1.25]).
 from core.regime_autonomy import RegimeAutonomy
+# LOT D (F4) : détection de drift par PSI (online learning) — surveille la
+# distribution des features clés et accélère l'oubli du bandit au drift.
+from core.drift_psi import DriftMonitor, run_drift_check
 from core.research_discipline import live_p_value, meta_label_filter
 from core.risk_committee import RiskCommittee
 from core.risk_pipeline import (
@@ -222,6 +225,10 @@ ppo_agent = PPOTRAgent(state_dim=4, action_dim=1)
 # par le régime HMM (jamais > 1.25x la config de base, drawdowns jamais
 # élargis). Appliqué à risk_manager via apply_regime_factor() à chaque tick.
 regime_autonomy = RegimeAutonomy()
+
+# LOT D (F4) : moniteur de drift PSI — fenêtres de référence/récente sur les
+# candles RÉELLES ; le decay du bandit est accéléré quand le PSI est sévère.
+drift_monitor = DriftMonitor()
 
 # MLOps Auto-Trainer
 mlops_trainer = MLOpsAutoTrainer(regime_detector, price_predictor, db)
@@ -507,6 +514,7 @@ STATE = {
     "regime_probs": {},               # VISION §1a: soft HMM probabilities
     "regime_confidence": {"confidence": 0.5, "regime_id": 2},  # LOT 4: certitude du régime
     "regime_autonomy": {},            # LOT B (F2): autonomie stratégique (facteur + effectifs)
+    "drift_psi": {},                  # LOT D (F4): drift distribution (PSI) + decay bandit
     "hmm_validation": {},             # LOT 4: validation HMM multi-actifs
     "causal_analyzed": False,         # LOT 4: l'analyse causale a-t-elle tourné ?
     "market_state": {},               # VISION §1b: joint market state
@@ -2578,6 +2586,15 @@ async def live_trading_loop():
                         # config de base (facteur 1.0 = comportement pré-LOT B).
                         logger.warning(f"Regime autonomy failed ({_ra_e}) — facteur 1.0 (config de base).")
                         STATE["regime_autonomy"] = {"enabled": False, "error": str(_ra_e)}
+
+                    # LOT D (F4) : DÉTECTION DE DRIFT PAR PSI (implémentée dans
+                    # core/drift_psi.py — run_drift_check). Toutes les
+                    # PSI_INTERVAL_SECONDS, compare la distribution RÉCENTE des
+                    # features clés à la distribution de RÉFÉRENCE sur les
+                    # candles RÉELLES. Drift sévère -> oubli du bandit ACCÉLÉRÉ.
+                    # Jamais bloquant (échec = comportement nominal conservé).
+                    run_drift_check(STATE, db, drift_monitor, meta_engine, audit_ip,
+                                    logger=logger)
 
                     # Predict temporal change using our true pure NumPy LSTM Deep Neural Network!
                     seq_features = df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0).values[-5:]

@@ -352,6 +352,11 @@ class MetaAllocationEngine:
 
         # P1-12 (§2.2) : cache des tirages Thompson (figés par cycle de décision)
         self._bandit_sample_cache = {}
+        # LOT D (F4) : decay du bandit DYNAMIQUE — nominal = BANDIT_DECAY
+        # (0.98, demi-vie ~34 MAJ) ; en drift de distribution sévère (PSI),
+        # main.py l'accélère via set_bandit_decay() (jamais < 0.85 : un oubli
+        # total = bandit vierge qui repart à l'exploration pure).
+        self.bandit_decay: float = float(BANDIT_DECAY)
         # P1-11 (§2.5) : historique de PnL RÉEL par stratégie (séparé du buffer
         # du bandit — les deux mécanismes de reward ne doivent plus se marcher
         # dessus) + poids issus de l'attribution DSR.
@@ -374,6 +379,17 @@ class MetaAllocationEngine:
         value = float(np.random.beta(self.alpha_bandit[i], self.beta_bandit[i]))
         self._bandit_sample_cache[i] = (now, value)
         return value
+
+    def set_bandit_decay(self, decay: float) -> float:
+        """
+        LOT D (F4) : ajuste le facteur d'oubli du bandit (accélération en cas
+        de drift de distribution détecté par le PSI). Borné [0.80, 1.0] —
+        jamais d'oubli instantané (le bandit conserverait zéro mémoire, il
+        repartirait à l'exploration pure) ni de mémoire infinie. Retourne le
+        decay effectivement appliqué.
+        """
+        self.bandit_decay = max(0.80, min(1.0, float(decay)))
+        return self.bandit_decay
 
     def signal_diversification_weights(self) -> dict:
         """P1-10 (§4.4) : facteur de diversification par stratégie basé sur la
@@ -437,7 +453,8 @@ class MetaAllocationEngine:
             dsr = float(norm.cdf(dsr))
         return float(np.clip(dsr, 0.0, 1.0))
 
-    def update_bandit_feedback(self, symbol: str, strategy_signals: dict, actual_return: float):
+    def update_bandit_feedback(self, symbol: str, strategy_signals: dict, actual_return: float,
+                               decay: float | None = None):
         """
         Updates Thompson Sampling Bandit successes/failures based on trade direction feedback.
         If a strategy's signal aligned with actual return, we reward it (increment alpha).
@@ -445,13 +462,19 @@ class MetaAllocationEngine:
 
         + Walk-Forward dynamique : mise à jour des performances récentes.
         + P1-12 (audit §2.6) : facteur d'oubli — le bandit est NON-stationnaire.
+        + LOT D (F4) : `decay` optionnel — en drift de distribution sévère
+          (PSI), main.py passe un decay ACCÉLÉRÉ pour oublier un edge mort.
         """
         # P1-12 (§2.6) : oubli exponentiel AVANT d'ajouter l'observation.
         # Sans cela, une stratégie qui a brillé pendant un vieux régime bull
         # garde un avantage de plus en plus figé — le bandit cesse d'explorer
         # au moment où le marché change.
-        self.alpha_bandit = self.alpha_bandit * BANDIT_DECAY
-        self.beta_bandit = self.beta_bandit * BANDIT_DECAY
+        # LOT D (F4) : decay effectif = paramètre explicitement fourni, sinon
+        # le decay dynamique de l'instance (set_bandit_decay), sinon la config.
+        decay_eff = float(decay if decay is not None else self.bandit_decay)
+        decay_eff = max(0.80, min(1.0, decay_eff))  # borne dure de sécurité
+        self.alpha_bandit = self.alpha_bandit * decay_eff
+        self.beta_bandit = self.beta_bandit * decay_eff
 
         for i, s in enumerate(self.strategies):
             sig_obj = strategy_signals.get(s.name, 0.0)

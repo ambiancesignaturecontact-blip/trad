@@ -120,6 +120,20 @@ _DEFAULTS: dict[str, Any] = {
         "min_scale": 0.25,
         "max_scale": 2.0,
     },
+    # LOT D (F4) : détection de drift par PSI (Population Stability Index)
+    # sur les features clés + accélération de l'oubli du bandit au drift.
+    "drift": {
+        "psi_n_bins": 10,
+        "psi_stable_threshold": 0.10,
+        "psi_severe_threshold": 0.25,
+        "psi_window_reference": 400,
+        "psi_window_recent": 150,
+        "bandit_decay_stable": 0.98,
+        "bandit_decay_drift": 0.92,
+        "bandit_decay_min": 0.85,
+        "bandit_decay_max": 0.995,
+        "psi_interval_seconds": 900.0,
+    },
     "execution": {
         "cvar_limit_pct": 0.025,
     },
