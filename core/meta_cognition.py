@@ -109,6 +109,14 @@ def _no_trade_bucket(reason: str) -> str:
         return "order_flow"
     if "meta-label" in r:
         return "meta_label"
+    # LOT 2 (mandat) : raisons du Trade Opportunity Engine — AVANT "seuil"
+    # (une raison OPP:EDGE_INSUFFICIENT contient aussi "< seuil" dans le préfixe)
+    if "edge_insufficient" in r or "edge net" in r or "edge estimé" in r:
+        return "edge_insufficient"
+    if "uncalibrated" in r or "non calibrée" in r:
+        return "uncalibrated"
+    if "execution_risk" in r or "slippage attendu" in r:
+        return "execution_risk"
     if "seuil" in r or "signal|" in r or "conviction" in r:
         return "conviction"
     if "régime" in r or "regime" in r or "moe" in r:

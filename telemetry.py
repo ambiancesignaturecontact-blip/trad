@@ -31,7 +31,7 @@ from main import (  # noqa: F401
     platform_metrics,
     supervisor,
 )
-from main import _BG_TASKS, _paper_validation_stats, _signal_stats  # noqa: F401
+from main import _BG_TASKS, _paper_validation_stats, _signal_stats, conviction_engine  # noqa: F401
 
 # Devise du compte (résolue une fois par appel — le cache FX interne gère la
 # fréquence des appels réseau)
@@ -174,6 +174,11 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         # — breakdown par catégorie de raison + distribution de conviction.
         "no_trade_reasons": STATE.get("no_trade_stats", {}).get("reasons", {}),
         "signal_stats": _signal_stats(),
+        # LOT 2 (mandat) : Conviction Engine — niveau, edge net, décision
+        # TRADE/WAIT et calibration mesurée (buckets -> win rate, expectancy).
+        "conviction_engine": STATE.get("last_conviction", {}),
+        "last_opportunity": STATE.get("last_opportunity", {}),
+        "conviction_calibration": conviction_engine.calibration_report(),
         "moe_gate": STATE.get("moe_gate", {}),
         "risk_budget": STATE.get("risk_budget", {}),
         "risk_state": STATE.get("risk_state", {}),

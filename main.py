@@ -65,6 +65,8 @@ from core.ops_alerts import (
     maybe_alert_drift_transition,
     send_ops_alert,
 )
+# LOT 2 : Conviction Engine + Trade Opportunity Engine (TRADE/WAIT explicite)
+from core.conviction_engine import ConvictionEngine, TradeOpportunityEngine
 from core.research_discipline import live_p_value, meta_label_filter
 from core.risk_committee import RiskCommittee
 from core.risk_pipeline import (
@@ -198,9 +200,8 @@ ems = ExecutionManagementSystem(binance_adapter, bybit_adapter)
 oms = OrderManagementSystem(db, ems)
 reconciler = ReconciliationEngine(db)
 
-# Instantiate strategies
-# VISION §5: institutional strategy suite - now includes the previously-dead
-# modules (momentum, volatility_breakout, multi_timeframe) + carry + cross-sectional.
+# Instantiate strategies — suite institutionnelle (momentum, volatility_breakout,
+# multi_timeframe, carry, cross-sectional)
 from strategies.institutional import CarryStrategy, CrossSectionalMomentumStrategy, MultiTimeframeWrapperStrategy
 from strategies.momentum import MomentumStrategy
 from strategies.regime_switching import RegimeSwitchingAllocator
@@ -231,11 +232,7 @@ ppo_agent = PPOTRAgent(state_dim=4, action_dim=1)
 # LOT B (F2) : facteur d'agressivité de risque piloté par le régime HMM (borné, drawdowns jamais élargis).
 regime_autonomy = RegimeAutonomy()
 
-# LOT D (F4) : moniteur de drift PSI MULTI-ACTIFS — fenêtres de
-# référence/récente sur les candles RÉELLES de CHAQUE actif ; le decay du
-# bandit est accéléré quand le pire PSI est sévère, fusionné avec le CUSUM.
-# Les symboles sont passés à chaque appel (STATE["assets"] n'existe qu'à
-# l'exécution de la boucle, pas au moment de la création de l'instance).
+# LOT D : drift PSI multi-actifs (symboles passés à chaque appel — STATE["assets"] n'existe qu'à l'exécution)
 drift_monitor = MultiAssetDriftMonitor()
 
 # MLOps Auto-Trainer
@@ -250,10 +247,8 @@ model_names_lot46 = ["trend_lstm", "meanrev_net", "volatility_net", "correlation
 model_selector, adaptive_ensemble_agent = create_lot46_components(model_names_lot46)
 logger.info("✅ LOT 46: Online Model Selector initialized")
 
-# LOT 46 Scheduler
-# REAL performance attribution: each model is scored from the REALIZED PnL of the
-# assets it tracks (via the Trade Journal), normalized to [-1, 1]. No synthetic
-# np.random data — the ensemble selector now learns from actual trading outcomes.
+# LOT 46 Scheduler — modèles scorés sur le PnL RÉALISÉ des actifs qu'ils
+# trackent (Trade Journal, normalisé [-1,1]) : pas de données synthétiques.
 _MODEL_ASSET_MAP = {
     "trend_lstm": ["BTCUSDT", "ETHUSDT"],
     "meanrev_net": ["XAUUSD", "EURUSD"],
@@ -282,9 +277,8 @@ async def lot46_model_selection_scheduler():
         except Exception as e:
             logger.warning(f"LOT 46 scheduler error: {e}")
 
-# NOTE: The LOT 46 scheduler task is started inside the FastAPI startup event,
-# because asyncio.create_task() at module level crashes with
-# "RuntimeError: no running event loop" (the loop only exists once uvicorn runs).
+# NOTE: LOT 46 scheduler lancé dans le startup event (create_task au module level
+# crashe: 'no running event loop' — le loop n'existe que sous uvicorn).
 
 # === LOT 47++: Complete Multi-Exchange Smart Order Router ===
 from core.multi_exchange_sor import MultiExchangeSmartOrderRouter
@@ -333,11 +327,8 @@ from ai.generative_extreme_scenarios import ExtremeScenarioGenerator
 generative_engine = ExtremeScenarioGenerator()
 logger.info("✅ LOT 54: Generative Extreme Scenario Engine initialized")
 
-# === LOT 55 (module ÉDUCATIF — P2-19) ===
-# rl/rlhf_reward_model.py reste dans le repo, étiqueté ÉDUCATIF dans le
-# registre module_honesty. Il n'est PLUS chargé ici : un module ÉDUCATIF ne
-# doit JAMAIS influencer une décision de trading (audit §2.4). L'implémentation
-# reste testée unitairement (tests/test_lot9_honesty.py).
+# === LOT 55 (ÉDUCATIF — P2-19) : rlhf non chargé ici (JAMAIS dans le sizing) ===
+# Testé unitairement (tests/test_lot9_honesty.py).
 
 # === LOT 56: Multi-Objective Portfolio Optimizer (Sharpe + CVaR + Max Drawdown) ===
 from core.multi_objective_optimizer import MultiObjectivePortfolioOptimizer
@@ -441,10 +432,8 @@ class CopyTradeRequest(BaseModel):
     action: str = Field(pattern="^(START|STOP)$")
     allocated_capital: float = Field(ge=0.0, le=1_000_000_000.0, default=0.0)
 
-# Platform State (Memory cache + DB synchronized)
-# HONNÊTETÉ (faille 1 corrigée — mentalité n°5) : plus AUCUNE valeur de marché
-# inventée. Prix/carnet/volume sont None ou UNAVAILABLE tant qu'une source
-# réelle n'a pas parlé. Règle : « AUCUNE DONNÉE -> AUCUN ORDRE ».
+# Platform State — AUCUNE valeur de marché inventée (None/UNAVAILABLE tant
+# qu'une source réelle n'a pas parlé) : « AUCUNE DONNÉE -> AUCUN ORDRE ».
 STATE = {
     "mode": "DEMO",                  # DEMO vs REAL
     "is_running": True,              # Overall bot main loop switch
@@ -651,6 +640,17 @@ def record_closed_trade(symbol: str, exit_price: float, side: str) -> None:
     direction = 1.0 if side == "SELL" else -1.0
     pnl_pct = (exit_price - entry) / entry * direction
     win_tracker.record(strategy, pnl_pct)
+    # LOT 2 (mandat) : calibration mesurée — issue du trade dans le bucket de
+    # sa conviction d'entrée (win rate observé par bucket, expectancy).
+    try:
+        _conv_at_entry = STATE.get("last_conviction_per_symbol", {}).pop(symbol, {})
+        if _conv_at_entry:
+            conviction_engine.track_outcome(
+                conviction=float(_conv_at_entry.get("conviction", 0.0)),
+                success=(pnl_pct > 0.0),
+                pnl_pct=pnl_pct, strategy=strategy, symbol=symbol)
+    except Exception:
+        pass
     # LOT 4 (PDF Pilier B) : alpha contrefactuel généralisé à TOUS les trades
     # clôturés (plus seulement les sorties de protection) + attribution MoE
     try:
@@ -982,13 +982,14 @@ price_engine = MultiSourcePriceEngine()  # consensus prix multi-exchange (PDF: r
 order_flow = OrderFlowEngine()          # LOT 3: order flow réel (delta/CVD/OFI/liquidations) (PDF Pilier H)
 risk_state = RiskStateMachine()          # LOT 2: machine à états NORMAL/CAUTION/HALT (PDF Faille 3)
 win_tracker = StrategyWinRateTracker(STATE)  # LOT 2: win rates RÉELS par stratégie (PDF Pilier F)
+# LOT 2 : conviction calibrée + TRADE/WAIT explicite (calibration mesurée dans STATE)
+conviction_engine = ConvictionEngine(STATE)
+trade_opportunity = TradeOpportunityEngine()
 risk_pipeline_last = {}                  # dernier tracé du pipeline (télémétrie/audit)
 
 
-# ============ P0-4 (audit indépendant §2.1) : distribution réelle de final_scale ============
-# 17 facteurs multiplicatifs en chaîne peuvent s'auto-amplifier silencieusement
-# (0.8^15 ≈ 3.5% de la taille de base). On accumule les final_scale observés en
-# live et on loggue p10/p50/p90 sur la fenêtre glissante de 48h — si p50 < 20%,
+# P0-4 (audit §2.1) : distribution réelle de final_scale (p10/p50/p90 sur 48h).
+# 17 facteurs multiplicatifs s'auto-amplifient (0.8^15 ≈ 3.5%) : si p50 < 20%,
 # le problème est la chaîne de facteurs, pas le seuil de signal.
 
 FINAL_SCALE_DOWNSAMPLE_SEC = 60.0   # 1 échantillon / min / symbole max
@@ -996,12 +997,9 @@ FINAL_SCALE_WINDOW_HOURS = 48.0     # fenêtre glissante de référence
 FINAL_SCALE_MAX_SAMPLES = 25000     # borne dure mémoire
 
 
-# ============ P0-6 (audit §5-P0-6) : suivi du paper-trading DATÉ ============
-# L'historique de paper-trading validé avant REAL doit être réel, daté et
-# CONTINU (4-8 semaines). Ce tracker marque chaque jour où le bot tourne
-# (persisté en DB) et expose la série + le statut de validation — un chiffre
-# de vérité que le code ne peut pas truquer : si le bot ne tourne pas, le
-# jour n'est pas compté.
+# P0-6 : suivi du paper-trading DATÉ (4-8 semaines CONTINUES avant REAL).
+# Marque chaque jour où le bot tourne (persisté en DB) — un chiffre de vérité
+# que le code ne peut pas truquer : si le bot ne tourne pas, le jour ne compte pas.
 
 execution_bandit = ExecutionStyleBandit()
 strategy_exec_attr = StrategyExecutionAttribution()
@@ -1850,19 +1848,14 @@ async def startup_event():
         if data['active']:
             copy_manager.start_copying(trader_id, data['allocated_capital'])
 
-    # Initial historical load from persistent database cache first!
-    # Fallback to fetching REAL data (Binance -> Bybit -> Yahoo) per asset.
-    # HONNÊTETÉ (faille 1) : jamais de barres fabriquées ; un actif sans
-    # historique réel reste UNAVAILABLE et n'est pas tradé.
+    # Initial historical load (cache DB -> Binance/Bybit/Yahoo réels)
+    # HONNÊTETÉ : jamais de barres fabriquées (actif sans historique = UNAVAILABLE).
     logger.info("Initializing historical candles (multi-assets, sources réelles)...")
     df = pd.DataFrame()
     for _sym in STATE["assets"]:
         _df = db.load_candles(_sym, limit=120)
-        # LOT D (F4, corrigé) : seuil de profondeur 250 au lieu de 10 — le
-        # PSI (drift distribution) exige ~550 barres pour un calcul fiable ;
-        # le fetch profond (700 barres) met le cache à niveau au premier boot
-        # du nouveau code. Les vieux caches à 120 barres sont refetchés une
-        # fois, puis l'historique s'accumule normalement.
+        # LOT D : seuil 250 (PSI exige ~550 barres) — fetch profond (700) au
+        # premier boot ; les vieux caches (120) sont refetchés une fois.
         if _df.empty or len(_df) < 250:
             logger.info(f"Database cache incomplete for {_sym} ({len(_df)} barres). Fetching from real APIs (Binance/Bybit/Yahoo)...")
             try:
@@ -2077,10 +2070,7 @@ async def live_trading_loop():
                 if res_sent["shock_status"].get("shock_detected"):
                     logger.critical("EXTREME NEWS SHOCK DETECTED! Restricting trade sizes.")
                     news_scale_factor = 0.20
-                    # LOT 2 (PDF Faille 3) : choc systémique -> machine à états.
-                    # NEWS_SHOCK_ACTION=halt -> HALT (durée NEWS_SHOCK_HALT_MINUTES),
-                    # sinon CAUTION (réduction) — mentalité n°8 : ne réagir
-                    # fortement qu'aux événements systémiques.
+                    # LOT 2 : choc systémique -> HALT (si NEWS_SHOCK_ACTION=halt) sinon CAUTION
                     if os.getenv("NEWS_SHOCK_ACTION", "reduce").lower() == "halt":
                         risk_state.enter(RiskStateMachine.HALT, "NEWS_SHOCK")
                         # Durée du HALT pilotable par l'opérateur
@@ -2121,10 +2111,8 @@ async def live_trading_loop():
                     STATE["last_sent_macro_event"] = f"{event_name}|{phase}"
 
                 macro_scale_factor = macro_res["scale_reduction_factor"]
-                # Machine à états selon la PHASE (LOT 5) :
-                #  - ACTIVE (HIGH) : l'événement EST EN COURS -> HALT réel
-                #    (durée NEWS_SHOCK_HALT_MINUTES), on ne trade pas la bougie
-                #  - ACTIVE (MEDIUM/LOW) / APPROACHING / AFTERMATH : CAUTION
+                # Machine à états selon la PHASE (LOT 5) : ACTIVE HIGH -> HALT,
+                # APPROACHING/ACTIVE bas/AFTERMATH -> CAUTION
                 if phase == "ACTIVE" and macro_res.get("request_halt"):
                     if risk_state.state != RiskStateMachine.HALT:
                         risk_state.enter(RiskStateMachine.HALT, f"MACRO_ACTIVE:{event_name}")
@@ -2539,12 +2527,10 @@ async def live_trading_loop():
                     else:
                         logger.warning(f"Skipping arbitrage check for {symbol} due to unavailable Bybit secondary price feed.")
 
-                # 4. Formulate signal and sizing
-                # Query the asset's own genuine price series from persistent DB cache!
-                # HONNÊTETÉ (faille 1 corrigée) : plus AUCUNE bougie synthétique
-                # fabriquée à partir du tick (volume inventé, OHLC dérivé). Si
-                # l'historique réel est insuffisant (<10 barres), l'actif n'est
-                # pas tradé — « AUCUNE DONNÉE -> AUCUN ORDRE » (mentalité n°5).
+                # 4. Formulate signal and sizing — série RÉELLE depuis le cache DB.
+                # HONNÊTETÉ : plus AUCUNE bougie synthétique (volume inventé,
+                # OHLC dérivé). Historique réel < 10 barres -> pas tradé (« AUCUNE
+                # DONNÉE -> AUCUN ORDRE », mentalité n°5).
                 df = db.load_candles(symbol, limit=120)
                 if df.empty or len(df) < 10:
                     STATE["using_fallback_data"] = True
@@ -2649,9 +2635,8 @@ async def live_trading_loop():
                     except Exception:
                         pass
 
-                    # ===== POSITION PROTECTION (audit B7-1): STOP-LOSS / TAKE-PROFIT / TRAILING =====
-                    # Protection is evaluated FIRST, before any new signal, so an open
-                    # position is never left exposed while we compute new entries.
+                    # ===== POSITION PROTECTION (audit B7-1): SL/TP/trailing =====
+                    # Évaluée AVANT tout nouveau signal (position jamais sans protection).
                     try:
                         if pos_qty != 0.0:
                             prot = protection_store.get(symbol)
@@ -2949,11 +2934,8 @@ async def live_trading_loop():
                         max_loss_usd=STATE[active_balance_key] * 0.02
                     )
 
-                    # 2. MAX PER-ASSET CAP 25 % (plafond dur, étape 2 du pipeline).
-                    # LOT B (F2) : plafond EFFECTIF — config de base × facteur de
-                    # régime (borné [0.10, 0.30], jamais > 1.25x la base). La
-                    # même valeur effective est appliquée par RiskManager au
-                    # sizing et affichée en télémétrie (une seule source).
+                    # 2. MAX PER-ASSET CAP 25 % (plafond effectif LOT B : base × facteur
+                    # régime, borné [0.10, 0.30] — même source que RiskManager).
                     try:
                         max_asset_pct = risk_manager.effective_params()["max_exposure_per_asset_pct"]
                     except Exception:
@@ -2966,14 +2948,9 @@ async def live_trading_loop():
                         pass
                     max_asset_qty = (STATE[active_balance_key] * max_asset_pct) / current_price
 
-                    # VISION_FUTUR §2d: meta-label filter — filtre les faux signaux avant
-                    # exécution (López de Prado).
-                    # FIX (mini-app 50$) : warm-up porté à 20 trades clôturés et,
-                    # en DEMO, un win rate faible RÉDUIT la taille au lieu de
-                    # BLOQUER totalement — sinon le bot arrête de trader après 5
-                    # trades perdants et ne peut plus JAMAIS apprendre (piège
-                    # observé en production : 'wr 0.12 (n=5)' -> aucun trade).
-                    # En REAL, le filtre reste bloquant (prudence maximale).
+                    # VISION §2d : meta-label filter (López de Prado). FIX mini-app :
+                    # warm-up 20 trades ; en DEMO un win rate faible RÉDUIT la taille
+                    # au lieu de BLOQUER (sinon le bot arrête d'apprendre) ; REAL bloquant.
                     try:
                         _ml_count = win_tracker.samples(_dom_early)
                         _ml_ok = meta_label_filter(_dom_early,
@@ -3032,10 +3009,7 @@ async def live_trading_loop():
                     # 9quinquies. MÉTA-ATTRIBUTION (LOT 7, PDF Pilier K) : les
                     # mauvaises raisons prouvées réduisent la taille
                     _reason_s = float(STATE.get("reason_weights_factor", 1.0))
-                    # 9ter. CAPACITÉ + RÉSERVE DE CASH (LOT 6, PDF Pilier L) :
-                    # la taille d'un trade ne peut pas dépasser 1 % du volume
-                    # réel 24h (impact de marché, mentalité n°11) et l'exposition
-                    # totale du portefeuille reste sous (1 - réserve cash).
+                    # 9ter. CAPACITÉ (<= 1 % vol 24h) + RÉSERVE CASH (jamais 100 % investi)
                     _cap_s = 1.0
                     _cash_s = 1.0
                     try:
@@ -3065,9 +3039,7 @@ async def live_trading_loop():
                     _conf_s = STATE.get("confidence_factor", 1.0)
                     # 11. Organisation (desks)
                     _org_s = organization.confidence_factor(_dom_early)
-                    # 12. RLHF — P2-19 (audit §2.4) : module ÉDUCATIF, JAMAIS
-                    # dans le sizing. Le facteur du pipeline est 1.0 constant
-                    # (voir rlhf_scale dans l'appel ci-dessous).
+                    # 12. RLHF — P2-19 : ÉDUCATIF, JAMAIS dans le sizing (rlhf_scale=1.0)
                     # 13. Volatilité cible
                     _vol_scale = 1.0
                     try:
@@ -3075,11 +3047,8 @@ async def live_trading_loop():
                         STATE["vol_target_scale"] = _vol_scale
                     except Exception:
                         pass
-                    # 14. Tradabilité / slippage attendu
-                    # P1-13 (audit §4.6) : le slippage est d'abord estimé par
-                    # BOOK-WALKING du carnet consolidé réel (profondeur réelle,
-                    # taille du trade), puis par le modèle des fills réels,
-                    # puis fallback prudent 5 bps. Fini le slippage fixe seul.
+                    # 14. Tradabilité : slippage estimé par BOOK-WALKING du carnet
+                    # réel, puis modèle des fills, puis fallback prudent 5 bps.
                     _trad_s = 1.0
                     try:
                         _slip_avg = None
@@ -3104,19 +3073,27 @@ async def live_trading_loop():
 
                     # ===== APPLICATION DU PIPELINE UNIFIÉ (ordre documenté + tracé) =====
                     try:
+                        # LOT 2 (mandat) : conviction calibrée (edge net + niveau, borné)
+                        _conv_res = conviction_engine.calibrate(
+                            signal=final_signal,
+                            win_rate=win_tracker.get(_dom_kelly) if _dom_kelly else None,
+                            has_history=(win_tracker.samples(_dom_kelly) > 0) if _dom_kelly else False,
+                            regime_confidence=(
+                                STATE.get("regime_confidence", {}).get("confidence")
+                                if isinstance(STATE.get("regime_confidence"), dict) else None),
+                        )
+                        STATE["last_conviction"] = _conv_res
+                        _conv_value = float(_conv_res["conviction"])
+                    except Exception as _ce:
+                        _conv_value = calibrated_conviction(
+                            final_signal,
+                            win_tracker.get(_dom_kelly) if _dom_kelly else None)
+                    try:
                         _pipe = apply_risk_pipeline(
                             base_qty=target_qty,
                             cvar_qty=cvar_qty,
                             max_asset_qty=max_asset_qty,
-                            # Axe 1 (mission intelligence) : conviction CALIBRÉE par le
-                            # win rate réel de la stratégie dominante (meta-labeling —
-                            # la taille reflète la probabilité calibrée de succès, pas
-                            # seulement l'intensité du signal). Le win rate vient du
-                            # tracker réel (lissé EMA, borné 0.45-0.65).
-                            conviction=calibrated_conviction(
-                                final_signal,
-                                win_tracker.get(_dom_kelly) if _dom_kelly else None,
-                            ),
+                            conviction=_conv_value,
                             risk_state_scale=_risk_scale,
                             news_scale=_news_s,
                             macro_scale=_macro_s,
@@ -3143,18 +3120,12 @@ async def live_trading_loop():
                         # + facteur limitant (idée n°1) à partir des steps du pipeline
                         _record_final_scale(symbol, _pipe["final_scale"], len(_pipe["steps"]),
                                             steps=_pipe.get("steps"))
-                        # FIX (trading micro 50$) : avec un signal faible, la taille
-                        # post-pipeline tombe SOUS le min notional (ex. 1,50$ < 3$)
-                        # -> l'exécution REJETTE -> le bot ne trade JAMAIS sur petit
-                        # compte. Comportement UNIQUE DEMO == REAL (fidélité) :
-                        # arrondi d'exécution réaliste — en REAL aussi, un ordre sous
-                        # le min serait rejeté par l'exchange, et le pipeline a déjà
-                        # validé le trade (target_qty > 0). La remontée est bornée :
+                        # FIX micro 50$ : taille post-pipeline sous le min notional ->
+                        # exécution rejetée -> le bot ne trade JAMAIS sur petit compte.
+                        # Arrondi d'exécution DEMO == REAL (fidélité), borné :
                         #   - au min notional (3$ < 200$, 5$ < 1000$, 10$ sinon)
-                        #   - à 80 % du capital (jamais plus, cohérent avec
-                        #     calculate_position_size)
+                        #   - à 80 % du capital (jamais plus)
                         #   - aucun effet si le capital ne permet pas le min
-                        # Le risque reste donc plafonné au min notional réel.
                         try:
                             if target_qty > 0:
                                 _mn = min_notional_for_capital(STATE[active_balance_key])
@@ -3200,12 +3171,33 @@ async def live_trading_loop():
                             base_threshold=None)
                     except Exception:
                         pass
-                    target_direction = np.sign(final_signal) if abs(final_signal) > STATE.get("conviction_threshold", 0.15) else 0.0
-                    # VISION §4b: explicit NO_TRADE decision when abstaining
-                    if target_direction == 0.0 and final_signal != 0.0:
-                        decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
-                                        [f"regime={STATE.get('regime_name','')}", f"moe={STATE.get('moe_gate',{})}"],
-                                        STATE["no_trade_stats"], db)
+                    # LOT 2 (mandat) : TRADE/WAIT explicite (la taille reste au Risk Engine)
+                    try:
+                        _opp = trade_opportunity.evaluate(
+                            signal=final_signal,
+                            conviction=STATE.get("last_conviction", {}).get("conviction", 0.0),
+                            threshold=STATE.get("conviction_threshold", 0.15),
+                            win_rate=STATE.get("last_conviction", {}).get("win_rate"),
+                            edge_net=STATE.get("last_conviction", {}).get("edge_net"),
+                            uncalibrated=bool(STATE.get("last_conviction", {}).get("uncalibrated", False)),
+                            risk_state=risk_state.state,
+                        )
+                        STATE["last_opportunity"] = _opp
+                        if _opp["decision"] == "TRADE":
+                            target_direction = np.sign(final_signal)
+                        else:
+                            target_direction = 0.0
+                            if final_signal != 0.0:
+                                decide_no_trade(symbol, final_signal,
+                                                STATE.get("conviction_threshold", 0.15),
+                                                [f"OPP:{_opp['reason']} | {_opp['detail'][:70]}"],
+                                                STATE["no_trade_stats"], db)
+                    except Exception as _oe:
+                        # repli : comportement pré-LOT 2 (seuil seul)
+                        target_direction = np.sign(final_signal) if abs(final_signal) > STATE.get("conviction_threshold", 0.15) else 0.0
+                        if target_direction == 0.0 and final_signal != 0.0:
+                            decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
+                                            [f"OPP fallback: {_oe}"], STATE["no_trade_stats"], db)
 
                     # ===== FILTRE D'ENTRÉE « RR MINIMAL » (PDF Pilier F, exigences 3-5) =====
                     # On n'entre que si : RR >= requis (adaptatif régime/vol) ET
@@ -3316,6 +3308,14 @@ async def live_trading_loop():
                                 f"(<{cooldown_s:.0f}s). Skipping duplicate order."
                             )
                             continue
+
+                        # LOT 2 : conviction de CE trade mémorisée (calibration à la clôture)
+                        try:
+                            STATE.setdefault("last_conviction_per_symbol", {})[symbol] = {
+                                "conviction": STATE.get("last_conviction", {}).get("conviction", 0.0),
+                                "ts": time.time()}
+                        except Exception:
+                            pass
 
                         trade_qty_formatted = format_exchange_size(symbol, abs(trade_qty), execution_price)
 

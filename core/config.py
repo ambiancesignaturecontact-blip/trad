@@ -138,6 +138,14 @@ _DEFAULTS: dict[str, Any] = {
     "execution": {
         "cvar_limit_pct": 0.025,
     },
+    # LOT 2 (mandat) : Conviction Engine — niveaux, exécution, calibration
+    "conviction": {
+        "high_conviction_threshold": 0.25,
+        "low_conviction_threshold": 0.15,
+        "execution_risk_slippage_bps": 50.0,
+        "uncalibrated_signal_max": 0.12,
+        "low_regime_confidence": 0.35,
+    },
     "strategies": {
         "all_enabled": True,
         "enable_stat_arb": True,
