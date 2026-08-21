@@ -58,6 +58,13 @@ from core.regime_autonomy import RegimeAutonomy
 # LOT D (F4) : détection de drift par PSI (online learning) — surveille la
 # distribution des features clés et accélère l'oubli du bandit au drift.
 from core.drift_psi import MultiAssetDriftMonitor, run_drift_check
+# LOT F (F6) : alertes opérationnelles automatiques (Telegram) — circuit
+# breaker, drift sévère, transitions d'état. Dédupliquées, jamais bloquantes.
+from core.ops_alerts import (
+    circuit_breaker_text,
+    maybe_alert_drift_transition,
+    send_ops_alert,
+)
 from core.research_discipline import live_p_value, meta_label_filter
 from core.risk_committee import RiskCommittee
 from core.risk_pipeline import (
@@ -221,9 +228,7 @@ regime_detector = MarketRegimeDetector()
 price_predictor = LSTMLikePredictor(input_dim=5, hidden_dim=24)  # deeper LSTM (audit B9-1)
 ppo_agent = PPOTRAgent(state_dim=4, action_dim=1)
 
-# LOT B (F2) : autonomie stratégique — facteur d'agressivité de risque piloté
-# par le régime HMM (jamais > 1.25x la config de base, drawdowns jamais
-# élargis). Appliqué à risk_manager via apply_regime_factor() à chaque tick.
+# LOT B (F2) : facteur d'agressivité de risque piloté par le régime HMM (borné, drawdowns jamais élargis).
 regime_autonomy = RegimeAutonomy()
 
 # LOT D (F4) : moniteur de drift PSI MULTI-ACTIFS — fenêtres de
@@ -2575,11 +2580,8 @@ async def live_trading_loop():
                     except Exception:
                         pass
 
-                    # LOT B (F2) : AUTONOMIE STRATÉGIQUE — auto-adaptation BORNÉE
-                    # des paramètres de risque au régime HMM. Facteur lissé EMA,
-                    # borné [FACTOR_MIN, FACTOR_MAX] (jamais > 1.25x la config de
-                    # base) ; les drawdowns ne sont JAMAIS élargis. Même chemin
-                    # de code en DEMO et en REAL (aucun flag de mode ici).
+                    # LOT B (F2) : autonomie stratégique — facteur de risque par
+                    # régime HMM (borné [0.60, 1.25], drawdowns jamais élargis).
                     try:
                         _regime_conf = STATE.get("regime_confidence", {})
                         _rconf = float(_regime_conf.get("confidence", 0.5)) \
@@ -2595,19 +2597,17 @@ async def live_trading_loop():
                         logger.warning(f"Regime autonomy failed ({_ra_e}) — facteur 1.0 (config de base).")
                         STATE["regime_autonomy"] = {"enabled": False, "error": str(_ra_e)}
 
-                    # LOT D (F4, corrigé) : DÉTECTION DE DRIFT — PSI MULTI-ACTIFS
-                    # (distribution des features par actif, pire cas global)
-                    # FUSIONNÉ au CUSUM (erreur de prédiction du modèle). Drift
-                    # sévère -> oubli du bandit ACCÉLÉRÉ. Jamais bloquant.
+                    # LOT D (F4) : drift PSI multi-actifs + CUSUM ; LOT F (F6) : alerte auto
+                    _drift_status_before = STATE.get("drift_psi", {}).get("unified", {}).get("status")
                     run_drift_check(STATE, db, drift_monitor, meta_engine, audit_ip,
                                     logger=logger, symbols=list(STATE["assets"].keys()))
+                    asyncio.create_task(maybe_alert_drift_transition(telegram_bot, STATE, _drift_status_before))
 
-                    # Predict temporal change using our true pure NumPy LSTM Deep Neural Network!
+                    # Predict temporal change using our true pure NumPy LSTM
                     seq_features = df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0).values[-5:]
                     STATE["ml_prediction_pct"] = float(price_predictor.predict(seq_features))
 
-                    # MLOPS CONCEPT DRIFT DETECTOR:
-                    # Track prediction error, and automatically trigger retraining on the fly if CUSUM drift occurs!
+                    # MLOPS CONCEPT DRIFT DETECTOR: prediction error -> retraining auto si CUSUM
                     actual_return = recent_returns[-1] if len(recent_returns) > 0 else 0.0
                     try:
                         platform_metrics.AI_MODEL_ERROR.labels(model="price_lstm").set(
@@ -2618,23 +2618,15 @@ async def live_trading_loop():
                     if mlops_trainer.track_prediction_error_and_detect_drift(STATE["ml_prediction_pct"], actual_return):
                         logger.warning("MLOPS DETECTED CONCEPT DRIFT. TRIGGERING AUTOMATIC RETRAINING PIPELINE!")
                         mlops_trainer.execute_pipeline(df)
-                        # LOT D (F4, corrigé) : FUSION CUSUM + PSI — un drift de
-                        # prédiction est aussi un signal d'oubli accéléré pour le
-                        # bandit (l'edge des stratégies peut avoir changé). Le flag
-                        # reste actif DRIFT_CUSUM_HOLD_SECONDS puis retombe.
+                        # LOT D (F4) : fusion CUSUM+PSI — le drift de prédiction accélère l'oubli du bandit
                         try:
-                            STATE["drift_cusum"] = {"detected": True,
-                                                    "ts": time.time(),
+                            STATE["drift_cusum"] = {"detected": True, "ts": time.time(),
                                                     "detail": "erreur de prédiction LSTM (CUSUM)"}
-                            # accélération immédiate (le prochain tick PSI
-                            # confirmera via la fusion)
                             from core.drift_psi import BANDIT_DECAY_DRIFT
-                            meta_engine.set_bandit_decay(
-                                min(meta_engine.bandit_decay, BANDIT_DECAY_DRIFT))
-                            db.add_audit_log(
-                                "DRIFT_CUSUM_DETECTED", audit_ip(),
-                                f"Concept drift CUSUM détecté — retraining + oubli bandit "
-                                f"{meta_engine.bandit_decay:.4f} (fusion PSI/CUSUM).")
+                            meta_engine.set_bandit_decay(min(meta_engine.bandit_decay, BANDIT_DECAY_DRIFT))
+                            db.add_audit_log("DRIFT_CUSUM_DETECTED", audit_ip(),
+                                             f"Concept drift CUSUM — retraining + oubli bandit "
+                                             f"{meta_engine.bandit_decay:.4f} (fusion PSI/CUSUM).")
                         except Exception as _cu_e:
                             logger.warning(f"CUSUM drift flag failed ({_cu_e})")
 
@@ -3797,6 +3789,7 @@ async def live_trading_loop():
         if tripped:
             STATE["kill_switch_active"] = True
             STATE["is_running"] = False
+            _flattened_count = 0
 
             # Flat close exposures (prix réel connu uniquement)
             for p in updated_positions:
@@ -3811,6 +3804,7 @@ async def live_trading_loop():
                         client.create_order(symbol=p['symbol'].replace("USDT", "/USDT"), type='market', side='sell', amount=p['qty'])
                     close_val = p['qty'] * asset_price * 0.999
                     STATE[active_balance_key] += close_val
+                    _flattened_count += 1
                     db.update_position(p['symbol'], 0, 0, active_mode)
                     db.add_order(
                         symbol=p['symbol'],
@@ -3825,6 +3819,9 @@ async def live_trading_loop():
                 except Exception as exc:
                     logger.error(f"Failed during circuit breaker exposure flatting: {str(exc)}")
             db.add_audit_log("CIRCUIT_BREAKER_TRIPPED", audit_ip(), f"EMERGENCY KILL SWITCH ENGAGED: {msg}")
+            # LOT F (F6) : alerte auto kill switch (runbook §5)
+            asyncio.create_task(send_ops_alert(telegram_bot, STATE, "circuit_breaker",
+                                               circuit_breaker_text(msg, _flattened_count, active_mode), force=True))
             # LOT 2 (PDF Pilier G) : le circuit breaker déclenche la machine à
             # états -> HALT (cool-down + redémarrage progressif ensuite).
             risk_state.enter(RiskStateMachine.HALT, f"CIRCUIT_BREAKER:{msg[:80]}")

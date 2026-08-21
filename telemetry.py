@@ -114,6 +114,8 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "mode": STATE["mode"],
         "is_running": STATE["is_running"],
         "kill_switch_active": STATE["kill_switch_active"],
+        # LOT F (F6) : derniers envois d'alertes opérationnelles (transparence)
+        "ops_alerts_last_ts": STATE.get("ops_alerts_last_ts", {}),
         "last_price": STATE["last_price"],
         "price_history": STATE["price_history"],
         "order_book": STATE["order_book"],

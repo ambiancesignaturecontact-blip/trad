@@ -83,3 +83,69 @@ python scripts/restore_backup.py backups/trading_platform_YYYYMMDD_HHMMSS.db
 - Snapshot SQLite quotidien (`backups/`, rétention 14).
 - PostgreSQL : backups gérés par Supabase (recommandés).
 - Export settings JSON à chaque backup.
+
+---
+
+# LOT F (F6) : procédures drift / drawdown / HALT + autonomie opérationnelle
+
+> Ces procédures complètent les sections 1-6. Les alertes Telegram automatiques
+> (LOT F) préviennent l'opérateur sur : kill switch (circuit breaker), drift
+> sévère détecté / résorbé. Sans config Telegram, le bot reste en mode
+> alert-silent : les événements sont quand même dans les logs et l'audit log.
+
+## 7. DRIFT (distribution des features changée)
+
+**Symptômes** : alerte `🧨 DRIFT SÉVÈRE DÉTECTÉ` (Telegram) · log `📈 DRIFT SEVERE` · audit `DRIFT_PSI_SEVERE` · `drift_psi.status = SEVERE` dans `/api/telemetry`.
+
+**Ce que fait le bot automatiquement (ne rien faire)**
+- L'oubli du bandit Thompson est accéléré (decay 0.98 → 0.92, demi-vie ~8 MAJ) : le système arrête de récompenser un edge mort et ré-explore.
+- Le PSI est calculé par actif sur 3 mois de référence (seuil sévère 0.60) et fusionné au CUSUM (erreur de prédiction LSTM → retraining auto).
+
+**Procédure opérationnelle**
+1. `curl -s localhost:8080/api/telemetry | jq .drift_psi` → regarder `per_asset` : QUEL actif est SEVERE, quelle feature (returns_1 / returns_abs).
+2. Si l'actif est EURUSD/FX : vérifier un vrai changement de régime (tendance récente) — c'est un SIGNAL, pas un bug.
+3. Si l'alerte persiste > 48h : vérifier la source de données (Yahoo 429 ? volumes fallback ?) dans les logs `Failed to fetch`.
+4. Aucune action de réarmement nécessaire : le retour sous le seuil déclenche `✅ DRIFT RÉSORBÉ` et le decay revient à 0.98 automatiquement.
+
+## 8. DRAWDOWN / KILL SWITCH (circuit breaker)
+
+**Symptômes** : alerte `🚨 KILL SWITCH ENGAGÉ — CIRCUIT BREAKER` (Telegram) · audit `CIRCUIT_BREAKER_TRIPPED` · `kill_switch_active=true` · log `DAILY DRAWDOWN BREACHED` ou `MAX LIFETIME DRAWDOWN BREACHED`.
+
+**Ce que fait le bot automatiquement**
+- Arrêt immédiat des nouveaux ordres (`is_running=false`).
+- Positions ouvertes FLATTEN (prix réel connu uniquement ; sinon action manuelle signalée en log).
+- Machine à états → HALT → redémarrage progressif automatique (25 % → 50 % → 75 % → 100 % sur 2 h) **après le cool-down** (15 min) — mais le kill switch reste actif tant que `kill_switch_active=true`.
+
+**Procédure opérationnelle**
+1. **Ne pas réarmer immédiatement.** Diagnostiquer d'abord : quel drawdown (quotidien vs lifetime) ? Quelle taille de compte (micro 18 %/35 %, small 10 %/20 %, institutionnel 2.5 %/8 %) ?
+2. Lire le contexte : `/api/telemetry` → `equity_history`, positions liquidées dans l'audit log, PnL net (`pnl_account_ccy`).
+3. Cause probable : marché en forte volatilité (régime bear/erratic → le facteur LOT B a réduit les tailles, mais pas toujours assez vite) ou une stratégie défaillante (voir `strategy_win_rates`).
+4. Réarmer manuellement quand la cause est comprise : `POST /api/toggle-bot {"is_running": true}` (ou bouton Telegram). Le HALT reste en cool-down : le redémarrage des tailles est progressif.
+5. Si lifetime drawdown atteint : considérer un arrêt prolongé et une revue complète (le capital est protégé par conception, pas par réparation).
+
+## 9. HALT (machine à états NORMAL/CAUTION/HALT)
+
+**Symptômes** : alerte `🔴 CHANGEMENT D'ÉTAT RISQUE` (Telegram) · log `RISK STATE -> HALT` · `risk_state.state = HALT` dans `/api/telemetry` · audit selon la raison (NEWS_SHOCK, MACRO_ACTIVE, CIRCUIT_BREAKER, SOURCE_DIVERGENCE).
+
+**Ce que fait le bot automatiquement**
+- Aucun nouvel ordre tant que HALT (la protection des positions existantes reste active).
+- Cool-down `halt_cooldown_minutes` (15 min) puis redémarrage progressif automatique (25 % → 50 % → 75 % → 100 % sur 2 h) si la cause a disparu.
+
+**Procédure opérationnelle**
+1. Lire `risk_state.reason` (toujours explicite : news_shock, macro_event, circuit_breaker, source_divergence).
+2. **NEWS_SHOCK / MACRO** : attendre la fin de l'événement (le bot repart seul après cool-down + progression).
+3. **SOURCE_DIVERGENCE** : vérifier les sources de prix (`price_consensus` dans telemetry) ; si une source est morte, le bot réduit au lieu de bloquer.
+4. **CIRCUIT_BREAKER** : voir §8 — ne pas réarmer sans diagnostic.
+5. Réinitialisation manuelle (après diagnostic uniquement) : endpoint d'état risque (Telegram `/risk_reset` ou API).
+
+## 10. AUTONOMIE OPÉRATIONNELLE — ce qui est automatique vs ce qui exige l'opérateur
+
+| Réglage | Automatique (LOT B/D/F) | Exige l'opérateur |
+|---|---|---|
+| Taille Kelly / plafond par actif / drawdowns | ✅ par régime HMM (LOT B, borné [0.60, 1.25], jamais > 1.25×) | — |
+| Oubli du bandit (allocation stratégies) | ✅ par drift PSI + CUSUM (LOT D, borné [0.85, 0.995]) | — |
+| Redémarrage après HALT | ✅ progressif automatique (2 h) | — |
+| Kill switch (drawdown) | ✅ déclenché automatiquement | ⚠️ **réarmement manuel** après diagnostic (jamais automatique — par conception) |
+| Passage DEMO → REAL | ❌ jamais automatique | ⚠️ **manuel uniquement** (paper-validation 28 jours datés requis, P0-6) |
+| Réglage des seuils | ✅ via config.yaml (sans code) | — |
+| Alertes opérationnelles | ✅ Telegram auto (kill switch, drift) | ⚠️ configurer `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` pour les recevoir |
