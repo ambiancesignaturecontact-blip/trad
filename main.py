@@ -2829,7 +2829,7 @@ async def live_trading_loop():
                         # + facteur limitant (idée n°1) à partir des steps du pipeline
                         _record_final_scale(symbol, _pipe["final_scale"], len(_pipe["steps"]),
                                             steps=_pipe.get("steps"))
-                        # FIX micro 50$ : taille sous min notional -> arrondi d'exécution
+                        # FIX (trading micro 50$) : taille sous min notional -> arrondi d'exécution
                         # DEMO == REAL, borné au min (3$/5$/10$) et à 80 % du capital.
                         try:
                             if target_qty > 0:
@@ -2898,19 +2898,6 @@ async def live_trading_loop():
                             adversarial=STATE.get("last_adversarial"),
                         )
                         STATE["last_opportunity"] = _opp
-                        # LOT 3 : journal de décision (complété exécution puis clôture)
-                        _dj_id = journal_decision(
-                            db, _opp["decision"], symbol, STATE.get("regime_name", ""),
-                            final_signal, STATE.get("last_conviction", {}).get("conviction", 0.0),
-                            STATE.get("last_conviction", {}).get("level", ""),
-                            _opp.get("edge_net"), STATE.get("last_conviction", {}).get("win_rate"),
-                            _opp.get("reason", ""), _opp.get("detail", ""),
-                            STATE.get("conviction_threshold", 0.15), risk_state.state,
-                            strategy=_dom_early, payload={"sources": STATE.get("last_conviction", {})},
-                            # LOT 9 : version du système (gouvernance)
-                            system_version=SYSTEM_SNAPSHOT["system_version"],
-                            config_hash=SYSTEM_SNAPSHOT["config_hash"])
-                        STATE.setdefault("decision_journal_per_symbol", {})[symbol] = {"id": _dj_id, "ts": time.time()}
                         if _opp["decision"] == "TRADE":
                             target_direction = np.sign(final_signal)
                         else:
@@ -2927,6 +2914,12 @@ async def live_trading_loop():
                             decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
                                             [f"OPP fallback: {_oe}"], STATE["no_trade_stats"], db)
 
+                    # PHASE 2 (audit) : le journal de décision est déplacé à la décision
+                    # FINALE (après les gates) — preuve : 112 TRADE journalisés sans fill
+                    # en 19h (les gates aval annulaient). Ici on capture la raison de la
+                    # dernière gate bloquante.
+                    _gate_block = None
+
                     # ===== FILTRE D'ENTRÉE « RR MINIMAL » (PDF Pilier F, exigences 3-5) =====
                     # On n'entre que si : RR >= requis (adaptatif régime/vol) ET
                     # asymétrie nette positive (edge > coûts). Mentalité n°7.
@@ -2940,8 +2933,9 @@ async def live_trading_loop():
                             cost_pct=ROUND_TRIP_COST_PCT,
                         )
                         if not _rr_ok:
+                            _gate_block = f"RR filter: {_rr_reason}"
                             decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
-                                            [f"RR filter: {_rr_reason}"], STATE["no_trade_stats"], db)
+                                            [_gate_block], STATE["no_trade_stats"], db)
                             target_direction = 0.0
                         else:
                             STATE["last_rr_check"] = {"rr": REWARD_RISK_RATIO, "ok": True, "reason": _rr_reason}
@@ -2949,8 +2943,9 @@ async def live_trading_loop():
                     # ===== GATE MACHINE À ÉTATS (PDF Faille 3) : HALT = AUCUN nouvel ordre =====
                     # La protection des positions existantes reste active (atomicité, Pilier G).
                     if target_direction != 0.0 and risk_state.state == RiskStateMachine.HALT:
+                        _gate_block = f"HALT: {risk_state.reason}"
                         decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
-                                        [f"HALT: {risk_state.reason}"], STATE["no_trade_stats"], db)
+                                        [_gate_block], STATE["no_trade_stats"], db)
                         target_direction = 0.0
 
                     # ===== GATES ORDER FLOW (LOT 3, PDF Pilier H a/b) =====
@@ -2959,16 +2954,18 @@ async def live_trading_loop():
                         # (a) ne jamais entrer CONTRE un flux agressif dominant
                         _avoid, _avoid_reason = order_flow.should_avoid_entry(symbol, _side_tmp)
                         if _avoid:
+                            _gate_block = _avoid_reason
                             decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
-                                            [_avoid_reason], STATE["no_trade_stats"], db)
+                                            [_gate_block], STATE["no_trade_stats"], db)
                             target_direction = 0.0
                         else:
                             # (b) cascade de liquidations -> attendre la fin (ne pas
                             # acheter la panique, mentalité n°1 : survivre d'abord)
                             _casc, _casc_reason = order_flow.wait_cascade_end(symbol)
                             if _casc and _side_tmp == "BUY":
+                                _gate_block = _casc_reason
                                 decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
-                                                [_casc_reason], STATE["no_trade_stats"], db)
+                                                [_gate_block], STATE["no_trade_stats"], db)
                                 target_direction = 0.0
 
                     # LOT 6 : PYRAMIDING CONTRÔLÉ (gagnants, RR, max 2 ; JAMAIS moyenne à la baisse)
@@ -2985,22 +2982,47 @@ async def live_trading_loop():
                                         reward_risk=REWARD_RISK_RATIO,
                                         min_rr=1.5, max_additions=2, additions=_pyr_n)
                                     if not _pyr_ok:
+                                        _gate_block = _pyr_reason
                                         decide_no_trade(symbol, final_signal,
                                                         STATE.get("conviction_threshold", 0.15),
-                                                        [_pyr_reason], STATE["no_trade_stats"], db)
+                                                        [_gate_block], STATE["no_trade_stats"], db)
                                         target_direction = 0.0
                                     else:
                                         logger.info(f"📈 {_pyr_reason} -> ajout autorisé ({symbol})")
                             else:
                                 # NETTING : retournement contre la position existante -> signal FORT exigé, sinon s'abstenir
                                 if abs(final_signal) < 1.5 * STATE.get("conviction_threshold", 0.15):
+                                    _gate_block = "netting: retournement sans signal fort (anti auto-contre-trade)"
                                     decide_no_trade(symbol, final_signal,
                                                     STATE.get("conviction_threshold", 0.15),
-                                                    ["netting: retournement sans signal fort (anti auto-contre-trade)"],
-                                                    STATE["no_trade_stats"], db)
+                                                    [_gate_block], STATE["no_trade_stats"], db)
                                     target_direction = 0.0
                     except Exception as _py:
                         logger.debug(f"Pyramiding/netting check failed: {_py}")
+
+                    # PHASE 2 : journal de décision à la décision FINALE (après TOUTES
+                    # les gates) — fidélité : TRADE seulement si l'ordre part réellement.
+                    try:
+                        _dj_opp = STATE.get("last_opportunity", {})
+                        _dj_decision = "TRADE" if target_direction != 0.0 else "WAIT"
+                        _dj_reason = (_dj_opp.get("reason", "conviction")
+                                      if _dj_decision == "TRADE"
+                                      else (_gate_block or _dj_opp.get("reason", "conviction")))
+                        _dj_detail = (_dj_opp.get("detail", "") if _dj_decision == "TRADE"
+                                      else (_gate_block or _dj_opp.get("detail", "")))
+                        _dj_id = journal_decision(
+                            db, _dj_decision, symbol, STATE.get("regime_name", ""),
+                            final_signal, STATE.get("last_conviction", {}).get("conviction", 0.0),
+                            STATE.get("last_conviction", {}).get("level", ""),
+                            _dj_opp.get("edge_net"), STATE.get("last_conviction", {}).get("win_rate"),
+                            _dj_reason, _dj_detail,
+                            STATE.get("conviction_threshold", 0.15), risk_state.state,
+                            strategy=_dom_early, payload={"sources": STATE.get("last_conviction", {})},
+                            system_version=SYSTEM_SNAPSHOT["system_version"],
+                            config_hash=SYSTEM_SNAPSHOT["config_hash"])
+                        STATE.setdefault("decision_journal_per_symbol", {})[symbol] = {"id": _dj_id, "ts": time.time()}
+                    except Exception as _dje:
+                        logger.debug(f"journal final failed: {_dje}")
 
                     desired_qty = target_direction * target_qty
                     trade_qty = desired_qty - pos_qty

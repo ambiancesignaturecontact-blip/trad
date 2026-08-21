@@ -284,3 +284,32 @@ class TestNoTradeBuckets:
         assert _no_trade_bucket("|signal| 0.2 < seuil 0.3 | OPP:EDGE_INSUFFICIENT | edge net -0.01 <= 0") == "edge_insufficient"
         assert _no_trade_bucket("OPP:UNCALIBRATED | setup intéressant mais conviction non calibrée") == "uncalibrated"
         assert _no_trade_bucket("OPP:EXECUTION_RISK | slippage attendu 80 bps") == "execution_risk"
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 2 — régression : la décision d'entrée suit la conviction calibrée
+# --------------------------------------------------------------------------- #
+class TestCalibratedEntry:
+    def test_strong_signal_low_calibration_waits(self):
+        """Un signal fort (0.13) mais calibré sous le seuil (0.078, win rate
+        0.45 -> x0.60) est WAIT — preuve : 24 TRADE avec niveau NO_TRADE."""
+        e = TradeOpportunityEngine()
+        r = e.evaluate(signal=0.13, conviction=0.078, threshold=0.08,
+                       edge_net=0.20, risk_state="NORMAL")
+        assert r["decision"] == "WAIT"
+        assert r["reason"] == WAIT_CONVICTION
+        assert "conviction calibrée" in r["detail"]
+
+    def test_calibrated_conviction_above_threshold_trades(self):
+        e = TradeOpportunityEngine()
+        r = e.evaluate(signal=0.13, conviction=0.09, threshold=0.08,
+                       edge_net=0.20, risk_state="NORMAL")
+        assert r["decision"] == "TRADE"
+
+    def test_legacy_behaviour_preserved_when_calibration_neutral(self):
+        """Sans win rate (conviction == signal), le comportement est identique."""
+        e = TradeOpportunityEngine()
+        assert e.evaluate(signal=0.05, conviction=0.05, threshold=0.08,
+                          risk_state="NORMAL")["decision"] == "WAIT"
+        assert e.evaluate(signal=0.20, conviction=0.20, threshold=0.08,
+                          edge_net=0.25, risk_state="NORMAL")["decision"] == "TRADE"

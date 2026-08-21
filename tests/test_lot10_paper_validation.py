@@ -223,3 +223,47 @@ class TestExposure:
         import inspect
         src = inspect.getsource(build_paper_validation_report)
         assert "active_mode" not in src
+
+
+# --------------------------------------------------------------------------- #
+# 6. PHASE 2 — régression : le journal reflète la décision FINALE
+# --------------------------------------------------------------------------- #
+class TestJournalFinalDecision:
+    def test_journal_recorded_after_all_gates(self):
+        """PHASE 2 (audit) : l'appel journal_decision est APRÈS les gates
+        (RR filter, HALT, order flow, cascade, pyramiding, netting) — preuve
+        du bug : 112 TRADE journalisés sans fill en 19h."""
+        src = (ROOT / "main.py").read_text(encoding="utf-8")
+        i_gate_init = src.find("_gate_block = None")
+        i_journal = src.find("_dj_id = journal_decision(")
+        i_desired = src.find("desired_qty = target_direction * target_qty")
+        assert i_gate_init != -1 and i_journal != -1 and i_desired != -1
+        # le journal vient APRÈS l'init de la capture de gate et APRÈS le bloc gates
+        assert i_gate_init < i_journal < i_desired
+
+    def test_gate_block_captured_in_each_gate(self):
+        """Chaque gate qui annule capture sa raison (fidélité du journal)."""
+        src = (ROOT / "main.py").read_text(encoding="utf-8")
+        for marker in ("RR filter: {_rr_reason}", "HALT: {risk_state.reason}",
+                       "_gate_block = _avoid_reason", "_gate_block = _casc_reason",
+                       "_gate_block = _pyr_reason",
+                       "netting: retournement sans signal fort"):
+            assert marker in src, f"gate reason non capturée : {marker}"
+
+    def test_journal_uses_final_decision(self):
+        """La décision journalisée est TRADE seulement si target_direction != 0."""
+        src = (ROOT / "main.py").read_text(encoding="utf-8")
+        assert '_dj_decision = "TRADE" if target_direction != 0.0 else "WAIT"' in src
+        # la raison d'un WAIT par gate est le _gate_block
+        assert "_gate_block or _dj_opp.get(\"reason\", \"conviction\")" in src
+
+    def test_no_journal_in_evaluate_block(self):
+        """Aucun appel journal_decision avant le bloc des gates."""
+        src = (ROOT / "main.py").read_text(encoding="utf-8")
+        i_eval = src.find("_opp = trade_opportunity.evaluate(")
+        i_journal = src.find("_dj_id = journal_decision(")
+        assert 0 < i_eval < i_journal
+        # entre evaluate et le journal, les gates sont présentes
+        between = src[i_eval:i_journal]
+        assert "GATES ORDER FLOW" in between or "FILTRE D'ENTRÉE" in between \
+            or "PYRAMIDING" in between

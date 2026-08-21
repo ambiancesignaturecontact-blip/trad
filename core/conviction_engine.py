@@ -321,9 +321,15 @@ class TradeOpportunityEngine:
         if risk_state == "HALT":
             return self._wait(WAIT_HALT, "machine à états HALT — aucun nouvel ordre", conv, edge_net)
 
-        if abs(sig) < threshold:
+        # PHASE 2 (audit) : la décision d'entrée est pilotée par la CONVICTION
+        # CALIBRÉE (signal × facteur win rate), pas par le signal brut —
+        # preuve : 24 décisions TRADE avec niveau NO_TRADE (conviction < seuil
+        # quand le win rate est faible). Un signal fort mais calibré sous le
+        # seuil n'est pas une entrée justifiée.
+        if conv < threshold:
             return self._wait(WAIT_CONVICTION,
-                              f"|signal| {abs(sig):.3f} < seuil {threshold:.3f}", conv, edge_net)
+                              f"conviction calibrée {conv:.3f} < seuil {threshold:.3f} "
+                              f"(|signal| brut {abs(sig):.3f})", conv, edge_net)
 
         if edge_net is not None and edge_net <= 0.0:
             return self._wait(WAIT_EDGE_INSUFFICIENT,
