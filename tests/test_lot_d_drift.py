@@ -25,11 +25,13 @@ from core.drift_psi import (
     PSI_SEVERE_THRESHOLD,
     PSI_STABLE_THRESHOLD,
     DriftMonitor,
+    MultiAssetDriftMonitor,
     bandit_decay_for_psi,
     compute_psi,
     extract_psi_features,
     psi_status,
     run_drift_check,
+    unified_drift_state,
 )
 from strategies.engine import BANDIT_DECAY, MetaAllocationEngine, TrendFollowingStrategy
 
@@ -81,9 +83,11 @@ class TestPsiMath:
 # --------------------------------------------------------------------------- #
 class TestStatusAndDecay:
     def test_status_thresholds(self):
+        # seuils MARCHÉ (LOT D calibré : le crédit 0.10/0.25 -> SEVERE permanent)
         assert psi_status(0.05) == "STABLE"
-        assert psi_status(0.15) == "MODERATE"
-        assert psi_status(0.40) == "SEVERE"
+        assert psi_status(0.20) == "STABLE"
+        assert psi_status(0.45) == "MODERATE"
+        assert psi_status(0.80) == "SEVERE"
         assert psi_status(PSI_STABLE_THRESHOLD) == "MODERATE"
         assert psi_status(PSI_SEVERE_THRESHOLD) == "SEVERE"
 
@@ -91,11 +95,14 @@ class TestStatusAndDecay:
         """Pas de drift -> decay nominal (0.98, comportement pré-LOT D)."""
         assert bandit_decay_for_psi(0.02) == pytest.approx(BANDIT_DECAY_STABLE)
         assert bandit_decay_for_psi(0.0) == pytest.approx(BANDIT_DECAY_STABLE)
+        assert bandit_decay_for_psi(0.20) == pytest.approx(BANDIT_DECAY_STABLE)
 
     def test_decay_accelerated_when_severe(self):
         """Drift sévère -> oubli accéléré (decay plus faible)."""
-        assert bandit_decay_for_psi(0.40) == pytest.approx(BANDIT_DECAY_DRIFT)
-        assert bandit_decay_for_psi(0.40) < bandit_decay_for_psi(0.02)
+        assert bandit_decay_for_psi(0.80) == pytest.approx(BANDIT_DECAY_DRIFT)
+        assert bandit_decay_for_psi(0.80) < bandit_decay_for_psi(0.02)
+        # modéré : interpolation (accélération douce)
+        assert bandit_decay_for_psi(0.45) < bandit_decay_for_psi(0.20)
 
     def test_decay_bounded_hard(self):
         """Bornes dures : jamais d'oubli total ni de mémoire infinie."""
@@ -243,8 +250,9 @@ class TestDemoEqualsReal:
             "close": np.linspace(100, 110, 600),
             "volume": np.linspace(1000, 1100, 600),
         })
-        d1 = DriftMonitor().update(df)
-        d2 = DriftMonitor().update(df)
+        m1, m2 = (DriftMonitor(reference_window=400, recent_window=150) for _ in range(2))
+        d1 = m1.update(df)
+        d2 = m2.update(df)
         assert d1["max_psi"] == d2["max_psi"]
         assert d1["bandit_decay_recommended"] == d2["bandit_decay_recommended"]
 
@@ -303,7 +311,10 @@ class TestRunDriftCheck:
 
         state = self._state()
         monkeypatch.setattr(dp, "PSI_INTERVAL_SECONDS", 0.0)   # toujours à jour
-        out = run_drift_check(state, FakeDB(), DriftMonitor(), engine, lambda: "ip")
+        mon = MultiAssetDriftMonitor(symbols=["BTCUSDT"],
+                                     reference_window=400, recent_window=150)
+        out = run_drift_check(state, FakeDB(), mon, engine, lambda: "ip",
+                              load_limit=700)
         assert out["status"] == "SEVERE"
         assert state["drift_psi"]["status"] == "SEVERE"
         assert state["drift_psi"]["bandit_decay_applied"] == pytest.approx(BANDIT_DECAY_DRIFT)
@@ -319,6 +330,165 @@ class TestRunDriftCheck:
                 raise RuntimeError("db down")
 
         state = self._state()
-        out = run_drift_check(state, BrokenDB(), DriftMonitor(), engine, lambda: "ip")
+        mon = MultiAssetDriftMonitor(symbols=["BTCUSDT"])
+        out = run_drift_check(state, BrokenDB(), mon, engine, lambda: "ip")
         assert out == {}            # état inchangé
         assert engine.bandit_decay == pytest.approx(BANDIT_DECAY_STABLE)  # nominal
+
+
+# --------------------------------------------------------------------------- #
+# 7. Corrections LOT D : multi-actifs, fusion CUSUM+PSI, minimum de données
+# --------------------------------------------------------------------------- #
+class TestMultiAsset:
+    def _candles(self, n, seed, vol_mul=1.0, shock=0):
+        rng = np.random.default_rng(seed)
+        rets = rng.normal(0.0, 0.01, n)
+        if shock:
+            rets[-shock:] *= vol_mul
+        close = 100.0 * np.exp(np.cumsum(rets))
+        return pd.DataFrame({"open": close, "high": close * 1.001,
+                             "low": close * 0.999, "close": close,
+                             "volume": np.abs(rng.normal(1000, 200, n)) + 50.0})
+
+    def test_max_psi_is_worst_case_across_assets(self):
+        """2 actifs : un plat + un choc de vol -> max_psi = celui du choc."""
+        mon = MultiAssetDriftMonitor(symbols=["BTCUSDT", "ETHUSDT"],
+                                     reference_window=400, recent_window=150)
+        df_flat = self._candles(700, seed=1)
+        df_shock = self._candles(700, seed=2, vol_mul=5.0, shock=150)
+        out = mon.update_all({"BTCUSDT": df_flat, "ETHUSDT": df_shock})
+        assert out["per_asset"]["BTCUSDT"]["status"] in ("STABLE", "MODERATE")
+        assert out["per_asset"]["ETHUSDT"]["status"] == "SEVERE"
+        assert out["status"] == "SEVERE"
+        assert out["max_psi"] == pytest.approx(
+            out["per_asset"]["ETHUSDT"]["max_psi"], abs=1e-6)
+
+    def test_per_asset_exposed(self):
+        mon = MultiAssetDriftMonitor(symbols=["BTCUSDT", "XAUUSD"],
+                                     reference_window=400, recent_window=150)
+        df = self._candles(700, seed=3)
+        out = mon.update_all({"BTCUSDT": df, "XAUUSD": df})
+        assert set(out["per_asset"]) == {"BTCUSDT", "XAUUSD"}
+
+    def test_no_data_no_state_change(self):
+        mon = MultiAssetDriftMonitor(symbols=["BTCUSDT"])
+        out = mon.update_all({})
+        assert out == {} or out.get("per_asset") == {}
+
+
+class TestUnifiedFusion:
+    def test_psi_severe_alone_is_severe(self):
+        u = unified_drift_state(
+            {"status": "SEVERE", "max_psi": 0.6, "bandit_decay_recommended": 0.92},
+            {"detected": False})
+        assert u["status"] == "SEVERE"
+        assert u["sources"]["cusum"] == "OK"
+
+    def test_cusum_alone_is_severe(self):
+        u = unified_drift_state(
+            {"status": "STABLE", "max_psi": 0.02, "bandit_decay_recommended": 0.98},
+            {"detected": True, "ts": 1.0})
+        assert u["status"] == "SEVERE"
+        assert u["bandit_decay_recommended"] == pytest.approx(BANDIT_DECAY_DRIFT)
+
+    def test_both_stable_is_stable(self):
+        u = unified_drift_state(
+            {"status": "STABLE", "max_psi": 0.02, "bandit_decay_recommended": 0.98},
+            {"detected": False})
+        assert u["status"] == "STABLE"
+        assert u["bandit_decay_recommended"] == pytest.approx(BANDIT_DECAY_STABLE)
+
+    def test_moderate_stays_moderate(self):
+        u = unified_drift_state(
+            {"status": "MODERATE", "max_psi": 0.15, "bandit_decay_recommended": 0.95},
+            {"detected": False})
+        assert u["status"] == "MODERATE"
+
+    def test_decay_is_most_aggressive(self):
+        u = unified_drift_state(
+            {"status": "STABLE", "max_psi": 0.02, "bandit_decay_recommended": 0.98},
+            {"detected": True})
+        assert u["bandit_decay_recommended"] <= 0.98
+
+
+class TestMinimumData:
+    def test_insufficient_bars_no_calculation(self):
+        """< 550 barres : pas de calcul (le bruit H0 du PSI est prouvé
+        erratique en dessous — faux SEVERE possible)."""
+        rng = np.random.default_rng(4)
+        n = 400
+        close = 100.0 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+        df = pd.DataFrame({"open": close, "high": close * 1.001,
+                           "low": close * 0.999, "close": close,
+                           "volume": np.abs(rng.normal(1000, 200, n)) + 50.0})
+        m = DriftMonitor()
+        d = m.update(df)
+        assert d["n_updates"] == 0
+        assert d["max_psi"] == 0.0
+        assert d["bandit_decay_recommended"] == pytest.approx(BANDIT_DECAY_STABLE)
+
+    def test_sufficient_bars_calculates(self):
+        """Fenêtres nominales (2000/400) : le calcul exige 2400+ barres."""
+        rng = np.random.default_rng(6)
+        n = 2500
+        close = 100.0 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+        df = pd.DataFrame({"open": close, "high": close * 1.001,
+                           "low": close * 0.999, "close": close,
+                           "volume": np.abs(rng.normal(1000, 200, n)) + 50.0})
+        m = DriftMonitor()
+        d = m.update(df)
+        assert d["n_updates"] == 1
+        assert d["n_bars"] == 2500
+
+    def test_flat_market_nominal_windows_stable(self):
+        """Avec les fenêtres nominales (2000/400), un marché plat reste
+        STABLE (bruit H0 < 0.20 mesuré) — pas de faux SEVERE."""
+        rng = np.random.default_rng(9)
+        n = 2600
+        close = 100.0 * np.exp(np.cumsum(rng.normal(0, 0.01, n)))
+        df = pd.DataFrame({"open": close, "high": close * 1.001,
+                           "low": close * 0.999, "close": close,
+                           "volume": np.abs(rng.normal(1000, 200, n)) + 50.0})
+        m = DriftMonitor()
+        d = m.update(df)
+        assert d["n_updates"] == 1
+        assert d["status"] != "SEVERE"
+        assert d["bandit_decay_recommended"] >= (BANDIT_DECAY_STABLE + BANDIT_DECAY_DRIFT) / 2
+
+
+class TestDeepFetch:
+    def test_binance_url_requests_700_bars(self, monkeypatch):
+        """Le fetch historique demande 700 barres (PSI exige ~550)."""
+        import main  # noqa: F401  (charge d'abord main COMPLET — évite le
+
+        # circular import quand on importe le module extrait seul)
+        import market_data.historical_fetch as hf
+        captured = {}
+
+        class FakeResp:
+            status_code = 200
+            def json(self):
+                return [[1700000000000, "100", "110", "90", "105", "1000"]]
+
+        class FakeClient:
+            async def __aenter__(self): return self
+            async def __aexit__(self, *a): return False
+            async def get(self, url, *a, **k):
+                captured["url"] = url
+                return FakeResp()
+
+        monkeypatch.setattr(hf, "httpx", type("H", (), {"AsyncClient": lambda *a, **k: FakeClient()})())
+        import asyncio
+        df = asyncio.run(hf.fetch_historical_market_data("BTCUSDT"))
+        assert captured["url"] is not None
+        assert "limit=700" in captured["url"]
+        assert not df.empty
+
+    def test_yahoo_range_is_6mo(self):
+        """Le fetch Yahoo utilise range_str=6mo (profondeur PSI)."""
+        import inspect
+
+        import main  # noqa: F401
+        import market_data.historical_fetch as hf
+        src = inspect.getsource(hf)
+        assert 'range_str="6mo"' in src

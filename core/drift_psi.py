@@ -46,11 +46,17 @@ logger = logging.getLogger("InstitutionalTradingBot")  # même canal que main
 # CONFIG (LOT 3 : tout tunable passe par core/config.py / config.yaml)
 # --------------------------------------------------------------------------- #
 PSI_N_BINS: int = settings.get_int("drift", "psi_n_bins", 10)
-PSI_STABLE_THRESHOLD: float = settings.get_float("drift", "psi_stable_threshold", 0.10)
-PSI_SEVERE_THRESHOLD: float = settings.get_float("drift", "psi_severe_threshold", 0.25)
-# Fenêtres (en barres) : référence = historique long, récente = fin de série
-PSI_WINDOW_REFERENCE: int = settings.get_int("drift", "psi_window_reference", 300)
-PSI_WINDOW_RECENT: int = settings.get_int("drift", "psi_window_recent", 100)
+# Seuils MARCHÉ (calibrés sur données réelles, LOT D) : les seuils du crédit
+# (0.10/0.25) déclenchent SEVERE en permanence sur des rendements de marché
+# (mesuré : 7/7 actifs SEVERE avec 0.25). PSI > 0.60 sur ~3 mois de
+# référence = changement de régime majeur ; 0.30-0.60 = à surveiller.
+PSI_STABLE_THRESHOLD: float = settings.get_float("drift", "psi_stable_threshold", 0.30)
+PSI_SEVERE_THRESHOLD: float = settings.get_float("drift", "psi_severe_threshold", 0.60)
+# Fenêtres (en barres) : référence ~3 mois (2000 h), récente ~17 jours
+# (400 h) — alignées sur l'horizon de régime du bandit (demi-vie ~34 MAJ).
+# Une référence trop courte (400) capte les régimes normaux comme du drift.
+PSI_WINDOW_REFERENCE: int = settings.get_int("drift", "psi_window_reference", 2000)
+PSI_WINDOW_RECENT: int = settings.get_int("drift", "psi_window_recent", 400)
 # Decay du bandit : stable (0.98 = demi-vie ~34 MAJ) vs drift sévère
 # (0.92 = demi-vie ~8 MAJ — l'edge est présumé mort, on oublie vite).
 BANDIT_DECAY_STABLE: float = settings.get_float("drift", "bandit_decay_stable", 0.98)
@@ -63,17 +69,31 @@ BANDIT_DECAY_MAX: float = settings.get_float("drift", "bandit_decay_max", 0.995)
 # Intervalle de recalcul dans la boucle live
 PSI_INTERVAL_SECONDS: float = settings.get_float("drift", "psi_interval_seconds", 900.0)
 
-# Features surveillées. Leçon de calibrage (LOT D, mesurée sur données) :
-# les features LISSÉES par rolling (volatility_20, volume_zscore) sont
-# FORTEMENT autocorrélées — le PSI par percentiles y explose (> 10) même
-# sur un marché homogène, car la fenêtre récente corrélée tombe en bloc
-# dans les bins extrêmes de la référence. On surveille donc des features
-# quasi-iid, qui discriminent correctement :
+# Features surveillées. Leçons de calibrage (LOT D, MESURÉES sur données
+# réelles — pas de la théorie) :
+#   1. Les features LISSÉES par rolling (volatility_20, volume_zscore) sont
+#      autocorrélées : PSI > 10 sur marché homogène (faux positifs).
+#   2. momentum_10 (tendance 10 barres) est un détecteur de TENDANCE, pas de
+#      distribution : un marché normal en tendance produit des PSI 2-5x plus
+#      élevés que les rendements (mesuré : SOL 2.89, EURUSD 6.6 sur fenêtres
+#      courtes) -> RETIRÉ.
+#   3. Les seuils du crédit (0.10/0.25) sont trop stricts pour des données de
+#      marché : avec des fenêtres courtes (17j vs 6j), TOUT le monde est
+#      SEVERE en permanence (mesuré : 7/7 actifs) -> fenêtres alignées sur
+#      l'horizon de régime (référence ~3 mois) et seuils marché 0.30/0.60.
+# On surveille donc des features quasi-iid robustes :
 #   - returns_1       : rendements bruts (drift de moyenne ET de vol)
-#   - returns_abs     : |rendements| (détecteur de vol direct, iid)
-#   - momentum_10     : tendance 10 barres
-#   - volume_log      : log(volume brut) (participation, normalisée)
-PSI_FEATURES: list[str] = ["returns_1", "returns_abs", "momentum_10", "volume_log"]
+#   - returns_abs     : |rendements| (détecteur de vol direct)
+#   - volume_log      : log(volume brut) (participation)
+PSI_FEATURES: list[str] = ["returns_1", "returns_abs", "volume_log"]
+
+# Features qui ALIMENTENT le statut/decay (le signal). Le volume log est
+# calculé et exposé (information) mais n'est PAS déclencheur : les données
+# de volume Yahoo sont inconstantes (fallback 10.0, trous) et un changement
+# de volume peut être structurel (participation) sans affecter l'edge des
+# stratégies OHLC. Le drift qui compte pour l'edge = celui des RENDEMENTS
+# (moyenne et vol) — mesuré par returns_1 et returns_abs.
+PSI_SIGNAL_FEATURES: list[str] = ["returns_1", "returns_abs"]
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -186,13 +206,11 @@ def extract_psi_features(df: pd.DataFrame) -> dict[str, np.ndarray]:
             out["returns_1"] = returns_1
             out["returns_abs"] = np.abs(returns_1)
 
-        momentum_10 = (close / close.shift(10) - 1.0).replace(
-            [np.inf, -np.inf], np.nan).dropna().values
-        if len(momentum_10) >= 10:
-            out["momentum_10"] = momentum_10
-
         # volume en log (normalise la distribution asymétrique ; le niveau
-        # absolu détecte les changements de participation)
+        # absolu détecte les changements de participation). NB : momentum_10
+        # a été RETIRÉ (leçon de calibrage LOT D) — c'est un détecteur de
+        # TENDANCE, pas de distribution : un marché normal en tendance
+        # produit des PSI 2-5x plus élevés que les rendements.
         vol_pos = volume[volume > 0.0]
         if len(vol_pos) >= 10:
             out["volume_log"] = np.log(vol_pos).values
@@ -256,7 +274,11 @@ class DriftMonitor:
             return self.to_dict()
 
         self.last_psi = psi_map
-        self.last_max_psi = max(psi_map.values())
+        # LOT D (calibré sur données réelles) : le statut/decay ne porte que
+        # sur les features de RENDEMENTS (PSI_SIGNAL_FEATURES) — le volume
+        # log est exposé mais ne déclenche pas (données inconstantes).
+        signal_psis = [v for k, v in psi_map.items() if k in PSI_SIGNAL_FEATURES]
+        self.last_max_psi = max(signal_psis) if signal_psis else 0.0
         self.last_status = psi_status(self.last_max_psi)
         self.last_bandit_decay = round(bandit_decay_for_psi(self.last_max_psi), 4)
         self.n_updates += 1
@@ -283,16 +305,131 @@ class DriftMonitor:
         }
 
 
-def run_drift_check(state: dict, db, drift_monitor: DriftMonitor, meta_engine,
-                    audit_ip, logger=None) -> dict:
+class MultiAssetDriftMonitor:
     """
-    Tick périodique du drift PSI (appelé par la boucle live de main.py) :
+    LOT D (F4, corrigé) : surveillance du drift PSI sur PLUSIEURS actifs.
+
+    Chaque actif a son propre DriftMonitor (fenêtres de référence/récente sur
+    SES candles réelles). L'état agrégé expose :
+      - per_asset : {symbol: état individuel} (psi par feature, statut...)
+      - max_psi    : le maximum sur les actifs calculés (le pire cas pilote
+                     l'oubli du bandit — conservateur : si UN marché a
+                     drastiquement changé de distribution, on oublie plus
+                     vite, même si les autres sont stables)
+      - status / bandit_decay_recommended : dérivés du max_psi global
+    """
+
+    def __init__(self, symbols: list[str] | None = None,
+                 reference_window: int = PSI_WINDOW_REFERENCE,
+                 recent_window: int = PSI_WINDOW_RECENT):
+        self.symbols = list(symbols or [])
+        self.monitors: dict[str, DriftMonitor] = {
+            s: DriftMonitor(reference_window=reference_window,
+                            recent_window=recent_window)
+            for s in self.symbols}
+        self.last_state: dict = {}
+
+    def update_all(self, candles_by_symbol: dict[str, pd.DataFrame],
+                   now: float | None = None) -> dict:
+        """Met à jour chaque actif fourni ; agrège l'état (max_psi global)."""
+        per_asset: dict[str, dict] = {}
+        max_psi = 0.0
+        for sym, df in candles_by_symbol.items():
+            mon = self.monitors.setdefault(
+                sym, DriftMonitor())
+            st = mon.update(df, now=now)
+            per_asset[sym] = st
+            if st["n_updates"] > 0:
+                max_psi = max(max_psi, st["max_psi"])
+        if not per_asset:
+            return self.last_state
+        self.last_state = {
+            "per_asset": per_asset,
+            "max_psi": round(max_psi, 4),
+            "status": psi_status(max_psi),
+            "bandit_decay_recommended": round(bandit_decay_for_psi(max_psi), 4),
+            "bandit_decay_bounds": [round(BANDIT_DECAY_MIN, 4),
+                                    round(BANDIT_DECAY_MAX, 4)],
+            "thresholds": {"stable": PSI_STABLE_THRESHOLD,
+                           "severe": PSI_SEVERE_THRESHOLD},
+            "n_updates": sum(1 for s in per_asset.values() if s["n_updates"] > 0),
+            "last_update_ts": round(time.time() if now is None else now, 2),
+            "note": "PSI multi-actifs : max_psi = pire cas sur les actifs calculés.",
+        }
+        return dict(self.last_state)
+
+    def to_dict(self) -> dict:
+        return dict(self.last_state)
+
+
+# Durée pendant laquelle un drift CUSUM (erreur de prédiction) reste actif
+# dans l'état fusionné avant de retomber à False (le retraining automatique
+# a eu le temps de se faire — le flag est un signal TEMPORAIRE, pas une
+# étiquette permanente).
+DRIFT_CUSUM_HOLD_SECONDS: float = settings.get_float(
+    "drift", "cusum_hold_seconds", 3600.0)
+
+
+def unified_drift_state(psi_state: dict, cusum_state: dict | None) -> dict:
+    """
+    FUSION CUSUM + PSI (LOT D, corrigé) : un seul état de drift pour le bot.
+
+      - CUSUM  (models/mlops_pipeline.py) : erreur de PRÉDICTION du modèle
+        anormalement élevée (output drift) — déclenche le retraining.
+      - PSI    (ce module)                : distribution des features changée
+        (input drift) — accélère l'oubli du bandit.
+
+    Règle de fusion (conservatrice, jamais de faux "stable") :
+      - status = SEVERE si PSI SEVERE OU CUSUM détecté (un seul suffit :
+        le système perd son edge dès qu'UNE des deux faces drift)
+      - status = MODERATE si PSI MODERATE (CUSUM est binaire)
+      - sinon STABLE
+      - decay recommandé = le PLUS AGRESSIF (min) des deux recommandations,
+        borné [BANDIT_DECAY_MIN, BANDIT_DECAY_MAX].
+
+    cusum_state attendu : {"detected": bool, "ts": float} ou None.
+    """
+    psi_status_ = psi_state.get("status", "STABLE") if psi_state else "STABLE"
+    cusum_detected = bool((cusum_state or {}).get("detected", False))
+
+    if psi_status_ == "SEVERE" or cusum_detected:
+        status = "SEVERE"
+    elif psi_status_ == "MODERATE":
+        status = "MODERATE"
+    else:
+        status = "STABLE"
+
+    psi_decay = float(psi_state.get("bandit_decay_recommended",
+                                    BANDIT_DECAY_STABLE)) if psi_state else BANDIT_DECAY_STABLE
+    cusum_decay = float(BANDIT_DECAY_DRIFT) if cusum_detected else BANDIT_DECAY_STABLE
+    decay = min(psi_decay, cusum_decay)
+    decay = float(_clamp(decay, BANDIT_DECAY_MIN, BANDIT_DECAY_MAX))
+
+    return {
+        "status": status,
+        "max_psi": float(psi_state.get("max_psi", 0.0)) if psi_state else 0.0,
+        "bandit_decay_recommended": round(decay, 4),
+        "sources": {
+            "psi": psi_status_,
+            "cusum": "DETECTED" if cusum_detected else "OK",
+        },
+        "note": "Fusion CUSUM (erreur de prédiction) + PSI (distribution des features) — SEVERE si l'un des deux est sévère.",
+    }
+
+
+def run_drift_check(state: dict, db, drift_monitor: MultiAssetDriftMonitor,
+                    meta_engine, audit_ip, logger=None,
+                    symbols: list[str] | None = None,
+                    load_limit: int = 2500) -> dict:
+    """
+    Tick périodique du drift PSI MULTI-ACTIFS + fusion CUSUM (appelé par la
+    boucle live de main.py) :
       1. toutes les PSI_INTERVAL_SECONDS (sinon renvoie l'état courant) ;
-      2. charge les candles RÉELLES du cache DB (BTCUSDT, référence) ;
-      3. met à jour le DriftMonitor et expose le résultat dans state ;
-      4. en drift non-STABLE, applique le decay recommandé au bandit
-         (oubli accéléré, borné [BANDIT_DECAY_MIN, BANDIT_DECAY_MAX]) ;
-      5. audit log si drift SÉVÈRE.
+      2. charge les candles RÉELLES du cache DB pour CHAQUE actif surveillé ;
+      3. met à jour le MultiAssetDriftMonitor (pire cas = max_psi global) ;
+      4. fusionne avec l'état CUSUM (state["drift_cusum"]) ;
+      5. applique le decay recommandé au bandit (jamais < BANDIT_DECAY_MIN) ;
+      6. audit log si drift SÉVÈRE (source PSI ou CUSUM).
 
     Jamais bloquant : toute erreur renvoie l'état courant inchangé (le bot
     continue avec le comportement nominal).
@@ -304,31 +441,58 @@ def run_drift_check(state: dict, db, drift_monitor: DriftMonitor, meta_engine,
             return dict(state.get("drift_psi", {}))
         state["drift_psi_last_ts"] = now
 
-        psi_df = db.load_candles("BTCUSDT", limit=700)
-        if psi_df is None or len(psi_df) < 50:
+        # CUSUM : le flag reste actif DRIFT_CUSUM_HOLD_SECONDS (le retraining
+        # automatique a eu le temps de se faire) puis retombe à False.
+        cusum_state = state.get("drift_cusum") or {}
+        if cusum_state.get("detected") and \
+                now - float(cusum_state.get("ts", 0.0)) > DRIFT_CUSUM_HOLD_SECONDS:
+            cusum_state = {"detected": False}
+            state["drift_cusum"] = cusum_state
+
+        # PSI multi-actifs : candles RÉELLES pour chaque actif surveillé.
+        syms = symbols if symbols else list(getattr(drift_monitor, "symbols", []) or ["BTCUSDT"])
+        candles_by_symbol: dict = {}
+        for sym in syms:
+            try:
+                df_s = db.load_candles(sym, limit=load_limit)
+                if df_s is not None and len(df_s) >= 50:
+                    candles_by_symbol[sym] = df_s
+            except Exception:
+                continue
+        if not candles_by_symbol:
             return dict(state.get("drift_psi", {}))
 
-        drift_monitor.update(psi_df, now=now)
-        dd = drift_monitor.to_dict()
+        dd = drift_monitor.update_all(candles_by_symbol, now=now)
+        if not dd:
+            return dict(state.get("drift_psi", {}))
+
+        # Fusion CUSUM + PSI -> état unifié + decay final.
+        unified = unified_drift_state(dd, cusum_state)
+        dd["unified"] = unified
+        dd["cusum"] = {
+            "detected": bool(cusum_state.get("detected", False)),
+            "ts": cusum_state.get("ts", 0.0),
+            "hold_seconds": DRIFT_CUSUM_HOLD_SECONDS,
+        }
         state["drift_psi"] = dd
 
-        decay = float(dd["bandit_decay_recommended"])
+        decay = float(unified["bandit_decay_recommended"])
         if abs(decay - float(getattr(meta_engine, "bandit_decay", decay))) > 1e-6:
             meta_engine.set_bandit_decay(decay)
         state["drift_psi"]["bandit_decay_applied"] = float(
             getattr(meta_engine, "bandit_decay", decay))
 
-        if dd["status"] != "STABLE":
+        if unified["status"] != "STABLE":
             log.info(
-                f"📈 DRIFT PSI {dd['status']} : max_psi={dd['max_psi']:.3f} "
-                f"({dd['psi_per_feature']}) -> oubli bandit "
+                f"📈 DRIFT {unified['status']} : PSI max={dd['max_psi']:.3f} "
+                f"({dd['unified']['sources']}) -> oubli bandit "
                 f"{state['drift_psi']['bandit_decay_applied']:.4f} (nominal 0.98).")
-            if dd["status"] == "SEVERE":
+            if unified["status"] == "SEVERE":
                 db.add_audit_log(
                     "DRIFT_PSI_SEVERE", audit_ip(),
-                    f"PSI sévère {dd['max_psi']:.3f} — oubli bandit accéléré à "
-                    f"{state['drift_psi']['bandit_decay_applied']:.4f} "
-                    f"(features {list(dd['psi_per_feature'])}).")
+                    f"Drift sévère (PSI {dd['max_psi']:.3f} / CUSUM "
+                    f"{'détecté' if cusum_state.get('detected') else 'OK'}) — oubli bandit à "
+                    f"{state['drift_psi']['bandit_decay_applied']:.4f}.")
         return dict(dd)
     except Exception as e:
         log.warning(f"Drift PSI check failed ({e}) — comportement nominal conservé.")

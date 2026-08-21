@@ -57,7 +57,7 @@ from core.position_manager import (
 from core.regime_autonomy import RegimeAutonomy
 # LOT D (F4) : détection de drift par PSI (online learning) — surveille la
 # distribution des features clés et accélère l'oubli du bandit au drift.
-from core.drift_psi import DriftMonitor, run_drift_check
+from core.drift_psi import MultiAssetDriftMonitor, run_drift_check
 from core.research_discipline import live_p_value, meta_label_filter
 from core.risk_committee import RiskCommittee
 from core.risk_pipeline import (
@@ -226,9 +226,12 @@ ppo_agent = PPOTRAgent(state_dim=4, action_dim=1)
 # élargis). Appliqué à risk_manager via apply_regime_factor() à chaque tick.
 regime_autonomy = RegimeAutonomy()
 
-# LOT D (F4) : moniteur de drift PSI — fenêtres de référence/récente sur les
-# candles RÉELLES ; le decay du bandit est accéléré quand le PSI est sévère.
-drift_monitor = DriftMonitor()
+# LOT D (F4) : moniteur de drift PSI MULTI-ACTIFS — fenêtres de
+# référence/récente sur les candles RÉELLES de CHAQUE actif ; le decay du
+# bandit est accéléré quand le pire PSI est sévère, fusionné avec le CUSUM.
+# Les symboles sont passés à chaque appel (STATE["assets"] n'existe qu'à
+# l'exécution de la boucle, pas au moment de la création de l'instance).
+drift_monitor = MultiAssetDriftMonitor()
 
 # MLOps Auto-Trainer
 mlops_trainer = MLOpsAutoTrainer(regime_detector, price_predictor, db)
@@ -1850,8 +1853,13 @@ async def startup_event():
     df = pd.DataFrame()
     for _sym in STATE["assets"]:
         _df = db.load_candles(_sym, limit=120)
-        if _df.empty or len(_df) < 10:
-            logger.info(f"Database cache incomplete for {_sym}. Fetching from real APIs (Binance/Bybit/Yahoo)...")
+        # LOT D (F4, corrigé) : seuil de profondeur 250 au lieu de 10 — le
+        # PSI (drift distribution) exige ~550 barres pour un calcul fiable ;
+        # le fetch profond (700 barres) met le cache à niveau au premier boot
+        # du nouveau code. Les vieux caches à 120 barres sont refetchés une
+        # fois, puis l'historique s'accumule normalement.
+        if _df.empty or len(_df) < 250:
+            logger.info(f"Database cache incomplete for {_sym} ({len(_df)} barres). Fetching from real APIs (Binance/Bybit/Yahoo)...")
             try:
                 _df = await fetch_historical_market_data(_sym)
                 if _df is not None and not _df.empty:
@@ -2587,14 +2595,12 @@ async def live_trading_loop():
                         logger.warning(f"Regime autonomy failed ({_ra_e}) — facteur 1.0 (config de base).")
                         STATE["regime_autonomy"] = {"enabled": False, "error": str(_ra_e)}
 
-                    # LOT D (F4) : DÉTECTION DE DRIFT PAR PSI (implémentée dans
-                    # core/drift_psi.py — run_drift_check). Toutes les
-                    # PSI_INTERVAL_SECONDS, compare la distribution RÉCENTE des
-                    # features clés à la distribution de RÉFÉRENCE sur les
-                    # candles RÉELLES. Drift sévère -> oubli du bandit ACCÉLÉRÉ.
-                    # Jamais bloquant (échec = comportement nominal conservé).
+                    # LOT D (F4, corrigé) : DÉTECTION DE DRIFT — PSI MULTI-ACTIFS
+                    # (distribution des features par actif, pire cas global)
+                    # FUSIONNÉ au CUSUM (erreur de prédiction du modèle). Drift
+                    # sévère -> oubli du bandit ACCÉLÉRÉ. Jamais bloquant.
                     run_drift_check(STATE, db, drift_monitor, meta_engine, audit_ip,
-                                    logger=logger)
+                                    logger=logger, symbols=list(STATE["assets"].keys()))
 
                     # Predict temporal change using our true pure NumPy LSTM Deep Neural Network!
                     seq_features = df[['close', 'volume', 'high', 'low', 'open']].pct_change().fillna(0).values[-5:]
@@ -2612,6 +2618,25 @@ async def live_trading_loop():
                     if mlops_trainer.track_prediction_error_and_detect_drift(STATE["ml_prediction_pct"], actual_return):
                         logger.warning("MLOPS DETECTED CONCEPT DRIFT. TRIGGERING AUTOMATIC RETRAINING PIPELINE!")
                         mlops_trainer.execute_pipeline(df)
+                        # LOT D (F4, corrigé) : FUSION CUSUM + PSI — un drift de
+                        # prédiction est aussi un signal d'oubli accéléré pour le
+                        # bandit (l'edge des stratégies peut avoir changé). Le flag
+                        # reste actif DRIFT_CUSUM_HOLD_SECONDS puis retombe.
+                        try:
+                            STATE["drift_cusum"] = {"detected": True,
+                                                    "ts": time.time(),
+                                                    "detail": "erreur de prédiction LSTM (CUSUM)"}
+                            # accélération immédiate (le prochain tick PSI
+                            # confirmera via la fusion)
+                            from core.drift_psi import BANDIT_DECAY_DRIFT
+                            meta_engine.set_bandit_decay(
+                                min(meta_engine.bandit_decay, BANDIT_DECAY_DRIFT))
+                            db.add_audit_log(
+                                "DRIFT_CUSUM_DETECTED", audit_ip(),
+                                f"Concept drift CUSUM détecté — retraining + oubli bandit "
+                                f"{meta_engine.bandit_decay:.4f} (fusion PSI/CUSUM).")
+                        except Exception as _cu_e:
+                            logger.warning(f"CUSUM drift flag failed ({_cu_e})")
 
                     # Check Active position for this specific asset
                     positions = db.get_positions()

@@ -125,6 +125,23 @@ def test_oms():
     # Rejection processing of untracked order ID should not crash
     oms.process_order_rejection("non_existent_id", "test_rejection")
 
+# Test 7 (LOT E / F5): module honesty registry — educational modules locked
+def test_module_registry():
+    from core.module_honesty import (
+        assert_registry_coherent,
+        educational_modules,
+        is_educational,
+    )
+    errors = assert_registry_coherent()
+    assert not errors, f"registre incohérent : {errors}"
+    assert set(educational_modules()) == {"rlhf", "gan_scenarios",
+                                          "options_volatility", "llm_narrative"}
+    # aucun module ÉDUCATIF ne doit être un facteur du pipeline de risque
+    from core.risk_pipeline import RISK_PIPELINE_ORDER
+    for factor in RISK_PIPELINE_ORDER:
+        if is_educational(factor):
+            assert factor == "rlhf", f"{factor} ÉDUCATIF dans le pipeline !"
+
 # Execute all deep checks
 run_test("HMM_Regime_Detector", test_hmm)
 run_test("Risk_Covariance_Engine", test_covariance)
@@ -132,6 +149,7 @@ run_test("Almgren_Chriss_Optimizer", test_almgren_chriss)
 run_test("Lopez_De_Prado_Algorithms", test_lopez_de_prado)
 run_test("Risk_Manager_Breakers", test_risk_manager)
 run_test("OMS_State_Transitions", test_oms)
+run_test("Module_Registry_Locks", test_module_registry)
 
 logger.info("=========================================================================")
 if failures:

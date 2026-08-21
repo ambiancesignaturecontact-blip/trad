@@ -101,15 +101,16 @@ vol_targeting:
 # ne plus récompenser un edge mort.
 drift:
   psi_n_bins: 10                   # nb de bins du PSI
-  psi_stable_threshold: 0.10
-  psi_severe_threshold: 0.25
-  psi_window_reference: 400        # fenêtre longue (barres)
-  psi_window_recent: 150           # fenêtre récente (barres)
+  psi_stable_threshold: 0.30        # seuils MARCHÉ (le crédit 0.10/0.25 -> SEVERE permanent)
+  psi_severe_threshold: 0.60
+  psi_window_reference: 2000       # fenêtre longue ~3 mois (barres 1h)
+  psi_window_recent: 400           # fenêtre récente ~17 jours (barres 1h)
   bandit_decay_stable: 0.98        # nominal (demi-vie ~34 MAJ)
   bandit_decay_drift: 0.92         # drift sévère (demi-vie ~8 MAJ)
   bandit_decay_min: 0.85           # borne dure (jamais d'oubli total)
   bandit_decay_max: 0.995
   psi_interval_seconds: 900.0      # recalcul dans la boucle live (15 min)
+  cusum_hold_seconds: 3600.0        # durée du flag CUSUM actif dans la fusion (1h)
 
 # ===== P1-8 (audit §3) : exécution =====
 execution:

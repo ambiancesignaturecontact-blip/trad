@@ -130,9 +130,11 @@ async def fetch_historical_market_data(symbol="BTCUSDT"):
     simulée : si toutes les sources réelles échouent, renvoie un DataFrame vide
     (l'appelant marque l'actif UNAVAILABLE et ne trade pas).
     """
-    # 1) Binance (source primaire)
+    # 1) Binance (source primaire). LOT D (F4, corrigé) : 700 barres au lieu
+    # de 120 — le PSI (drift distribution) exige ~550 barres pour un calcul
+    # fiable (bruit H0 mesuré : < 0.20 à 550+ barres, erratique en dessous).
     try:
-        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=120"
+        url = f"https://api.binance.com/api/v3/klines?symbol={symbol}&interval=1h&limit=700"
         async with httpx.AsyncClient(timeout=8.0) as client:
             response = await client.get(url)
         if response.status_code == 200:
@@ -143,18 +145,21 @@ async def fetch_historical_market_data(symbol="BTCUSDT"):
     except Exception as e:
         logger.warning(f"Binance historical fetch failed for {symbol}: {e}")
 
-    # 2) Bybit (secours réel pour les cryptos)
+    # 2) Bybit (secours réel pour les cryptos) — même profondeur 700
     if symbol in CRYPTO_SYMBOLS:
-        df = await fetch_bybit_klines(symbol, interval="1h", limit=120)
+        df = await fetch_bybit_klines(symbol, interval="1h", limit=700)
         if not df.empty:
             return df
 
-    # 3) Yahoo Finance (secours réel pour Or/FX/Actions — et cryptos en dernier recours)
+    # 3) Yahoo Finance (secours réel pour Or/FX/Actions — et cryptos en
+    # dernier recours). LOT D (F4, corrigé) : 6mo au lieu de 5d (~4300 barres
+    # 1h pour les cryptos, ~2900 pour l'or — mesuré en réel) pour alimenter
+    # le PSI dès le premier boot.
     try:
         y_ticker = "GC=F" if symbol == "XAUUSD" else "EURUSD=X" if symbol == "EURUSD" else \
                    ("BTC-USD" if symbol == "BTCUSDT" else "ETH-USD" if symbol == "ETHUSDT"
                     else "SOL-USD" if symbol == "SOLUSDT" else symbol)
-        df_y = await fetch_yahoo_finance_candles(y_ticker, interval="1h", range_str="5d")
+        df_y = await fetch_yahoo_finance_candles(y_ticker, interval="1h", range_str="6mo")
         if not df_y.empty:
             logger.info(f"Fetched {len(df_y)} real bars from Yahoo Finance for {symbol}.")
             return df_y

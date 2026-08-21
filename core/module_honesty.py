@@ -85,6 +85,25 @@ MODULE_STATUS: dict[str, dict] = {
 }
 
 
+# Modules ÉDUCATIFS — liste canonique (LOT E / F5). C'est la référence des
+# verrous : aucun de ces modules ne doit apparaître dans RISK_PIPELINE_ORDER
+# ni être importé par le cœur décisionnel (vérifié mécaniquement par
+# tests/test_lot_e_educational.py — spy AST sur tout le repo).
+EDUCATIONAL_MODULES: list[str] = [
+    name for name, info in MODULE_STATUS.items()
+    if info.get("status") == "ÉDUCATIF"
+]
+
+# Imports racines des modules éducatifs (tels qu'ils apparaissent dans les
+# fichiers du repo) — utilisés par le spy AST de test_lot_e_educational.
+EDUCATIONAL_IMPORT_ROOTS: list[str] = [
+    "rl.rlhf_reward_model",
+    "ai.generative_extreme_scenarios",
+    "models.volatility_arbitrage",
+    "core.llm_narrative",
+]
+
+
 def get_module_status() -> dict:
     """Registre complet pour la télémétrie et l'UI."""
     return {name: dict(info) for name, info in MODULE_STATUS.items()}
@@ -98,9 +117,33 @@ def is_educational(name: str) -> bool:
     return MODULE_STATUS.get(name, {}).get("status") == "ÉDUCATIF"
 
 
+def educational_modules() -> list[str]:
+    """Les modules ÉDUCATIFS du registre (source unique des verrous)."""
+    return list(EDUCATIONAL_MODULES)
+
+
 def status_summary() -> dict:
     """Comptage par statut (pour l'UI : X modules PRODUCTION, Y EXPÉRIMENTAL, Z ÉDUCATIF)."""
     counts = {"PRODUCTION": 0, "EXPÉRIMENTAL": 0, "ÉDUCATIF": 0}
     for info in MODULE_STATUS.values():
         counts[info["status"]] = counts.get(info["status"], 0) + 1
     return counts
+
+
+def assert_registry_coherent() -> list[str]:
+    """
+    Cohérence du registre (LOT E / F5) : statuts valides, les 4 modules
+    ÉDUCATIFS canoniques présents. Retourne la liste des anomalies (vide si
+    le registre est sain). Appelé par les tests ET par le safety check.
+    """
+    errors: list[str] = []
+    valid = ("PRODUCTION", "EXPÉRIMENTAL", "ÉDUCATIF")
+    for name, info in MODULE_STATUS.items():
+        if info.get("status") not in valid:
+            errors.append(f"{name}: statut invalide {info.get('status')!r}")
+        if not info.get("detail"):
+            errors.append(f"{name}: détail manquant")
+    for name in ("rlhf", "gan_scenarios", "options_volatility", "llm_narrative"):
+        if not is_educational(name):
+            errors.append(f"{name}: doit être ÉDUCATIF (verrou F5)")
+    return errors

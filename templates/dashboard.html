@@ -335,6 +335,7 @@ window.qpLogin = async function () {
                         <span class="text-rose-400" id="val-honesty-educ">0 ÉDUC</span>
                     </div>
                     <p class="text-[9px] text-slate-500 font-bold mt-1">Un module ÉDUCATIF n'influence JAMAIS le sizing réel</p>
+                    <p class="text-[9px] text-slate-400 mt-1" id="val-honesty-locked">🔒 …</p>
                 </div>
 
                 <!-- Assistant IA + Approbations (parité mini-app) -->
@@ -892,11 +893,19 @@ window.qpLogin = async function () {
             }
             // Approbations en attente (parité mini-app)
             try { updatePendingApprovals(data); } catch (e2) {}
-            // Honnêteté des modules (LOT 9)
+            // Honnêteté des modules (LOT 9 + LOT E/F5 : verrou renforcé)
             const hSum = (data.module_honesty && data.module_honesty.summary) || {};
             safeSetText('val-honesty-prod', `${hSum.PRODUCTION || 0} PROD`);
             safeSetText('val-honesty-exp', `${hSum.EXPÉRIMENTAL || hSum['EXPÉRIMENTAL'] || 0} EXP`);
             safeSetText('val-honesty-educ', `${hSum.ÉDUCATIF || hSum['ÉDUCATIF'] || 0} ÉDUC`);
+            // LOT E (F5) : liste des modules ÉDUCATIFS verrouillés (jamais dans le sizing)
+            const educ = (data.module_honesty && data.module_honesty.registry) || {};
+            const educNames = Object.entries(educ)
+                .filter(([, m]) => (m.status || '') === 'ÉDUCATIF')
+                .map(([n]) => n);
+            safeSetText('val-honesty-locked', educNames.length
+                ? `🔒 ${educNames.join(' · ')} — verrouillés (jamais dans le sizing)`
+                : '🔒 aucun module éducatif actif');
             // Attribution & coûts (LOT 8)
             const attr = data.attribution_report || {};
             const byFactor = attr.by_factor || {};
