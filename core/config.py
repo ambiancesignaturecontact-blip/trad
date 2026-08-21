@@ -146,6 +146,20 @@ _DEFAULTS: dict[str, Any] = {
         "uncalibrated_signal_max": 0.12,
         "low_regime_confidence": 0.35,
     },
+    # LOT 4 (mandat) : Edge Decay Engine — détection de la dégradation
+    # de l'edge par stratégie (états HEALTHY->DEGRADED->WARNING->DISABLED->RECOVERY)
+    "edge_decay": {
+        "min_samples": 10,
+        "ema_alpha": 0.20,
+        "warn_expectancy": -0.001,
+        "disable_expectancy": -0.003,
+        "recover_expectancy": 0.0005,
+        "scale_disabled": 0.30,
+        "scale_warning": 0.60,
+        "scale_degraded": 0.85,
+        "scale_recovery": 0.85,
+        "history_maxlen": 200,
+    },
     "strategies": {
         "all_enabled": True,
         "enable_stat_arb": True,

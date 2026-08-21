@@ -564,7 +564,8 @@ class MetaAllocationEngine:
             weights[name] = round(w, 4)
         return weights
 
-    def allocate(self, market_data, regime_state_id, ml_prediction, ppo_action):
+    def allocate(self, market_data, regime_state_id, ml_prediction, ppo_action,
+                 edge_decay_scales: dict | None = None):
         """
         Calculates final combined trade signal and capital allocation.
         Enforces Thompson Sampling (Multi-Armed Bandit) weighting over classical strategies
@@ -572,6 +573,10 @@ class MetaAllocationEngine:
 
         + Walk-Forward dynamique (LOT 11) : les poids sont ajustés selon les
           performances récentes des stratégies (derniers 80 trades).
+        + LOT 4 (mandat) : edge_decay_scales={strategy: scale} — le poids final
+          de chaque stratégie est multiplié par son scale d'edge decay (borné
+          [0.30, 1.0] par core/edge_decay.py). Absent -> 1.0 (comportement
+          pré-LOT 4 strictement conservé).
         """
         signals_dict = {}
         conf_dict = {}
@@ -668,6 +673,10 @@ class MetaAllocationEngine:
             # signaux sont corrélés ne sont plus comptées comme deux paris.
             if s.name in _corr_weights:
                 weight *= _corr_weights[s.name]
+            # LOT 4 (mandat) : edge decay — sous-pondération bornée d'une
+            # stratégie dont l'edge se dégrade (jamais de suppression).
+            if edge_decay_scales:
+                weight *= float(edge_decay_scales.get(s.name, 1.0))
             classical_signal += signals_dict.get(s.name, 0.0) * weight
 
         mean_confidence = conf_dict.get(dominant_strategy, 0.5)
@@ -711,14 +720,18 @@ class MetaAllocationEngine:
 
         consensus_score = float(mean_confidence * modulate_factor)
 
-        # Create contributions dictionary (avec poids walk-forward)
+        # Create contributions dictionary (avec poids walk-forward). LOT 4 :
+        # le poids AFFICHÉ reflète le scale d'edge decay appliqué au signal
+        # (même formule que classical_signal — cohérence télémétrie/décision).
         strategy_contributions = {}
         for i, s in enumerate(self.strategies):
             is_dominant = (s.name == dominant_strategy)
+            _scale = float(edge_decay_scales.get(s.name, 1.0)) if edge_decay_scales else 1.0
             strategy_contributions[s.name] = {
                 "signal": float(signals_dict.get(s.name, 0.0)),
                 "confidence": float(conf_dict.get(s.name, 0.0)),
-                "weight": float(mab_weights[i] * 0.30 + self.walkforward_weights[i] * 0.20 + (0.12 if is_dominant else 0.0) + (float(regime_weights.get(s.name, 0.0)) * 0.18) + (float(risk_weights.get(s.name, 0.0)) * 0.20))
+                "weight": float((mab_weights[i] * 0.30 + self.walkforward_weights[i] * 0.20 + (0.12 if is_dominant else 0.0) + (float(regime_weights.get(s.name, 0.0)) * 0.18) + (float(risk_weights.get(s.name, 0.0)) * 0.20)) * _scale),
+                "edge_decay_scale": _scale,
             }
 
         return {

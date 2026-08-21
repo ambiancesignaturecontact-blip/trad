@@ -67,6 +67,8 @@ from core.ops_alerts import (
 )
 # LOT 2 : Conviction Engine + Trade Opportunity Engine (TRADE/WAIT explicite)
 from core.conviction_engine import ConvictionEngine, TradeOpportunityEngine
+# LOT 4 : Edge Decay Engine (dégradation d'edge par stratégie)
+from core.edge_decay import EdgeDecayEngine
 # LOT 3 (mandat) : Decision Journal / Trade Intelligence Database
 from core.decision_journal import (
     close_journal_entry,
@@ -642,6 +644,8 @@ def record_closed_trade(symbol: str, exit_price: float, side: str) -> None:
     direction = 1.0 if side == "SELL" else -1.0
     pnl_pct = (exit_price - entry) / entry * direction
     win_tracker.record(strategy, pnl_pct)
+    # LOT 4 : edge decay — issue par stratégie/régime
+    edge_decay.record_outcome(strategy, pnl_pct, STATE.get("regime_id"))
     # LOT 2 (mandat) : calibration mesurée — issue du trade dans le bucket de
     # sa conviction d'entrée (win rate observé par bucket, expectancy).
     try:
@@ -982,15 +986,16 @@ price_engine = MultiSourcePriceEngine()  # consensus prix multi-exchange (PDF: r
 order_flow = OrderFlowEngine()          # LOT 3: order flow réel (delta/CVD/OFI/liquidations) (PDF Pilier H)
 risk_state = RiskStateMachine()          # LOT 2: machine à états NORMAL/CAUTION/HALT (PDF Faille 3)
 win_tracker = StrategyWinRateTracker(STATE)  # LOT 2: win rates RÉELS par stratégie (PDF Pilier F)
+# LOT 4 : Edge Decay Engine (états HEALTHY->RECOVERY, scales bornés [0.30, 1.0])
+edge_decay = EdgeDecayEngine(strategies=[s.name for s in strategies_list])
 # LOT 2 : conviction calibrée + TRADE/WAIT explicite (calibration mesurée dans STATE)
 conviction_engine = ConvictionEngine(STATE)
 trade_opportunity = TradeOpportunityEngine()
 risk_pipeline_last = {}                  # dernier tracé du pipeline (télémétrie/audit)
 
 
-# P0-4 (audit §2.1) : distribution réelle de final_scale (p10/p50/p90 sur 48h).
-# 17 facteurs multiplicatifs s'auto-amplifient (0.8^15 ≈ 3.5%) : si p50 < 20%,
-# le problème est la chaîne de facteurs, pas le seuil de signal.
+# P0-4 : distribution réelle de final_scale (p10/p50/p90 48h) — si p50 < 20%,
+# le problème est la chaîne de facteurs (0.8^15 ≈ 3.5%), pas le seuil de signal.
 
 FINAL_SCALE_DOWNSAMPLE_SEC = 60.0   # 1 échantillon / min / symbole max
 FINAL_SCALE_WINDOW_HOURS = 48.0     # fenêtre glissante de référence
@@ -2876,7 +2881,10 @@ async def live_trading_loop():
                         'cross_asset_bias': cross_asset_bias(symbol, STATE),
                     }
 
-                    consensus = meta_engine.allocate(market_data, STATE["regime_id"], STATE["ml_prediction_pct"], STATE["ppo_action"])
+                    # LOT 4 : scales d'edge decay (bornés, réversibles)
+                    consensus = meta_engine.allocate(
+                        market_data, STATE["regime_id"], STATE["ml_prediction_pct"],
+                        STATE["ppo_action"], edge_decay_scales=edge_decay.scales())
                     final_signal = consensus["final_signal"]
                     # VISION_FUTUR §1: derive the dominant strategy early (desk capital mapping)
                     _dom_early = "META_MODEL"
@@ -3071,7 +3079,7 @@ async def live_trading_loop():
 
                     # ===== APPLICATION DU PIPELINE UNIFIÉ (ordre documenté + tracé) =====
                     try:
-                        # LOT 2 (mandat) : conviction calibrée (edge net + niveau, borné)
+                        # LOT 2 : conviction calibrée (edge net + niveau, borné)
                         _conv_res = conviction_engine.calibrate(
                             signal=final_signal,
                             win_rate=win_tracker.get(_dom_kelly) if _dom_kelly else None,
@@ -3535,7 +3543,7 @@ async def live_trading_loop():
                                         }, default=str))
                                     except Exception:
                                         pass
-                                    # LOT 3 : journal complété à l'exécution (qty/prix/slippage réel)
+                                    # LOT 3 : journal complété à l'exécution
                                     journal_fill(db, STATE.get("decision_journal_per_symbol", {}).get(symbol, {}).get("id", 0),
                                                  trade_qty_formatted, execution_price, _paper["slippage_bps"])
                                 # Ledger update
@@ -3721,8 +3729,7 @@ async def live_trading_loop():
         if len(STATE[active_equity_history_key]) > 100:
             STATE[active_equity_history_key].pop(0)
 
-        # LOT 8 (PDF Pilier O) : coût de PORTAGE (funding) des positions tenues
-        # — une position longue peut être perdante NET même si le prix monte.
+        # LOT 8 : coût de PORTAGE (funding) — une position longue peut être perdante NET
         try:
             for _p in db.get_positions():
                 _fr = STATE.get("funding_rates", {}).get(_p["symbol"])
@@ -3753,9 +3760,7 @@ async def live_trading_loop():
         # VISION_FUTUR §5b: supervisor vital-signs check
         supervisor.check()
 
-        # LOT 6 (PDF Pilier L) : REBALANCING périodique du portefeuille
-        # (anti-drift : on revient vers les cibles) + diversification RÉELLE
-        # entre stratégies (pénalise les stratégies redondantes).
+        # LOT 6 : REBALANCING périodique + diversification réelle entre stratégies
         try:
             if portfolio_allocator.should_rebalance():
                 portfolio_allocator.rebalance(
@@ -3970,19 +3975,14 @@ async def websocket_endpoint(websocket: WebSocket):
             STATE["connected_websockets"].remove(websocket)
             platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
 
-# LOT C (F3) : ré-exports des modules extraits (AVANT schedulers/telemetry/routes
-# qui les consomment — ex. schedulers importe _final_scale_report).
+# LOT C (F3) : ré-exports des modules extraits (AVANT schedulers/telemetry/routes qui les consomment)
 from core.observability import _final_scale_report, _final_scale_stats, _limiting_factor_stats, _load_final_scale_samples, _mark_paper_validation_day, _paper_validation_stats, _persist_final_scale_samples, _purge_final_scale_samples, _record_final_scale, _signal_stats  # noqa: F401,E402
 from core.ccxt_client import format_exchange_size, get_ccxt_client  # noqa: F401,E402
 from market_data.historical_fetch import _klines_to_df, fetch_bybit_klines, fetch_historical_market_data, fetch_yahoo_finance_candles  # noqa: F401,E402
 from core.autonomous_ai import autonomous_ai_scheduler  # noqa: F401,E402
 from core.decision_explain import explain_last_decision, update_metrics_from_state  # noqa: F401,E402
 
-# ============ étape 2 du découpage (LOT 7) : télémétrie ============
-# ============ LOT 7 (P1-7 audit §4.1) : modules extraits ============
-# Les définitions ont été déplacées vers api/routes.py et schedulers.py ;
-# on ré-exporte les noms pour préserver l'espace de noms de main (les
-# tests et TASK_FACTORIES y accèdent) et on monte le router des routes API.
+# LOT 7 : modules extraits — ré-exports + montage du router API en fin de fichier.
 from api.routes import router as _api_router  # noqa: E402
 from schedulers import (  # noqa: F401,E402
     concierge_scheduler,

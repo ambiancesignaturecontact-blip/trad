@@ -135,6 +135,19 @@ conviction:
   uncalibrated_signal_max: 0.12        # signal faible SANS historique = non calibré
   low_regime_confidence: 0.35          # confiance régime < 0.35 -> x0.95
 
+# ===== LOT 4 (mandat) : Edge Decay Engine =====
+edge_decay:
+  min_samples: 10               # pas de jugement sous 10 trades clôturés
+  ema_alpha: 0.20
+  warn_expectancy: -0.001       # expectancy EMA < -0.1% -> WARNING
+  disable_expectancy: -0.003    # < -0.3% -> DISABLED (sous-pondéré, jamais arrêté)
+  recover_expectancy: 0.0005    # > +0.05% -> RECOVERY (poids progressif)
+  scale_disabled: 0.30          # bornes du scale : JAMAIS 0 (pas de suppression dure)
+  scale_warning: 0.60
+  scale_degraded: 0.85
+  scale_recovery: 0.85
+  history_maxlen: 200
+
 strategies:
   all_enabled: true
   enable_stat_arb: true

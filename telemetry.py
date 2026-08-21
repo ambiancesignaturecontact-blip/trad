@@ -31,7 +31,7 @@ from main import (  # noqa: F401
     platform_metrics,
     supervisor,
 )
-from main import _BG_TASKS, _paper_validation_stats, _signal_stats, conviction_engine  # noqa: F401
+from main import _BG_TASKS, _paper_validation_stats, _signal_stats, conviction_engine, edge_decay  # noqa: F401
 
 # Devise du compte (résolue une fois par appel — le cache FX interne gère la
 # fréquence des appels réseau)
@@ -182,6 +182,8 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         # LOT 3 (mandat) : résumé du journal de décision (TRADE/WAIT par raison,
         # win rate des clôturés) — Trade Intelligence.
         "decision_journal_summary": db.decision_journal_summary(),
+        # LOT 4 (mandat) : edge decay — états des stratégies + scales appliqués
+        "edge_decay": edge_decay.report(),
         "moe_gate": STATE.get("moe_gate", {}),
         "risk_budget": STATE.get("risk_budget", {}),
         "risk_state": STATE.get("risk_state", {}),

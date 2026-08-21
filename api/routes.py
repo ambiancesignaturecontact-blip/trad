@@ -315,6 +315,12 @@ async def api_non_trade():
     return non_trade_analysis(STATE)
 
 
+@router.get("/api/v1/edge-decay")
+async def api_edge_decay():
+    """LOT 4 (mandat) : Edge Decay — états des stratégies, métriques, scales."""
+    return main.edge_decay.report() if hasattr(main, "edge_decay") else {"per_strategy": {}}
+
+
 @router.get("/api/v1/ab")
 async def api_ab(_auth: dict = Depends(require_auth)):
     """VISION §7.5: A/B paper comparison (baseline vs vol-targeted config)."""
