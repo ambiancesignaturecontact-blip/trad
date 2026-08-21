@@ -31,7 +31,7 @@ from main import (  # noqa: F401
     platform_metrics,
     supervisor,
 )
-from main import _BG_TASKS, _paper_validation_stats  # noqa: F401
+from main import _BG_TASKS, _paper_validation_stats, _signal_stats  # noqa: F401
 
 # Devise du compte (résolue une fois par appel — le cache FX interne gère la
 # fréquence des appels réseau)
@@ -170,6 +170,10 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "regime_probs": STATE.get("regime_probs", {}),
         "conviction_threshold": STATE.get("conviction_threshold", 0.15),
         "no_trade_count": STATE.get("no_trade_stats", {}).get("count", 0),
+        # LOT 1 (observabilité décisionnelle) : POURQUOI le bot n'a pas tradé
+        # — breakdown par catégorie de raison + distribution de conviction.
+        "no_trade_reasons": STATE.get("no_trade_stats", {}).get("reasons", {}),
+        "signal_stats": _signal_stats(),
         "moe_gate": STATE.get("moe_gate", {}),
         "risk_budget": STATE.get("risk_budget", {}),
         "risk_state": STATE.get("risk_state", {}),

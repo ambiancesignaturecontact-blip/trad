@@ -56,22 +56,64 @@ def adaptive_conviction_threshold(recent_signals: list[float], recent_returns: l
 def decide_no_trade(symbol: str, signal: float, threshold: float, reasons: list[str],
                     event_log=None, db=None) -> bool:
     """
-    VISION §4b: when the signal is below the conviction bar, log an explicit
-    NO_TRADE decision with the reason instead of silently not trading.
+    VISION §4b + LOT 1 (diagnostic) : when the signal is below the conviction
+    bar, log an explicit NO_TRADE decision with the reason instead of
+    silently not trading.
+
+    - La raison par défaut inclut TOUJOURS |signal| vs seuil (observabilité :
+      « pourquoi le bot n'a pas tradé ? » — les raisons passées par l'appelant
+      s'y ajoutent).
+    - event_log["reasons"] agrège un breakdown par CATÉGORIE de raison
+      (conviction / rr_filter / halt / order_flow / cascade / meta_label /
+      other) pour le dashboard et la télémétrie.
     Returns True if the bot should abstain.
     """
     if abs(signal) >= threshold:
         return False
-    reason = " | ".join(reasons) if reasons else f"|signal| {abs(signal):.3f} < threshold {threshold:.3f}"
+    sig_vs_thr = f"|signal| {abs(signal):.3f} < seuil {threshold:.3f}"
+    reason = " | ".join(reasons) if reasons else sig_vs_thr
+    if reasons:
+        reason = f"{sig_vs_thr} | {' | '.join(reasons)}"
     logger.info(f"⏸️ NO_TRADE {symbol}: {reason}")
     try:
         if db is not None:
             db.add_event(time.time(), "no_trade", f'{{"symbol": "{symbol}", "reason": "{reason}"}}')
         if event_log is not None:
-            event_log["no_trades"] = event_log.get("no_trades", 0) + 1
+            # FIX LOT 1 (diagnostic) : l'état est initialisé avec {"count": 0}
+            # et la télémétrie lit "count" — mais l'ancien code incrémentait
+            # "no_trades" (jamais lu) : le compteur affiché restait à 0.
+            event_log["count"] = event_log.get("count", 0) + 1
+            # LOT 1 : breakdown par catégorie (observabilité décisionnelle).
+            # FIX : dans `x[k] = y`, y est évalué AVANT le setdefault — écrire
+            # le setdefault sur sa propre ligne (l'ancienne forme levait
+            # KeyError avalée par le try/except : le breakdown ne se créait
+            # jamais silencieusement).
+            bucket = _no_trade_bucket(reason)
+            reasons_map = event_log.setdefault("reasons", {})
+            reasons_map[bucket] = reasons_map.get(bucket, 0) + 1
     except Exception:
         pass
     return True
+
+
+def _no_trade_bucket(reason: str) -> str:
+    """Catégorise une raison NO_TRADE pour l'agrégation (LOT 1)."""
+    r = reason.lower()
+    if "rr filter" in r or "asymétrie" in r or "rr " in r and "requis" in r:
+        return "rr_filter"
+    if "halt" in r:
+        return "halt"
+    if "cascade" in r:
+        return "cascade"
+    if "order flow" in r or "flux" in r or "toxic" in r or "agressif" in r:
+        return "order_flow"
+    if "meta-label" in r:
+        return "meta_label"
+    if "seuil" in r or "signal|" in r or "conviction" in r:
+        return "conviction"
+    if "régime" in r or "regime" in r or "moe" in r:
+        return "regime_context"
+    return "other"
 
 
 def hedging_decision(symbol: str, positions: list[dict], corr_matrix: dict,

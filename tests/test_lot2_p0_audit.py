@@ -16,8 +16,10 @@ import pandas as pd
 import pytest
 from fastapi.testclient import TestClient
 
+# quand core.observability est importé seul : observability importe main en fin
+# de fichier, main ré-importe observability dans son footer)
 import core.observability as observability  # LOT C : fonctions extraites
-import main
+import main  # noqa: F401  (charge main COMPLET d'abord — évite le cycle d'import
 
 # ---------------------------------------------------------------- P0-5 ----
 

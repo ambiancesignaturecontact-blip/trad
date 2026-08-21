@@ -326,6 +326,16 @@ window.qpLogin = async function () {
                     </div>
                 </div>
 
+                <!-- Pourquoi le bot ne trade pas ? (LOT 1 : observabilité décisionnelle) -->
+                <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">DÉCISIONS — POURQUOI PAS DE TRADE ?</p>
+                    <div class="flex items-center space-x-2 mt-1 text-[10px] font-bold">
+                        <span class="text-slate-300">Seuil conviction : <span id="val-dec-threshold" class="text-cyan-400">—</span></span>
+                        <span class="text-slate-500">| NO_TRADE : <span id="val-dec-notrade" class="text-amber-400">—</span></span>
+                    </div>
+                    <p class="text-[9px] text-slate-400 mt-1" id="val-dec-reasons">⏸️ …</p>
+                </div>
+
                 <!-- Honnêteté des modules (LOT 9) -->
                 <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
                     <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">HONNÊTETÉ DES MODULES (Faille 7 PDF)</p>
@@ -893,6 +903,13 @@ window.qpLogin = async function () {
             }
             // Approbations en attente (parité mini-app)
             try { updatePendingApprovals(data); } catch (e2) {}
+            // LOT 1 : observabilité décisionnelle — pourquoi pas de trade ?
+            const ntr = data.no_trade_reasons || {};
+            const ntrStr = Object.entries(ntr).sort((a, b) => b[1] - a[1])
+                .map(([k, v]) => `${k}: ${v}`).join(' · ');
+            safeSetText('val-dec-threshold', (data.conviction_threshold ?? 0.15).toFixed(3));
+            safeSetText('val-dec-notrade', data.no_trade_count ?? 0);
+            safeSetText('val-dec-reasons', ntrStr ? `⏸️ ${ntrStr}` : '⏸️ aucune abstention enregistrée');
             // Honnêteté des modules (LOT 9 + LOT E/F5 : verrou renforcé)
             const hSum = (data.module_honesty && data.module_honesty.summary) || {};
             safeSetText('val-honesty-prod', `${hSum.PRODUCTION || 0} PROD`);
