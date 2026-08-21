@@ -1011,3 +1011,195 @@ class DBManager:
         except Exception as e:
             logger.error(f"list_events failed: {e}")
             return []
+
+    # ------------------------------------------------------------------ #
+    # LOT 3 (mandat — Trade Intelligence Database) : decision_journal
+    # ------------------------------------------------------------------ #
+    def ensure_decision_journal_table(self):
+        """Table structurée du journal de décision (LOT 3). Une ligne = UNE
+        décision TRADE ou WAIT, complétée à l'exécution et à la clôture."""
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS decision_journal (
+                            id SERIAL PRIMARY KEY,
+                            ts DOUBLE PRECISION,
+                            decision TEXT,
+                            symbol TEXT,
+                            regime TEXT,
+                            signal REAL,
+                            conviction REAL,
+                            level TEXT,
+                            edge_net REAL,
+                            win_rate REAL,
+                            reason TEXT,
+                            detail TEXT,
+                            threshold REAL,
+                            risk_state TEXT,
+                            strategy TEXT,
+                            qty REAL,
+                            price REAL,
+                            slippage_bps_expected REAL,
+                            slippage_bps_real REAL,
+                            pnl_pct REAL,
+                            mfe_pct REAL,
+                            mae_pct REAL,
+                            duration_sec REAL,
+                            exit_reason TEXT,
+                            payload TEXT
+                        )""")
+                else:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS decision_journal (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            ts REAL,
+                            decision TEXT,
+                            symbol TEXT,
+                            regime TEXT,
+                            signal REAL,
+                            conviction REAL,
+                            level TEXT,
+                            edge_net REAL,
+                            win_rate REAL,
+                            reason TEXT,
+                            detail TEXT,
+                            threshold REAL,
+                            risk_state TEXT,
+                            strategy TEXT,
+                            qty REAL,
+                            price REAL,
+                            slippage_bps_expected REAL,
+                            slippage_bps_real REAL,
+                            pnl_pct REAL,
+                            mfe_pct REAL,
+                            mae_pct REAL,
+                            duration_sec REAL,
+                            exit_reason TEXT,
+                            payload TEXT
+                        )""")
+                conn.commit()
+        except Exception as e:
+            logger.warning(f"ensure_decision_journal_table: {e}")
+
+    def log_decision_entry(self, entry: dict) -> int:
+        """Insère une décision (TRADE/WAIT) dans le journal. Retourne l'id
+        (pour mise à jour à la clôture) ou 0 en cas d'échec. Jamais bloquant."""
+        self.ensure_decision_journal_table()
+        cols = ["ts", "decision", "symbol", "regime", "signal", "conviction",
+                "level", "edge_net", "win_rate", "reason", "detail", "threshold",
+                "risk_state", "strategy", "qty", "price", "slippage_bps_expected",
+                "payload"]
+        vals = [entry.get(c) for c in cols]
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    ph = ", ".join(["%s"] * len(cols))
+                    cur.execute(
+                        f"INSERT INTO decision_journal ({', '.join(cols)}) VALUES ({ph}) RETURNING id",
+                        vals)
+                    row = cur.fetchone()
+                    new_id = int(row[0]) if row else 0
+                else:
+                    ph = ", ".join(["?"] * len(cols))
+                    cur.execute(
+                        f"INSERT INTO decision_journal ({', '.join(cols)}) VALUES ({ph})",
+                        vals)
+                    new_id = int(cur.lastrowid)
+                conn.commit()
+                return new_id
+        except Exception as e:
+            logger.debug(f"log_decision_entry failed: {e}")
+            return 0
+
+    def update_decision_outcome(self, entry_id: int, outcome: dict) -> bool:
+        """Complète une décision à la clôture : pnl, MFE/MAE, durée, raison de
+        sortie, slippage réel, prix exécuté. Jamais bloquant."""
+        if not entry_id:
+            return False
+        self.ensure_decision_journal_table()
+        set_cols = [c for c in ("qty", "price", "slippage_bps_real", "pnl_pct",
+                                "mfe_pct", "mae_pct", "duration_sec", "exit_reason")
+                    if c in outcome and outcome[c] is not None]
+        if not set_cols:
+            return False
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    sets = ", ".join(f"{c} = %s" for c in set_cols)
+                    cur.execute(f"UPDATE decision_journal SET {sets} WHERE id = %s",
+                                [outcome[c] for c in set_cols] + [int(entry_id)])
+                else:
+                    sets = ", ".join(f"{c} = ?" for c in set_cols)
+                    cur.execute(f"UPDATE decision_journal SET {sets} WHERE id = ?",
+                                [outcome[c] for c in set_cols] + [int(entry_id)])
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.debug(f"update_decision_outcome failed: {e}")
+            return False
+
+    def get_decision_journal(self, decision: str = "", limit: int = 200,
+                             since: float = 0.0) -> list:
+        """Dernières décisions du journal (TRADE/WAIT ou toutes)."""
+        self.ensure_decision_journal_table()
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                ph = "%s" if self.is_postgres else "?"
+                sql = "SELECT * FROM decision_journal"
+                conds, args = [], []
+                if decision:
+                    conds.append(f"decision = {ph}")
+                    args.append(decision)
+                if since:
+                    conds.append(f"ts >= {ph}")
+                    args.append(since)
+                if conds:
+                    sql += " WHERE " + " AND ".join(conds)
+                sql += f" ORDER BY ts DESC LIMIT {ph}"
+                args.append(int(limit))
+                cur.execute(sql, args)
+                return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"get_decision_journal failed: {e}")
+            return []
+
+    def decision_journal_summary(self, since: float = 0.0) -> dict:
+        """Agrégats du journal : nb décisions, nb par type, nb par raison,
+        win rate/expectancy des TRADE clôturés, n clôturés."""
+        self.ensure_decision_journal_table()
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                ph = "%s" if self.is_postgres else "?"
+                since_sql = f" WHERE ts >= {ph}" if since else ""
+                args = [since] if since else []
+                cur.execute(f"SELECT COUNT(*) FROM decision_journal{since_sql}", args)
+                total = int(cur.fetchone()[0])
+                cur.execute(f"SELECT decision, COUNT(*) FROM decision_journal{since_sql} GROUP BY decision", args)
+                by_decision = {str(r[0]): int(r[1]) for r in cur.fetchall()}
+                cur.execute(f"SELECT reason, COUNT(*) FROM decision_journal{since_sql} GROUP BY reason ORDER BY 2 DESC LIMIT 8", args)
+                by_reason = {str(r[0]): int(r[1]) for r in cur.fetchall()}
+                # trades clôturés (pnl_pct non nul)
+                cur.execute(f"SELECT COUNT(*), AVG(pnl_pct), SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) "
+                            f"FROM decision_journal{since_sql + ' AND' if since_sql else ' WHERE'} pnl_pct IS NOT NULL", args)
+                row = cur.fetchone()
+                closed_n = int(row[0] or 0)
+                closed_avg_pnl = float(row[1] or 0.0)
+                closed_wins = int(row[2] or 0)
+                return {
+                    "total": total,
+                    "by_decision": by_decision,
+                    "by_reason": by_reason,
+                    "closed_n": closed_n,
+                    "closed_win_rate": round(closed_wins / closed_n, 4) if closed_n else None,
+                    "closed_avg_pnl_pct": round(closed_avg_pnl * 100.0, 4) if closed_n else None,
+                }
+        except Exception as e:
+            logger.error(f"decision_journal_summary failed: {e}")
+            return {"total": 0, "by_decision": {}, "by_reason": {}, "closed_n": 0}
+

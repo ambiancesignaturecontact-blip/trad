@@ -179,6 +179,9 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "conviction_engine": STATE.get("last_conviction", {}),
         "last_opportunity": STATE.get("last_opportunity", {}),
         "conviction_calibration": conviction_engine.calibration_report(),
+        # LOT 3 (mandat) : résumé du journal de décision (TRADE/WAIT par raison,
+        # win rate des clôturés) — Trade Intelligence.
+        "decision_journal_summary": db.decision_journal_summary(),
         "moe_gate": STATE.get("moe_gate", {}),
         "risk_budget": STATE.get("risk_budget", {}),
         "risk_state": STATE.get("risk_state", {}),

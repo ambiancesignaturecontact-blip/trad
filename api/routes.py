@@ -298,6 +298,23 @@ async def api_events(event_type: str = "", since: float = 0.0, limit: int = 200)
     return {"events": db.list_events(event_type=event_type, since=since, limit=limit)}
 
 
+@router.get("/api/v1/decision-journal")
+async def api_decision_journal(decision: str = "", since: float = 0.0, limit: int = 100):
+    """LOT 3 (mandat) : Trade Intelligence Database — décisions TRADE/WAIT
+    structurées (contexte, conviction, edge, exécution, clôture)."""
+    return {
+        "decisions": db.get_decision_journal(decision=decision, limit=limit, since=since),
+        "summary": db.decision_journal_summary(since=since),
+    }
+
+
+@router.get("/api/v1/non-trade")
+async def api_non_trade():
+    """LOT 3 (mandat) : analyse des NON-DÉCISIONS (pourquoi pas de trade ?)."""
+    from core.decision_journal import non_trade_analysis
+    return non_trade_analysis(STATE)
+
+
 @router.get("/api/v1/ab")
 async def api_ab(_auth: dict = Depends(require_auth)):
     """VISION §7.5: A/B paper comparison (baseline vs vol-targeted config)."""

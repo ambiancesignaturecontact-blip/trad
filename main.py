@@ -67,6 +67,12 @@ from core.ops_alerts import (
 )
 # LOT 2 : Conviction Engine + Trade Opportunity Engine (TRADE/WAIT explicite)
 from core.conviction_engine import ConvictionEngine, TradeOpportunityEngine
+# LOT 3 (mandat) : Decision Journal / Trade Intelligence Database
+from core.decision_journal import (
+    close_journal_entry,
+    journal_decision,
+    journal_fill,
+)
 from core.research_discipline import live_p_value, meta_label_filter
 from core.risk_committee import RiskCommittee
 from core.risk_pipeline import (
@@ -277,8 +283,7 @@ async def lot46_model_selection_scheduler():
         except Exception as e:
             logger.warning(f"LOT 46 scheduler error: {e}")
 
-# NOTE: LOT 46 scheduler lancé dans le startup event (create_task au module level
-# crashe: 'no running event loop' — le loop n'existe que sous uvicorn).
+# NOTE: LOT 46 scheduler lancé dans le startup event (pas de loop au module level)
 
 # === LOT 47++: Complete Multi-Exchange Smart Order Router ===
 from core.multi_exchange_sor import MultiExchangeSmartOrderRouter
@@ -327,16 +332,15 @@ from ai.generative_extreme_scenarios import ExtremeScenarioGenerator
 generative_engine = ExtremeScenarioGenerator()
 logger.info("✅ LOT 54: Generative Extreme Scenario Engine initialized")
 
-# === LOT 55 (ÉDUCATIF — P2-19) : rlhf non chargé ici (JAMAIS dans le sizing) ===
-# Testé unitairement (tests/test_lot9_honesty.py).
+# === LOT 55 (ÉDUCATIF — P2-19) : rlhf non chargé ici (JAMAIS dans le sizing) — testé dans test_lot9_honesty.py
 
-# === LOT 56: Multi-Objective Portfolio Optimizer (Sharpe + CVaR + Max Drawdown) ===
+# LOT 56 : Multi-Objective Portfolio Optimizer (Sharpe + CVaR + Max DD)
 from core.multi_objective_optimizer import MultiObjectivePortfolioOptimizer
 
 multi_objective_optimizer = MultiObjectivePortfolioOptimizer()
 logger.info("✅ LOT 56: Multi-Objective Portfolio Optimizer initialized")
 
-# === LOT 57: Advanced Almgren-Chriss Market Impact & Liquidity Model ===
+# LOT 57 : Almgren-Chriss Market Impact & Liquidity Model
 from core.almgren_chriss_advanced import AdvancedAlmgrenChrissModel
 
 almgren_chriss_model = AdvancedAlmgrenChrissModel(gamma=0.12, eta=0.06, lambda_risk=0.45)
@@ -348,9 +352,7 @@ from core.tax_compliance import TaxComplianceEngine
 tax_engine = TaxComplianceEngine()
 logger.info("✅ LOT 58: Tax & Compliance Engine initialized")
 
-# === LOT 59: Advanced Model Explainability (SHAP + LIME) ===
-# Note: ModelExplainer needs to be initialized with a trained model and feature names
-# Example: explainer = ModelExplainer(model=some_model, feature_names=feature_list)
+# LOT 59 : Model Explainability (SHAP + LIME)
 logger.info("✅ LOT 59: Model Explainability module initialized (SHAP + LIME ready)")
 
 # === LOT 60: Advanced Monitoring & Auto-Scaling System ===
@@ -651,6 +653,8 @@ def record_closed_trade(symbol: str, exit_price: float, side: str) -> None:
                 pnl_pct=pnl_pct, strategy=strategy, symbol=symbol)
     except Exception:
         pass
+    # LOT 3 (mandat) : journal de décision — finalise l'entrée à la clôture
+    close_journal_entry(db, STATE, symbol, entry, exit_price, side, pnl_pct)
     # LOT 4 (PDF Pilier B) : alpha contrefactuel généralisé à TOUS les trades
     # clôturés (plus seulement les sorties de protection) + attribution MoE
     try:
@@ -675,9 +679,7 @@ def record_closed_trade(symbol: str, exit_price: float, side: str) -> None:
             meta_engine.update_pnl_attribution(strategy, pnl_pct)
         except Exception:
             pass
-        # Axe 2 (mission intelligence) : le RegimeSwitchingAllocator apprend
-        # la performance RÉELLE par (régime, stratégie) — les poids de régime
-        # s'adaptent en ligne, bornés (jamais de sur-réaction au bruit).
+        # Axe 2 : RegimeSwitchingAllocator apprend la performance réelle par (régime, stratégie)
         try:
             regime_allocator.update_regime_performance(
                 STATE.get("regime_id", 2), strategy, pnl_pct)
@@ -694,9 +696,7 @@ def record_closed_trade(symbol: str, exit_price: float, side: str) -> None:
         STATE["attribution_report"] = attribution.full_report()
     except Exception:
         pass
-    # LOT 7 (PDF Pilier K) : journal des décisions pour la méta-attribution
-    # (quelles raisons gagnent ?) -> réduit automatiquement le poids des
-    # mauvaises raisons.
+    # LOT 7 (Pilier K) : journal des décisions -> méta-attribution (poids des raisons)
     try:
         _log = STATE.setdefault("decision_log", [])
         _log.append({
@@ -2527,10 +2527,8 @@ async def live_trading_loop():
                     else:
                         logger.warning(f"Skipping arbitrage check for {symbol} due to unavailable Bybit secondary price feed.")
 
-                # 4. Formulate signal and sizing — série RÉELLE depuis le cache DB.
-                # HONNÊTETÉ : plus AUCUNE bougie synthétique (volume inventé,
-                # OHLC dérivé). Historique réel < 10 barres -> pas tradé (« AUCUNE
-                # DONNÉE -> AUCUN ORDRE », mentalité n°5).
+                # 4. Formulate signal and sizing — série RÉELLE (jamais de bougie
+                # synthétique ; historique < 10 barres -> pas tradé).
                 df = db.load_candles(symbol, limit=120)
                 if df.empty or len(df) < 10:
                     STATE["using_fallback_data"] = True
@@ -3120,12 +3118,8 @@ async def live_trading_loop():
                         # + facteur limitant (idée n°1) à partir des steps du pipeline
                         _record_final_scale(symbol, _pipe["final_scale"], len(_pipe["steps"]),
                                             steps=_pipe.get("steps"))
-                        # FIX micro 50$ : taille post-pipeline sous le min notional ->
-                        # exécution rejetée -> le bot ne trade JAMAIS sur petit compte.
-                        # Arrondi d'exécution DEMO == REAL (fidélité), borné :
-                        #   - au min notional (3$ < 200$, 5$ < 1000$, 10$ sinon)
-                        #   - à 80 % du capital (jamais plus)
-                        #   - aucun effet si le capital ne permet pas le min
+                        # FIX micro 50$ : taille sous min notional -> arrondi d'exécution
+                        # DEMO == REAL, borné au min (3$/5$/10$) et à 80 % du capital.
                         try:
                             if target_qty > 0:
                                 _mn = min_notional_for_capital(STATE[active_balance_key])
@@ -3164,10 +3158,7 @@ async def live_trading_loop():
                     try:
                         STATE["conviction_threshold"] = adaptive_conviction_threshold(
                             STATE["recent_signals"], STATE["recent_returns"],
-                            # LOT A (F1) : base ADAPTATIVE (p25 des |signaux|
-                            # réels) au lieu de la constante 0.08 qui bornait
-                            # le seuil à [0.08, 0.14] — le seuil suit la
-                            # conviction réellement produite par le marché.
+                            # LOT A : base adaptative (p25 des |signaux| réels)
                             base_threshold=None)
                     except Exception:
                         pass
@@ -3183,6 +3174,16 @@ async def live_trading_loop():
                             risk_state=risk_state.state,
                         )
                         STATE["last_opportunity"] = _opp
+                        # LOT 3 : journal de décision (complété à l'exécution puis à la clôture)
+                        _dj_id = journal_decision(
+                            db, _opp["decision"], symbol, STATE.get("regime_name", ""),
+                            final_signal, STATE.get("last_conviction", {}).get("conviction", 0.0),
+                            STATE.get("last_conviction", {}).get("level", ""),
+                            _opp.get("edge_net"), STATE.get("last_conviction", {}).get("win_rate"),
+                            _opp.get("reason", ""), _opp.get("detail", ""),
+                            STATE.get("conviction_threshold", 0.15), risk_state.state,
+                            strategy=_dom_early, payload={"sources": STATE.get("last_conviction", {})})
+                        STATE.setdefault("decision_journal_per_symbol", {})[symbol] = {"id": _dj_id, "ts": time.time()}
                         if _opp["decision"] == "TRADE":
                             target_direction = np.sign(final_signal)
                         else:
@@ -3534,6 +3535,9 @@ async def live_trading_loop():
                                         }, default=str))
                                     except Exception:
                                         pass
+                                    # LOT 3 : journal complété à l'exécution (qty/prix/slippage réel)
+                                    journal_fill(db, STATE.get("decision_journal_per_symbol", {}).get(symbol, {}).get("id", 0),
+                                                 trade_qty_formatted, execution_price, _paper["slippage_bps"])
                                 # Ledger update
                                 order_cost = execution_price * trade_qty_formatted
                                 commission = _paper_fee if _paper_fee is not None else order_cost * 0.001
@@ -3966,13 +3970,8 @@ async def websocket_endpoint(websocket: WebSocket):
             STATE["connected_websockets"].remove(websocket)
             platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
 
-# ============ LOT C (F3) : gros blocs extraits ============
-# Les définitions ont été déplacées vers des modules dédiés ; on
-# ré-exporte les noms pour préserver l'espace de noms de main (tests,
-# TASK_FACTORIES, api/routes.py, schedulers.py, telemetry.py). Ordre
-# de dépendances respecté (autonomous_ai dépend de fetch_* ré-exporté).
-# CE BLOC VIENT AVANT les imports de schedulers/telemetry/routes : ceux-ci
-# consomment les ré-exports (ex. schedulers importe _final_scale_report).
+# LOT C (F3) : ré-exports des modules extraits (AVANT schedulers/telemetry/routes
+# qui les consomment — ex. schedulers importe _final_scale_report).
 from core.observability import _final_scale_report, _final_scale_stats, _limiting_factor_stats, _load_final_scale_samples, _mark_paper_validation_day, _paper_validation_stats, _persist_final_scale_samples, _purge_final_scale_samples, _record_final_scale, _signal_stats  # noqa: F401,E402
 from core.ccxt_client import format_exchange_size, get_ccxt_client  # noqa: F401,E402
 from market_data.historical_fetch import _klines_to_df, fetch_bybit_klines, fetch_historical_market_data, fetch_yahoo_finance_candles  # noqa: F401,E402
