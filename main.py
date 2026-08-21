@@ -69,6 +69,8 @@ from core.ops_alerts import (
 from core.conviction_engine import ConvictionEngine, TradeOpportunityEngine
 # LOT 4 : Edge Decay Engine (dégradation d'edge par stratégie)
 from core.edge_decay import EdgeDecayEngine
+# LOT 6 : Adversarial Decision Engine (robustesse d'une décision sous stress)
+from core.adversarial_engine import AdversarialDecisionEngine
 # LOT 3 (mandat) : Decision Journal / Trade Intelligence Database
 from core.decision_journal import (
     close_journal_entry,
@@ -988,6 +990,8 @@ risk_state = RiskStateMachine()          # LOT 2: machine à états NORMAL/CAUTI
 win_tracker = StrategyWinRateTracker(STATE)  # LOT 2: win rates RÉELS par stratégie (PDF Pilier F)
 # LOT 4 : Edge Decay Engine (états HEALTHY->RECOVERY, scales bornés [0.30, 1.0])
 edge_decay = EdgeDecayEngine(strategies=[s.name for s in strategies_list])
+# LOT 6 : Adversarial — verdict ROBUST/FRAGILE par décision
+adversarial_engine = AdversarialDecisionEngine()
 # LOT 2 : conviction calibrée + TRADE/WAIT explicite (calibration mesurée dans STATE)
 conviction_engine = ConvictionEngine(STATE)
 trade_opportunity = TradeOpportunityEngine()
@@ -1002,9 +1006,8 @@ FINAL_SCALE_WINDOW_HOURS = 48.0     # fenêtre glissante de référence
 FINAL_SCALE_MAX_SAMPLES = 25000     # borne dure mémoire
 
 
-# P0-6 : suivi du paper-trading DATÉ (4-8 semaines CONTINUES avant REAL).
-# Marque chaque jour où le bot tourne (persisté en DB) — un chiffre de vérité
-# que le code ne peut pas truquer : si le bot ne tourne pas, le jour ne compte pas.
+# P0-6 : paper-trading DATÉ (4-8 semaines CONTINUES avant REAL) — chaque jour
+# où le bot tourne est marqué en DB (impossible à truquer).
 
 execution_bandit = ExecutionStyleBandit()
 strategy_exec_attr = StrategyExecutionAttribution()
@@ -1328,9 +1331,8 @@ async def multi_exchange_websocket_listener():
                 logger.warning(f"Bybit WS disconnected: {str(e)}. Reconnecting in 5s...")
                 await asyncio.sleep(5)
 
-    # FIX (logs prod) : la tâche parente RESTE VIVANTE tant que ses sous-tâches
-    # tournent — sinon le watchdog la voit "morte" immédiatement et la redémarre
-    # en boucle (fuite de listeners doublons). asyncio.gather attend les 3.
+    # FIX prod : la tâche parente reste VIVANTE tant que ses sous-tâches tournent
+    # (sinon le watchdog la redémarre en boucle) — asyncio.gather attend les 3.
     try:
         await asyncio.gather(
             listen_binance(),
@@ -1572,10 +1574,8 @@ def _deliver_admin_password_once(admin_pass: str, creds_path: str = None) -> str
 
 def _ensure_auth_secrets(creds_path: str = None) -> None:
     """
-    Audit B3-3/B3-4 + P0-2/P0-3 : auto-génère des secrets forts au premier boot
-    (jamais de défaut prévisible), les persiste chiffrés en DB et injecte dans
-    l'environnement. Ne JAMAIS logguer un secret en clair : le mot de passe
-    admin auto-généré est livré via _deliver_admin_password_once() uniquement.
+    Audit B3-3/B3-4 + P0-2/P0-3 : secrets forts auto-générés au premier boot,
+    persistés chiffrés en DB, jamais loggués en clair (admin livré une fois).
     """
     import secrets as _secrets
 
@@ -1713,9 +1713,7 @@ def validate_startup_config():
             "strictly forbidden in production. Configure SUPABASE_DB_URL first."
         )
 
-    # Audit B3-3/B3-4 + P0-2/P0-3 (audit indépendant §2.9/§2.10): jamais de
-    # secrets par défaut prévisibles ; AUTH forcée sur tout déploiement
-    # non-local (PORT/RAILWAY_* -> URL publique) ; aucun secret loggé en clair.
+    # Audit B3-3/B3-4 + P0-2/P0-3 : secrets forts, AUTH forcée hors local, jamais loggés
     if production_auth:
         _ensure_auth_secrets()
 
@@ -1757,7 +1755,7 @@ class ReplayRequest(BaseModel):
     limit: int = Field(default=300, ge=60, le=2000)
 
 
-# ===== VISION §2.1/§2.2: signal admission gate + experiment registry =====
+# VISION §2.1/§2.2: signal admission gate + experiment registry
 class SignalEvalRequest(BaseModel):
     symbol: str = Field(min_length=3, max_length=20)
     limit: int = Field(default=300, ge=100, le=2000)
@@ -1767,13 +1765,7 @@ class ExperimentCreate(BaseModel):
     hypothesis: str = Field(min_length=3, max_length=500)
 
 
-# ===== VISION §7.1 replayable event journal + §6 factor model =====
-
-
-# ===== VISION endpoints =====
-
-
-# ===== VISION_FUTUR endpoints =====
+# VISION endpoints (§7.1 event journal + §6 factor model + futur)
 
 
 class AskRequest(BaseModel):
@@ -1883,9 +1875,7 @@ async def startup_event():
     else:
         logger.warning("Historical data is empty. AI models training skipped until real data arrives.")
 
-    # LOT 4 (PDF Pilier B) : le HMM est VALIDÉ sur les 7 actifs (pas seulement
-    # BTC). Vraisemblance + stabilité par actif -> si un actif est aberrant,
-    # son facteur de régime sera réduit (honnêteté : pas de régime sur du vide).
+    # LOT 4 : HMM VALIDÉ sur les 7 actifs (vraisemblance + stabilité ; aberrant -> facteur réduit)
     try:
         _hmm_val = {}
         for _sym_v in STATE["assets"]:
@@ -2069,9 +2059,7 @@ async def live_trading_loop():
                     STATE["sentiment_confidence"] = 0.0
                     logger.warning("Sentiment UNAVAILABLE (aucune source réelle) -> aucune influence sur les trades.")
 
-                # HIÉRARCHIE DE L'INFORMATION (LOT 5, PDF Pilier I) : un choc
-                # SYSTÉMIQUE (hack, insolvabilité, ban...) ≠ bruit. Seuls les
-                # tokens systémiques du détecteur déclenchent une action forte.
+                # HIÉRARCHIE DE L'INFORMATION (LOT 5) : seul un choc SYSTÉMIQUE agit fort
                 if res_sent["shock_status"].get("shock_detected"):
                     logger.critical("EXTREME NEWS SHOCK DETECTED! Restricting trade sizes.")
                     news_scale_factor = 0.20
@@ -3082,7 +3070,7 @@ async def live_trading_loop():
 
                     # ===== APPLICATION DU PIPELINE UNIFIÉ (ordre documenté + tracé) =====
                     try:
-                        # LOT 2 : conviction calibrée (edge net + niveau, borné)
+                        # LOT 2 : conviction calibrée (edge net + niveau)
                         _conv_res = conviction_engine.calibrate(
                             signal=final_signal,
                             win_rate=win_tracker.get(_dom_kelly) if _dom_kelly else None,
@@ -3173,7 +3161,18 @@ async def live_trading_loop():
                             base_threshold=None)
                     except Exception:
                         pass
-                    # LOT 2 (mandat) : TRADE/WAIT explicite (la taille reste au Risk Engine)
+                    # LOT 2 : TRADE/WAIT ; LOT 6 : adversarial (fragile -> refusé)
+                    try:
+                        _adv_sl = (ATR_MULT_SL * atr) / current_price if atr > 0 else STOP_LOSS_PCT
+                        STATE["last_adversarial"] = adversarial_engine.evaluate(
+                            edge_net=STATE.get("last_conviction", {}).get("edge_net"),
+                            sl_pct=_adv_sl,
+                            tp_pct=None,
+                            slippage_bps_expected=STATE.get("book_slippage_bps", {}).get("bps"),
+                            signal=final_signal)
+                    except Exception as _ae:
+                        STATE["last_adversarial"] = {"verdict": "ROBUST", "fragile": False,
+                                                     "detail": f"adversarial indisponible ({_ae})"}
                     try:
                         _opp = trade_opportunity.evaluate(
                             signal=final_signal,
@@ -3183,9 +3182,11 @@ async def live_trading_loop():
                             edge_net=STATE.get("last_conviction", {}).get("edge_net"),
                             uncalibrated=bool(STATE.get("last_conviction", {}).get("uncalibrated", False)),
                             risk_state=risk_state.state,
+                            # LOT 6 : adversarial — le trade est-il fragile sous stress ?
+                            adversarial=STATE.get("last_adversarial"),
                         )
                         STATE["last_opportunity"] = _opp
-                        # LOT 3 : journal de décision (complété à l'exécution puis à la clôture)
+                        # LOT 3 : journal de décision (complété exécution puis clôture)
                         _dj_id = journal_decision(
                             db, _opp["decision"], symbol, STATE.get("regime_name", ""),
                             final_signal, STATE.get("last_conviction", {}).get("conviction", 0.0),
@@ -3205,7 +3206,7 @@ async def live_trading_loop():
                                                 [f"OPP:{_opp['reason']} | {_opp['detail'][:70]}"],
                                                 STATE["no_trade_stats"], db)
                     except Exception as _oe:
-                        # repli : comportement pré-LOT 2 (seuil seul)
+                        # repli pré-LOT 2 (seuil seul)
                         target_direction = np.sign(final_signal) if abs(final_signal) > STATE.get("conviction_threshold", 0.15) else 0.0
                         if target_direction == 0.0 and final_signal != 0.0:
                             decide_no_trade(symbol, final_signal, STATE.get("conviction_threshold", 0.15),
@@ -3278,9 +3279,7 @@ async def live_trading_loop():
                                     else:
                                         logger.info(f"📈 {_pyr_reason} -> ajout autorisé ({symbol})")
                             else:
-                                # NETTING : retournement contre la position existante
-                                # (une autre stratégie voudrait trader contre soi-même)
-                                # -> exiger un signal FORT, sinon s'abstenir
+                                # NETTING : retournement contre la position existante -> signal FORT exigé, sinon s'abstenir
                                 if abs(final_signal) < 1.5 * STATE.get("conviction_threshold", 0.15):
                                     decide_no_trade(symbol, final_signal,
                                                     STATE.get("conviction_threshold", 0.15),
@@ -3834,8 +3833,7 @@ async def live_trading_loop():
             # LOT F (F6) : alerte auto kill switch (runbook §5)
             asyncio.create_task(send_ops_alert(telegram_bot, STATE, "circuit_breaker",
                                                circuit_breaker_text(msg, _flattened_count, active_mode), force=True))
-            # LOT 2 (PDF Pilier G) : le circuit breaker déclenche la machine à
-            # états -> HALT (cool-down + redémarrage progressif ensuite).
+            # LOT 2 : le circuit breaker -> HALT (cool-down + redémarrage progressif)
             risk_state.enter(RiskStateMachine.HALT, f"CIRCUIT_BREAKER:{msg[:80]}")
 
         # 6. MLOps Automated Training schedule checks

@@ -137,6 +137,16 @@ conviction:
 
 # ===== LOT 4 (mandat) : Edge Decay Engine =====
 # ===== LOT 5 (mandat) : Hierarchical Meta-Allocator =====
+# ===== LOT 6 (mandat) : Adversarial Decision Engine =====
+adversarial:
+  mode: block                 # block = refuse les trades fragiles ; warn = signale seulement
+  max_loss_pct: 0.05          # perte max acceptable sous stress (5% du capital)
+  latency_mult: 5.0           # latence x5 -> dérive du prix d'exécution
+  vol_mult: 2.0               # volatilité x2 -> stop traversé plus loin
+  gap_mult: 1.5               # gap au-delà du stop
+  slippage_mult: 3.0          # slippage x3
+  spread_mult: 2.0            # spread x2
+
 hierarchical:
   regret_decay: 0.98               # oubli exponentiel du regret (non-stationnaire)
   regret_min_samples: 10           # pas d'exploration regret sous 10 trades

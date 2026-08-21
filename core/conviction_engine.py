@@ -72,6 +72,7 @@ WAIT_CONVICTION = "conviction"            # |signal| sous le seuil d'entrée
 WAIT_EDGE_INSUFFICIENT = "EDGE_INSUFFICIENT"  # edge net <= 0 (frais + slippage)
 WAIT_EXECUTION_RISK = "EXECUTION_RISK"    # slippage attendu trop élevé
 WAIT_UNCALIBRATED = "UNCALIBRATED"        # setup intéressant mais conviction non calibrée
+WAIT_ADVERSARIAL = "ADVERSARIAL_FRAGILE"  # LOT 6 : ne survit pas aux scénarios d'échec
 WAIT_HALT = "halt"                        # machine à états HALT
 
 
@@ -297,10 +298,13 @@ class TradeOpportunityEngine:
                  uncalibrated: bool = False,
                  slippage_bps: float | None = None,
                  risk_state: str | None = None,
-                 edge_uncertain: bool = False) -> dict:
+                 edge_uncertain: bool = False,
+                 adversarial: dict | None = None) -> dict:
         """
         Verdict TRADE/WAIT. L'ordre des vérifications est FIXE (documenté) :
-        sécurité d'abord (halt), puis edge, puis exécution, puis calibration.
+        sécurité d'abord (halt), puis edge, puis exécution, puis calibration,
+        puis ADVERSARIAL (LOT 6 — un trade fragile sous stress est refusé en
+        mode block, signalé en mode warn).
         Retourne {decision, reason, detail, conviction, edge_net}.
         """
         # Défensif : inputs manquants -> 0.0 (jamais d'exception en boucle live)
@@ -335,6 +339,17 @@ class TradeOpportunityEngine:
             return self._wait(WAIT_UNCALIBRATED,
                               "setup intéressant mais conviction non calibrée "
                               "(pas d'historique de win rate) -> attente", conv, edge_net)
+
+        # LOT 6 (mandat) : ADVERSARIAL — un trade fragile sous stress (pire
+        # scénario > perte max ou espérance stressée <= 0) est refusé en mode
+        # block, signalé en mode warn. Le détail du pire scénario est exposé.
+        if adversarial is not None and adversarial.get("fragile"):
+            detail = adversarial.get("detail", "fragile sous stress")
+            mode = str(adversarial.get("mode", "block"))
+            if mode == "block":
+                return self._wait(WAIT_ADVERSARIAL, f"{detail}", conv, edge_net)
+            # mode warn : on signale mais on laisse passer (décision visible)
+            logger.warning(f"⚠️ TRADE ADVERSARIAL-FRAGILE (warn) : {detail}")
 
         return {
             "decision": "TRADE",

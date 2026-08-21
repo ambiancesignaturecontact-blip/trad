@@ -190,6 +190,9 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
             "regret": meta_engine.regret_tracker.to_dict(),
             "family": meta_engine.hierarchical.last_allocation,
         },
+        # LOT 6 (mandat) : adversarial — verdict de robustesse de la dernière
+        # décision (ROBUST/FRAGILE, pire scénario sous stress)
+        "adversarial": STATE.get("last_adversarial", {}),
         "moe_gate": STATE.get("moe_gate", {}),
         "risk_budget": STATE.get("risk_budget", {}),
         "risk_state": STATE.get("risk_state", {}),

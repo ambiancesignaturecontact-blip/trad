@@ -331,6 +331,12 @@ async def api_meta_allocator():
     }
 
 
+@router.get("/api/v1/adversarial")
+async def api_adversarial():
+    """LOT 6 (mandat) : dernier verdict adversarial (robustesse sous stress)."""
+    return main.STATE.get("last_adversarial", {}) if hasattr(main, "STATE") else {}
+
+
 @router.get("/api/v1/ab")
 async def api_ab(_auth: dict = Depends(require_auth)):
     """VISION §7.5: A/B paper comparison (baseline vs vol-targeted config)."""

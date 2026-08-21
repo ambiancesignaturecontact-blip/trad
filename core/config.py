@@ -149,6 +149,16 @@ _DEFAULTS: dict[str, Any] = {
     # LOT 4 (mandat) : Edge Decay Engine — détection de la dégradation
     # de l'edge par stratégie (états HEALTHY->DEGRADED->WARNING->DISABLED->RECOVERY)
     # LOT 5 (mandat) : Hierarchical Meta-Allocator — familles, regret, bornes
+    # LOT 6 (mandat) : Adversarial Decision Engine — robustesse sous stress
+    "adversarial": {
+        "mode": "block",
+        "max_loss_pct": 0.05,
+        "latency_mult": 5.0,
+        "vol_mult": 2.0,
+        "gap_mult": 1.5,
+        "slippage_mult": 3.0,
+        "spread_mult": 2.0,
+    },
     "hierarchical": {
         "regret_decay": 0.98,
         "regret_min_samples": 10,
