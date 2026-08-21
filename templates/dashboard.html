@@ -336,6 +336,18 @@ window.qpLogin = async function () {
                     <p class="text-[9px] text-slate-400 mt-1" id="val-dec-reasons">⏸️ …</p>
                 </div>
 
+                <!-- Paper-trading validation (LOT 10) -->
+                <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">VALIDATION PAPER-TRADING (LOT 10)</p>
+                    <div class="flex items-center space-x-2 mt-1 text-[10px] font-bold">
+                        <span class="text-slate-300">Statut : <span id="val-pt-status" class="text-amber-400">—</span></span>
+                        <span class="text-slate-500">| jours : <span id="val-pt-days" class="text-cyan-400">—</span></span>
+                        <span class="text-slate-500">| décisions : <span id="val-pt-dec" class="text-cyan-400">—</span></span>
+                    </div>
+                    <p class="text-[9px] text-slate-400 mt-1" id="val-pt-criteria">📋 …</p>
+                    <p class="text-[8px] text-slate-500 mt-1">La décision de passage en REAL reste MANUELLE (jamais automatique).</p>
+                </div>
+
                 <!-- Honnêteté des modules (LOT 9) -->
                 <div class="bg-slate-900/40 backdrop-blur-sm rounded-xl p-4 border border-slate-900 relative overflow-hidden">
                     <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">HONNÊTETÉ DES MODULES (Faille 7 PDF)</p>
@@ -903,6 +915,13 @@ window.qpLogin = async function () {
             }
             // Approbations en attente (parité mini-app)
             try { updatePendingApprovals(data); } catch (e2) {}
+            // LOT 10 : validation paper-trading — statut objectif + critères
+            const pvr = data.paper_validation_report || {};
+            const pvrS = pvr.summary || {};
+            safeSetText('val-pt-status', pvr.status || '—');
+            safeSetText('val-pt-days', `${(pvr.raw || {}).paper_days ?? '—'}/28 (streak ${(pvr.raw || {}).streak ?? '—'})`);
+            safeSetText('val-pt-dec', `${(pvr.raw || {}).decisions ?? '—'} (${(pvr.raw || {}).closed_trades ?? 0} clôturés)`);
+            safeSetText('val-pt-criteria', `📋 ${pvrS.pass ?? 0} PASS · ${pvrS.warn ?? 0} WARN · ${pvrS.fail ?? 0} FAIL`);
             // LOT 1 : observabilité décisionnelle — pourquoi pas de trade ?
             const ntr = data.no_trade_reasons || {};
             const ntrStr = Object.entries(ntr).sort((a, b) => b[1] - a[1])

@@ -387,6 +387,19 @@ async def api_governance():
     }
 
 
+@router.get("/api/v1/paper-validation-report")
+async def api_paper_validation_report():
+    """LOT 10 (mandat) : rapport objectif de validation paper-trading — 10
+    critères PASS/WARN/FAIL avec preuves + statut global de préparation."""
+    from core.paper_validation import build_paper_validation_report
+    from core.conviction_engine import ConvictionEngine
+    cc = ConvictionEngine(main.STATE).calibration_report()
+    ed = main.edge_decay.report() if hasattr(main, "edge_decay") else {}
+    dp = main.STATE.get("drift_psi", {}) if hasattr(main, "STATE") else {}
+    ei = main.execution_intel.report() if hasattr(main, "execution_intel") else {}
+    return build_paper_validation_report(main.db, main.STATE, cc, ed, dp, ei)
+
+
 @router.get("/api/v1/ab")
 async def api_ab(_auth: dict = Depends(require_auth)):
     """VISION §7.5: A/B paper comparison (baseline vs vol-targeted config)."""

@@ -32,7 +32,20 @@ from main import (  # noqa: F401
     supervisor,
 )
 from core.brains import report as brains_report
+from core.paper_validation import build_paper_validation_report
 from main import SYSTEM_SNAPSHOT  # noqa: F401
+
+
+def paper_validation_report():
+    """Rapport objectif de validation (LOT 10) — agrège les moteurs réels."""
+    try:
+        from core.conviction_engine import ConvictionEngine
+        return build_paper_validation_report(
+            db, STATE, ConvictionEngine(STATE).calibration_report(),
+            edge_decay.report(), STATE.get("drift_psi", {}),
+            execution_intel.report())
+    except Exception:
+        return {"status": "IN_PROGRESS", "note": "rapport indisponible (erreur)"}
 from main import _BG_TASKS, _paper_validation_stats, _signal_stats, conviction_engine, edge_decay, execution_intel  # noqa: F401
 
 # Devise du compte (résolue une fois par appel — le cache FX interne gère la
@@ -202,6 +215,8 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "brains": brains_report(),
         # LOT 9 (mandat) : gouvernance — version système + hash config
         "governance": SYSTEM_SNAPSHOT,
+        # LOT 10 (mandat) : rapport objectif de validation paper-trading
+        "paper_validation_report": paper_validation_report(),
         "moe_gate": STATE.get("moe_gate", {}),
         "risk_budget": STATE.get("risk_budget", {}),
         "risk_state": STATE.get("risk_state", {}),
