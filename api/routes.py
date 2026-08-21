@@ -344,6 +344,14 @@ async def api_execution_intel():
     return main.execution_intel.report() if hasattr(main, "execution_intel") else {"n": 0}
 
 
+@router.get("/api/v1/brains")
+async def api_brains():
+    """LOT 8 (mandat) : architecture multi-cerveaux — registre + vérifications
+    (modules importables, découplage sans star import)."""
+    from core.brains import report
+    return report()
+
+
 @router.get("/api/v1/ab")
 async def api_ab(_auth: dict = Depends(require_auth)):
     """VISION §7.5: A/B paper comparison (baseline vs vol-targeted config)."""

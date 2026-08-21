@@ -8,13 +8,12 @@ import logging
 import os
 import time
 import uuid
-from pathlib import Path
 
 import httpx
 import numpy as np
 import pandas as pd
 import websockets
-from fastapi import Depends, FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.templating import Jinja2Templates
 from pydantic import BaseModel, Field, field_validator
@@ -374,14 +373,15 @@ platform_metrics.mark_startup()
 logger.info("✅ LOT 61: Prometheus /metrics registry initialized")
 
 # === LOT 63: Centralized outbound API rate limiting ===
-from fastapi.security import HTTPBearer
 
 from core.rate_limits import bybit_limiter
-from database.auth import AuthManager, Roles
+from fastapi.security import HTTPBearer
 
+# Ré-export pour api/routes.py (qui importe AuthManager/Roles depuis main)
+from database.auth import AuthManager, Roles  # noqa: F401
+auth_security_optional = HTTPBearer(auto_error=False)
 # Optional bearer: when no Authorization header is present, credentials is None
 # and require_auth() decides whether auth is needed (DEMO vs REAL / AUTH_ENABLED).
-auth_security_optional = HTTPBearer(auto_error=False)
 logger.info("✅ LOT 63: Outbound API rate limiters initialized")
 
 # React dashboard served at /app when built (audit B14-1: one modern UI, one classic)
@@ -579,57 +579,6 @@ def audit_ip() -> str:
     return _current_request_ip[0]
 
 
-def set_data_quality(status):
-    """Tracks market-data quality per source into STATE + Prometheus gauge."""
-    STATE["data_quality_status"] = status
-    try:
-        mapping = {
-            DataQualityStatus.LIVE: 4.0,
-            DataQualityStatus.DELAYED: 3.0,
-            DataQualityStatus.STALE: 2.0,
-            DataQualityStatus.INVALID: 1.0,
-            DataQualityStatus.DISCONNECTED: 0.0,
-            DataQualityStatus.UNAVAILABLE: 0.0,
-        }
-        platform_metrics.DATA_QUALITY.labels(source="market").set(mapping.get(status, 0.0))
-    except Exception:
-        pass
-
-
-def set_asset_quality(symbol: str, status: str):
-    """
-    Qualité de données PAR ACTIF (faille 1 corrigée — mentalité n°5 : chaque
-    donnée doit avoir un score de confiance). Un actif dont la source est
-    indisponible est marqué UNAVAILABLE et NE PEUT PAS être tradé.
-    """
-    STATE.setdefault("asset_data_status", {})[symbol] = status
-    STATE["assets"].setdefault(symbol, {})["data_status"] = status
-    if status == DataQualityStatus.UNAVAILABLE:
-        STATE["assets"][symbol]["has_real_price"] = False
-
-
-def _neutral(value, default: float = 0.0) -> float:
-    """
-    Convertit un indicateur éventuellement indisponible en valeur NEUTRE.
-    Contrairement à une donnée inventée, 0.0 = « aucune information » et
-    n'apporte aucune direction à la décision (mentalité n°20 : je ne sais pas).
-    """
-    if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return float(value)
-    return default
-
-
-def record_open_position(symbol: str, strategy: str, entry_price: float) -> None:
-    """LOT 2 : mémorise la stratégie responsable d'une position ouverte
-    (alimente le win rate RÉEL par stratégie au moment de la clôture)."""
-    if strategy:
-        STATE.setdefault("position_strategies", {})[symbol] = {
-            "strategy": strategy,
-            "entry_price": float(entry_price),
-            "ts": time.time(),
-        }
-
-
 def record_closed_trade(symbol: str, exit_price: float, side: str) -> None:
     """
     LOT 2 (PDF Pilier F, exigence 1) : enregistre un trade CLÔTURÉ dans le
@@ -741,121 +690,8 @@ def causal_signal_factor(state: dict) -> float:
     return 1.0
 
 
-def mark_real_price(symbol: str, price: float, volume_24h=None):
-    """
-    Enregistre un prix RÉEL reçu d'une source de marché. Met à jour le flag
-    has_real_price (seul vrai « feu vert » pour trader cet actif).
-    """
-    STATE["assets"][symbol]["price"] = float(price)
-    STATE["assets"][symbol]["has_real_price"] = True
-    STATE["assets"][symbol]["data_status"] = DataQualityStatus.LIVE
-    STATE.setdefault("last_known_prices", {})[symbol] = float(price)
-    if volume_24h is not None:
-        STATE["assets"][symbol]["volume_24h"] = float(volume_24h)
-    # Le dernier prix global réel (BTC) alimente le dashboard
-    if symbol == "BTCUSDT":
-        STATE["last_price"] = float(price)
-        STATE["price_history"].append(float(price))
-        if len(STATE["price_history"]) > 120:
-            STATE["price_history"] = STATE["price_history"][-120:]
-
-
-def update_asset_order_book(symbol: str, bids: list, asks: list, exchange: str = "bybit"):
-    """
-    Met à jour le carnet d'ordres RÉEL d'un actif (multi-assets, multi-exchange).
-    Stocke le carnet PAR exchange puis consolide le BEST BOOK (meilleur spread)
-    dans order_books[symbol] — `order_book` reste l'alias historique pour BTCUSDT.
-    """
-    STATE.setdefault("exchange_order_books", {}).setdefault(exchange, {})[symbol] = {
-        "bids": bids, "asks": asks, "_ts": time.time(),
-    }
-    # Consolidation BBO : le carnet de l'exchange avec le meilleur spread
-    best = None
-    for ex, books in STATE.get("exchange_order_books", {}).items():
-        b = books.get(symbol)
-        if not b or not b.get("bids") or not b.get("asks"):
-            continue
-        try:
-            spread = float(b["asks"][0][0]) - float(b["bids"][0][0])
-        except Exception:
-            continue
-        if best is None or spread < best[0]:
-            best = (spread, ex, b)
-    if best is not None:
-        consolidated = {"bids": best[2]["bids"], "asks": best[2]["asks"],
-                        "exchange": best[1]}
-        STATE.setdefault("order_books", {})[symbol] = consolidated
-        if symbol == "BTCUSDT":
-            STATE["order_book"] = consolidated
-    STATE.setdefault("asset_data_status", {})[symbol] = DataQualityStatus.LIVE
-    STATE["assets"][symbol]["data_status"] = DataQualityStatus.LIVE
-    # LOT 3 : alimente l'OFI du moteur d'order flow (pression bid vs ask)
-    try:
-        _bd = sum(float(b[1]) for b in bids if b and len(b) > 1)
-        _ad = sum(float(a[1]) for a in asks if a and len(a) > 1)
-        order_flow.update_book(symbol, _bd, _ad)
-    except Exception:
-        pass
-
-
-
-def _is_remote_deployment() -> bool:
-    """
-    P0-2 (audit indépendant §2.9): détecte un déploiement non-local.
-    Considéré non-local si une variable RAILWAY_* est présente (Railway) ou si
-    PORT est défini dans l'environnement (convention PaaS/Railway) — une URL
-    publique est alors exposée et l'authentification devient OBLIGATOIRE.
-    """
-    if any(k.startswith("RAILWAY_") for k in os.environ):
-        return True
-    port = os.getenv("PORT", "").strip()
-    return port.isdigit() and int(port) > 0
-
-
-def auth_enforced() -> bool:
-    """
-    L'authentification est-elle exigée sur les routes d'action ?
-     - AUTH_ENABLED=true explicite -> OUI (priorité absolue)
-     - AUTH_ENABLED=false explicite -> NON (choix assumé de l'opérateur,
-       ex. sandbox de dev/preview ; prioritaire sur la détection d'environnement)
-     - sinon : mode REAL (argent réel : jamais contrôlable sans session) OU
-       déploiement non-local (PORT/RAILWAY_* -> URL publique, P0-2) -> OUI.
-    """
-    explicit = os.getenv("AUTH_ENABLED", "").strip().lower()
-    if explicit in ("1", "true", "yes", "on"):
-        return True
-    if STATE["mode"] == "REAL":
-        return True
-    if explicit in ("0", "false", "no", "off"):
-        return False
-    return _is_remote_deployment()
-
-
-def require_auth(credentials=Depends(auth_security_optional)):
-    """
-    Protects state-changing endpoints.
-    Enforced when AUTH_ENABLED=true, OR in REAL mode, OR on any non-local
-    deployment (P0-2: PORT/RAILWAY_* -> an exposed URL must never be open
-    without authentication, even in DEMO mode).
-    """
-    if not auth_enforced():
-        return {"role": Roles.ADMIN, "username": "local-demo", "sub": "1"}
-    if credentials is None or not getattr(credentials, "credentials", None):
-        raise HTTPException(status_code=401, detail="Authentication required")
-    return AuthManager.verify_jwt_token(credentials.credentials)
-
 # ============ AUDIT C7/C3/C10 helpers ============
 # ============ AUDIT C7/C3/C10 helpers ============
-def require_admin(credentials=Depends(auth_security_optional)):
-    """ADMIN-gated dependency for user management endpoints (audit C7).
-    STRICT: always validates a real JWT - never the DEMO local-bypass, because
-    user management must be protected even when AUTH_ENABLED is off."""
-    if credentials is None or not getattr(credentials, "credentials", None):
-        raise HTTPException(status_code=401, detail="Authentication required.")
-    user = AuthManager.verify_jwt_token(credentials.credentials)
-    if user.get("role") != Roles.ADMIN:
-        raise HTTPException(status_code=403, detail="Admin role required.")
-    return user
 
 
 def _alerts_persist():
@@ -1519,128 +1355,6 @@ def launch_named(coro, name: str):
     task.set_name(f"qp_{name}")
     _BG_TASKS[name] = task
     return task
-
-
-def _telegram_send_sync(token: str, chat_id: str, text: str) -> bool:
-    """Envoi Telegram best-effort synchrone (canal dédié pour un secret au boot).
-    Ne lève jamais : retourne False en cas d'échec."""
-    try:
-        with httpx.Client(timeout=10) as client:
-            resp = client.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": chat_id, "text": text},
-            )
-            return resp.status_code == 200
-    except Exception:
-        return False
-
-
-def _deliver_admin_password_once(admin_pass: str, creds_path: str = None) -> str:
-    """
-    P0-3 (audit indépendant §2.10): livre le mot de passe admin auto-généré par
-    un canal dédié — JAMAIS dans les logs applicatifs (les logs sont souvent
-    centralisés/exportés vers des tiers).
-    Ordre : 1) Telegram DM si TELEGRAM_BOT_TOKEN + TELEGRAM_CHAT_ID configurés,
-            2) fichier .admin_credentials en mode 0600, 3) aucun canal.
-    Retourne "telegram" | "file" | "none".
-    """
-    tg_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
-    tg_chat = os.getenv("TELEGRAM_CHAT_ID", "")
-    if tg_token and tg_chat:
-        try:
-            ok = _telegram_send_sync(
-                tg_token,
-                tg_chat,
-                "🔐 QUANT-PORTAL : mot de passe admin auto-généré "
-                "(secret — ne pas partager, ne pas logger).\n"
-                "username=admin_quant\n"
-                f"password={admin_pass}\n"
-                "Définissez ADMIN_PASSWORD (env) puis redémarrez pour le remplacer.",
-            )
-            if ok:
-                return "telegram"
-        except Exception:
-            pass
-    path = Path(creds_path) if creds_path else Path(os.path.dirname(os.path.abspath(__file__))) / ".admin_credentials"
-    try:
-        path.write_text(
-            "# QUANT-PORTAL — mot de passe admin auto-généré (SECRET).\n"
-            "# Ne jamais committer, logger ni partager. Supprimez ce fichier après\n"
-            "# la première connexion et définissez ADMIN_PASSWORD (env) à la place.\n"
-            f"username=admin_quant\npassword={admin_pass}\n",
-            encoding="utf-8",
-        )
-        os.chmod(path, 0o600)
-        return "file"
-    except Exception:
-        return "none"
-
-
-def _ensure_auth_secrets(creds_path: str = None) -> None:
-    """
-    Audit B3-3/B3-4 + P0-2/P0-3 : secrets forts auto-générés au premier boot,
-    persistés chiffrés en DB, jamais loggués en clair (admin livré une fois).
-    """
-    import secrets as _secrets
-
-    import bcrypt as _bcrypt
-
-    # ---- JWT secret: reuse persisted or generate strong ----
-    jwt_secret = os.getenv("JWT_SECRET_KEY", "")
-    if len(jwt_secret) < 24:
-        persisted = db.get_setting("jwt_secret_key", decrypt=True)
-        if persisted and len(persisted) >= 24:
-            jwt_secret = persisted
-        else:
-            jwt_secret = _secrets.token_urlsafe(48)
-            db.save_setting("jwt_secret_key", jwt_secret, encrypt=True)
-            logger.warning(
-                "🔐 AUTH: auto-generated a strong JWT_SECRET_KEY and stored it "
-                "encrypted in the DB. Set JWT_SECRET_KEY env to override."
-            )
-        os.environ["JWT_SECRET_KEY"] = jwt_secret
-
-    # ---- Admin password: reuse persisted hash or generate + upsert ----
-    admin_pass = os.getenv("ADMIN_PASSWORD", "")
-    if not admin_pass or admin_pass == "ChangeMe!Institutionnel2026":
-        persisted_hash = db.get_user("admin_quant")
-        if persisted_hash and persisted_hash.get("password_hash", "").startswith("$2"):
-            # a real bcrypt hash already exists in the DB -> rely on it
-            logger.warning(
-                "🔐 AUTH: ADMIN_PASSWORD env not set - using the bcrypt hash "
-                "already stored in the users table. Set ADMIN_PASSWORD to override."
-            )
-        else:
-            admin_pass = _secrets.token_urlsafe(12)
-            hashed = _bcrypt.hashpw(admin_pass.encode(), _bcrypt.gensalt()).decode()
-            db.upsert_admin(hashed, Roles.ADMIN)
-            os.environ["ADMIN_PASSWORD"] = admin_pass
-            # P0-3: le secret n'apparaît JAMAIS dans les logs — canal dédié.
-            delivered = _deliver_admin_password_once(admin_pass, creds_path)
-            if delivered == "telegram":
-                logger.warning(
-                    "🔐 AUTH: auto-generated admin password — livré par Telegram "
-                    "(jamais loggé). Définissez ADMIN_PASSWORD env pour le remplacer."
-                )
-            elif delivered == "file":
-                logger.warning(
-                    "🔐 AUTH: auto-generated admin password — écrit dans "
-                    ".admin_credentials (0600, jamais loggé). Supprimez ce fichier "
-                    "après la première connexion et définissez ADMIN_PASSWORD env."
-                )
-            else:
-                logger.warning(
-                    "🔐 AUTH: auto-generated admin password (jamais loggé, aucun "
-                    "canal de livraison configuré). Définissez ADMIN_PASSWORD env "
-                    "pour garder la main sur l'accès."
-                )
-    else:
-        # env password provided: make sure the DB hash is in sync
-        try:
-            hashed = _bcrypt.hashpw(admin_pass.encode(), _bcrypt.gensalt()).decode()
-            db.upsert_admin(hashed, Roles.ADMIN)
-        except Exception:
-            pass
 
 
 def validate_startup_config():
@@ -3975,6 +3689,10 @@ async def websocket_endpoint(websocket: WebSocket):
         if websocket in STATE["connected_websockets"]:
             STATE["connected_websockets"].remove(websocket)
             platform_metrics.WS_CLIENTS.set(len(STATE["connected_websockets"]))
+
+# LOT 8 (architecture) : ré-exports helpers état + auth (AVANT le footer LOT C)
+from core.state_helpers import mark_real_price, record_open_position, set_asset_quality, set_data_quality, update_asset_order_book, _neutral  # noqa: F401,E402
+from core.auth_helpers import _deliver_admin_password_once, _ensure_auth_secrets, _is_remote_deployment, _telegram_send_sync, auth_enforced, require_admin, require_auth  # noqa: F401,E402
 
 # LOT C (F3) : ré-exports des modules extraits (AVANT schedulers/telemetry/routes qui les consomment)
 from core.observability import _final_scale_report, _final_scale_stats, _limiting_factor_stats, _load_final_scale_samples, _mark_paper_validation_day, _paper_validation_stats, _persist_final_scale_samples, _purge_final_scale_samples, _record_final_scale, _signal_stats  # noqa: F401,E402
