@@ -72,6 +72,8 @@ from core.edge_decay import EdgeDecayEngine
 from core.adversarial_engine import AdversarialDecisionEngine
 # LOT 7 : Execution Intelligence (IS + venue quality)
 from core.execution_intel import ExecutionIntel
+# LOT 9 : gouvernance — version système + hash config (chaque décision l'enregistre)
+from core.system_version import build_system_snapshot
 # LOT 3 (mandat) : Decision Journal / Trade Intelligence Database
 from core.decision_journal import (
     close_journal_entry,
@@ -832,6 +834,8 @@ edge_decay = EdgeDecayEngine(strategies=[s.name for s in strategies_list])
 adversarial_engine = AdversarialDecisionEngine()
 # LOT 7 : Execution Intelligence (IS, prévision/réalité, venue quality)
 execution_intel = ExecutionIntel()
+# LOT 9 : snapshot de version du système (config_hash + git + modèles déployés)
+SYSTEM_SNAPSHOT = build_system_snapshot(db)
 # LOT 2 : conviction calibrée + TRADE/WAIT explicite (calibration mesurée dans STATE)
 conviction_engine = ConvictionEngine(STATE)
 trade_opportunity = TradeOpportunityEngine()
@@ -2902,7 +2906,10 @@ async def live_trading_loop():
                             _opp.get("edge_net"), STATE.get("last_conviction", {}).get("win_rate"),
                             _opp.get("reason", ""), _opp.get("detail", ""),
                             STATE.get("conviction_threshold", 0.15), risk_state.state,
-                            strategy=_dom_early, payload={"sources": STATE.get("last_conviction", {})})
+                            strategy=_dom_early, payload={"sources": STATE.get("last_conviction", {})},
+                            # LOT 9 : version du système (gouvernance)
+                            system_version=SYSTEM_SNAPSHOT["system_version"],
+                            config_hash=SYSTEM_SNAPSHOT["config_hash"])
                         STATE.setdefault("decision_journal_per_symbol", {})[symbol] = {"id": _dj_id, "ts": time.time()}
                         if _opp["decision"] == "TRADE":
                             target_direction = np.sign(final_signal)

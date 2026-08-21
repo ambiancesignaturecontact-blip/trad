@@ -41,10 +41,14 @@ def journal_decision(db, decision: str, symbol: str, regime: str,
                      edge_net, win_rate, reason: str, detail: str,
                      threshold: float, risk_state: str, strategy: str = "",
                      qty=None, price=None, slippage_bps_expected=None,
-                     payload: dict | None = None) -> int:
+                     payload: dict | None = None,
+                     system_version: str | None = None,
+                     config_hash: str | None = None) -> int:
     """
     Crée l'entrée de décision. Retourne l'id (pour les mises à jour) ou 0.
     L'appelant mémorise l'id par symbole pour la clôture.
+    LOT 9 : system_version + config_hash (gouvernance — « avec quelle version
+    du système cette décision a été prise »). Absents -> NULL (jamais inventés).
     """
     try:
         entry = {
@@ -67,6 +71,8 @@ def journal_decision(db, decision: str, symbol: str, regime: str,
             "slippage_bps_expected": _safe_float(slippage_bps_expected),
             "payload": json.dumps({k: v for k, v in (payload or {}).items()
                                    if k in _PAYLOAD_KEYS}, default=str),
+            "system_version": str(system_version) if system_version else None,
+            "config_hash": str(config_hash) if config_hash else None,
         }
         return int(db.log_decision_entry(entry))
     except Exception as e:

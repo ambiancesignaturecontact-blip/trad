@@ -1017,7 +1017,8 @@ class DBManager:
     # ------------------------------------------------------------------ #
     def ensure_decision_journal_table(self):
         """Table structurée du journal de décision (LOT 3). Une ligne = UNE
-        décision TRADE ou WAIT, complétée à l'exécution et à la clôture."""
+        décision TRADE ou WAIT, complétée à l'exécution et à la clôture.
+        LOT 9 : colonnes system_version/config_hash ajoutées (gouvernance)."""
         try:
             with self.get_connection() as conn:
                 cur = conn.cursor()
@@ -1048,8 +1049,17 @@ class DBManager:
                             mae_pct REAL,
                             duration_sec REAL,
                             exit_reason TEXT,
-                            payload TEXT
+                            payload TEXT,
+                            system_version TEXT,
+                            config_hash TEXT
                         )""")
+                    # migrations compat (bases créées avant LOT 9)
+                    cur.execute("""
+                        ALTER TABLE decision_journal ADD COLUMN IF NOT EXISTS system_version TEXT
+                    """)
+                    cur.execute("""
+                        ALTER TABLE decision_journal ADD COLUMN IF NOT EXISTS config_hash TEXT
+                    """)
                 else:
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS decision_journal (
@@ -1077,8 +1087,16 @@ class DBManager:
                             mae_pct REAL,
                             duration_sec REAL,
                             exit_reason TEXT,
-                            payload TEXT
+                            payload TEXT,
+                            system_version TEXT,
+                            config_hash TEXT
                         )""")
+                    # SQLite : ALTER ADD COLUMN si la colonne manque
+                    cols = [r[1] for r in cur.execute("PRAGMA table_info(decision_journal)").fetchall()]
+                    if "system_version" not in cols:
+                        cur.execute("ALTER TABLE decision_journal ADD COLUMN system_version TEXT")
+                    if "config_hash" not in cols:
+                        cur.execute("ALTER TABLE decision_journal ADD COLUMN config_hash TEXT")
                 conn.commit()
         except Exception as e:
             logger.warning(f"ensure_decision_journal_table: {e}")
@@ -1090,7 +1108,7 @@ class DBManager:
         cols = ["ts", "decision", "symbol", "regime", "signal", "conviction",
                 "level", "edge_net", "win_rate", "reason", "detail", "threshold",
                 "risk_state", "strategy", "qty", "price", "slippage_bps_expected",
-                "payload"]
+                "payload", "system_version", "config_hash"]
         vals = [entry.get(c) for c in cols]
         try:
             with self.get_connection() as conn:

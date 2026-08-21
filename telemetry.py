@@ -32,6 +32,7 @@ from main import (  # noqa: F401
     supervisor,
 )
 from core.brains import report as brains_report
+from main import SYSTEM_SNAPSHOT  # noqa: F401
 from main import _BG_TASKS, _paper_validation_stats, _signal_stats, conviction_engine, edge_decay, execution_intel  # noqa: F401
 
 # Devise du compte (résolue une fois par appel — le cache FX interne gère la
@@ -199,6 +200,8 @@ def compile_telemetry_data(consensus_signals=None) -> dict:
         "execution_intel": execution_intel.report(),
         # LOT 8 (mandat) : architecture multi-cerveaux — registre + checks
         "brains": brains_report(),
+        # LOT 9 (mandat) : gouvernance — version système + hash config
+        "governance": SYSTEM_SNAPSHOT,
         "moe_gate": STATE.get("moe_gate", {}),
         "risk_budget": STATE.get("risk_budget", {}),
         "risk_state": STATE.get("risk_state", {}),

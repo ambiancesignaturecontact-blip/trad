@@ -352,6 +352,41 @@ async def api_brains():
     return report()
 
 
+@router.get("/api/v1/governance")
+async def api_governance():
+    """LOT 9 (mandat) : gouvernance — version système, hash config, modèles
+    déployés, état du snapshot, réconciliation, audit trail."""
+    snap = main.SYSTEM_SNAPSHOT if hasattr(main, "SYSTEM_SNAPSHOT") else {}
+    # état du snapshot de recovery (dernier snapshot DB)
+    recovery = {"last_snapshot_age_sec": None}
+    try:
+        raw = main.db.get_setting("state_snapshot")
+        if raw:
+            import json as _json
+            s = _json.loads(raw)
+            recovery["last_snapshot_age_sec"] = round(__import__("time").time() - float(s.get("ts", 0)), 1)
+    except Exception:
+        pass
+    # réconciliation : dernier résultat (si journalisé)
+    last_rec = None
+    try:
+        evs = main.db.list_events(event_type="reconciliation", limit=3)
+        if evs:
+            last_rec = evs[0]
+    except Exception:
+        pass
+    return {
+        "system_version": snap.get("system_version"),
+        "config_hash": snap.get("config_hash"),
+        "git_commit": snap.get("git_commit"),
+        "components": snap.get("components", {}),
+        "deployed_models": snap.get("deployed_models", {}),
+        "recovery": recovery,
+        "reconciliation": {"last": last_rec},
+        "audit_trail": "SHA-256 chaîné (audit_logs)",
+    }
+
+
 @router.get("/api/v1/ab")
 async def api_ab(_auth: dict = Depends(require_auth)):
     """VISION §7.5: A/B paper comparison (baseline vs vol-targeted config)."""
