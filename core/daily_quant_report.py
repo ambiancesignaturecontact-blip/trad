@@ -164,8 +164,10 @@ def build_daily_quant_report(db, state: dict, conviction_calibration: dict | Non
         # PHASE 4 P4-F : Digital Twin — replay de la variante sur le journal
         try:
             from core.digital_twin import TwinEngine, replay_journal
+            # twin_id daté : chaque rapport rejoue sur une table PROPRE
+            # (pas d'accumulation de trades entre rapports)
             _twin_rep = TwinEngine(
-                twin_id="twin_vnext_replay",
+                twin_id=f"twin_replay_{_today().replace('-', '')}",
                 params={"threshold_scale": settings.get_float(
                     "digital_twin", "threshold_scale", 0.85)})
             intelligence["digital_twin"] = {
