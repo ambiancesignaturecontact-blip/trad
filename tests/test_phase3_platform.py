@@ -564,3 +564,78 @@ class TestFrictionGate:
         from core.config import settings
         assert settings.get_float("execution",
                                   "max_expected_roundtrip_cost_pct", 1.0) == 1.0
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 4 P4-F (consolidation) — persistance du prix tick dans le journal
+# --------------------------------------------------------------------------- #
+class TestJournalPricePersistence:
+    """Le prix tick et la taille cible sont persistés à la décision (le champ
+    existait mais n'était jamais rempli) — le replay du Digital Twin devient
+    exact pour les nouvelles décisions."""
+
+    def test_journal_decision_persists_price_qty(self):
+        import sqlite3
+
+        from core.decision_journal import journal_decision
+
+        class MiniDB:
+            is_postgres = False
+
+            def __init__(self):
+                self._conn = sqlite3.connect(":memory:")
+                self._conn.execute(
+                    "CREATE TABLE decision_journal (id INTEGER PRIMARY KEY "
+                    "AUTOINCREMENT, ts REAL, decision TEXT, symbol TEXT, "
+                    "regime TEXT, signal REAL, conviction REAL, level TEXT, "
+                    "edge_net REAL, win_rate REAL, reason TEXT, detail TEXT, "
+                    "threshold REAL, risk_state TEXT, strategy TEXT, "
+                    "qty REAL, price REAL, slippage_bps_expected REAL, "
+                    "slippage_bps_real REAL, pnl_pct REAL, mfe_pct REAL, "
+                    "mae_pct REAL, duration_sec REAL, exit_reason TEXT, "
+                    "payload TEXT, system_version TEXT, config_hash TEXT)")
+
+            def get_connection(self):
+                return self._conn
+
+            def log_decision_entry(self, entry):
+                cols = list(entry.keys())
+                ph = ",".join("?" for _ in cols)
+                self._conn.execute(
+                    f"INSERT INTO decision_journal ({','.join(cols)}) "
+                    f"VALUES ({ph})", list(entry.values()))
+                return self._conn.execute(
+                    "SELECT last_insert_rowid()").fetchone()[0]
+
+        db = MiniDB()
+        eid = journal_decision(
+            db, "WAIT", "BTCUSDT", "Range", 0.05, 0.03, "LOW", 0.001, 0.5,
+            "conviction", "détail", 0.08, "NORMAL", price=64240.25)
+        assert eid > 0
+        row = db._conn.execute(
+            "SELECT price, qty FROM decision_journal WHERE id = ?",
+            (eid,)).fetchone()
+        assert row[0] == 64240.25
+        # WAIT : pas de qty
+        assert row[1] is None
+        # TRADE avec qty
+        eid2 = journal_decision(
+            db, "TRADE", "BTCUSDT", "Range", 0.3, 0.25, "HIGH", 0.01, 0.5,
+            "conviction", "détail", 0.08, "NORMAL", qty=0.001,
+            price=64000.0)
+        row2 = db._conn.execute(
+            "SELECT price, qty FROM decision_journal WHERE id = ?",
+            (eid2,)).fetchone()
+        assert row2[0] == 64000.0 and row2[1] == 0.001
+
+    def test_main_passes_price_to_journal(self):
+        """L'appel de production passe price=current_price (vérifié dans le
+        source — pas de régression silencieuse)."""
+        src = (Path(__file__).parent.parent / "main.py").read_text(
+            encoding="utf-8")
+        i_call = src.find("_dj_id = journal_decision(")
+        i_price = src.find("price=current_price,", i_call)
+        assert i_call != -1 and i_price != -1
+        assert i_call < i_price
+        # le qty n'est passé que pour les TRADE
+        assert "qty=(abs(target_qty) if target_direction != 0.0" in src

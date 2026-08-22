@@ -3211,7 +3211,14 @@ async def live_trading_loop():
                             STATE.get("conviction_threshold", 0.15), risk_state.state,
                             strategy=_dom_early, payload={"sources": STATE.get("last_conviction", {})},
                             system_version=SYSTEM_SNAPSHOT["system_version"],
-                            config_hash=SYSTEM_SNAPSHOT["config_hash"])
+                            config_hash=SYSTEM_SNAPSHOT["config_hash"],
+                            # P4-F (cycle consolidation) : persistance du prix
+                            # tick et de la taille cible — le replay du
+                            # Digital Twin devient exact pour les nouvelles
+                            # décisions (le champ existait, jamais rempli)
+                            price=current_price,
+                            qty=(abs(target_qty) if target_direction != 0.0
+                                 else None))
                         STATE.setdefault("decision_journal_per_symbol", {})[symbol] = {"id": _dj_id, "ts": time.time()}
                     except Exception as _dje:
                         logger.debug(f"journal final failed: {_dje}")
