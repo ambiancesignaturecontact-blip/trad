@@ -72,6 +72,11 @@ from core.edge_decay import EdgeDecayEngine
 from core.adversarial_engine import AdversarialDecisionEngine
 # LOT 7 : Execution Intelligence (IS + venue quality)
 from core.execution_intel import ExecutionIntel, friction_gate_blocks, refresh_friction_cache
+from core.portfolio_intel import (  # noqa: E402
+    exposure_gate_blocks,
+    portfolio_exposures,
+    refresh_beta_cache,
+)
 # LOT 9 : gouvernance — version système + hash config (chaque décision l'enregistre)
 from core.system_version import build_system_snapshot
 # LOT 3 (mandat) : Decision Journal / Trade Intelligence Database
@@ -3070,6 +3075,46 @@ async def live_trading_loop():
                                 target_direction = 0.0
                         except Exception as _fe:
                             logger.debug(f"friction gate failed: {_fe}")
+
+                    # ===== PHASE 4 P4-A : GATE D'EXPOSITION FACTORIELLE =====
+                    # Portfolio Intelligence : le portefeuille est regardé
+                    # comme un système unique. Le trade candidat est refusé
+                    # si l'exposition nette au facteur BTC après ajout dépasse
+                    # portfolio.max_btc_beta_exposure_pct (défaut 50 % équité)
+                    # OU si sa corrélation avec une position existante >
+                    # redundant_corr dans le même sens (concentration
+                    # corrélée : « déjà trop exposé au même facteur »).
+                    # Sans bêta/corrélation mesurés -> AUCUN blocage.
+                    if target_direction != 0.0:
+                        try:
+                            _px_betas = refresh_beta_cache(STATE, db)
+                            _pexp = portfolio_exposures(STATE, db,
+                                                        betas=_px_betas)
+                            _px_lim = settings.get_float(
+                                "portfolio", "max_btc_beta_exposure_pct", 50.0)
+                            _px_corr_lim = settings.get_float(
+                                "portfolio", "redundant_corr", 0.85)
+                            _px_block, _px_reason, _px_detail = \
+                                exposure_gate_blocks(
+                                    symbol,
+                                    "BUY" if target_direction > 0 else "SELL",
+                                    abs(target_qty), current_price,
+                                    float(STATE.get("current_equity") or 0.0),
+                                    _px_betas,
+                                    db.get_positions() if hasattr(db, "get_positions") else [],
+                                    max_btc_beta_pct=_px_lim,
+                                    redundant_corr=_px_corr_lim,
+                                    correlations=_pexp.get("correlations", {}))
+                            if _px_block:
+                                _gate_block = f"{_px_reason} — {_px_detail}"
+                                decide_no_trade(symbol, final_signal,
+                                                STATE.get("conviction_threshold", 0.15),
+                                                [_gate_block],
+                                                STATE["no_trade_stats"], db)
+                                logger.warning(f"🚫 {_gate_block} ({symbol})")
+                                target_direction = 0.0
+                        except Exception as _pe:
+                            logger.debug(f"portfolio exposure gate failed: {_pe}")
 
                     # PHASE 2 : journal de décision à la décision FINALE (après TOUTES
                     # les gates) — fidélité : TRADE seulement si l'ordre part réellement.

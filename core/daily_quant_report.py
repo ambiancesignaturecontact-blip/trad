@@ -127,6 +127,14 @@ def build_daily_quant_report(db, state: dict, conviction_calibration: dict | Non
             }
         except Exception:
             execution["friction_gate"] = None
+        # PHASE 4 P4-A : exposition factorielle du portefeuille (observabilité)
+        try:
+            from core.portfolio_intel import portfolio_exposures, refresh_beta_cache
+            _px_betas = refresh_beta_cache(state, db)
+            execution["portfolio_exposure"] = portfolio_exposures(
+                state, db, betas=_px_betas)
+        except Exception:
+            execution["portfolio_exposure"] = None
 
         # ---- Research ----
         research = {"kill_list": [], "recent_experiments": [], "n_killed": 0}

@@ -62,6 +62,7 @@ portfolio:
   rebalance_hours: 24.0            # rebalancing quotidien
   max_participation_pct: 0.01      # 1% du volume 24h (capacité / impact de marché)
   redundant_corr: 0.85             # corrélation = stratégies redondantes
+  max_btc_beta_exposure_pct: 50.0  # P4-A : exposition nette max au facteur BTC (% équité)
 
 # ===== P1-8 (audit §3) : risque de contrepartie =====
 counterparty:

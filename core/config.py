@@ -94,6 +94,7 @@ _DEFAULTS: dict[str, Any] = {
         "rebalance_hours": 24.0,
         "max_participation_pct": 0.01,   # 1 % du volume 24h
         "redundant_corr": 0.85,
+        "max_btc_beta_exposure_pct": 50.0,
     },
     "counterparty": {
         "max_capital_per_exchange_pct": 0.40,

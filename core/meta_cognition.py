@@ -116,6 +116,9 @@ def _no_trade_bucket(reason: str) -> str:
     # PHASE 3 C5 : gate de friction (coût AR attendu > seuil mesuré)
     if "friction" in r or "coût ar" in r:
         return "friction"
+    # PHASE 4 P4-A : gate d'exposition factorielle (portefeuille trop exposé)
+    if "portfolio_exposure" in r or "exposition nette" in r or "corrélée" in r:
+        return "portfolio_exposure"
     if "uncalibrated" in r or "non calibrée" in r:
         return "uncalibrated"
     if "execution_risk" in r or "slippage attendu" in r:
