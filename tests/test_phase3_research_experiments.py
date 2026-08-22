@@ -290,3 +290,76 @@ class TestCalibrageTrainOnly:
         assert r["recorded"] is True
         for d in r.get("per_symbol", {}).values():
             assert d["parity_checked"] is False
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 8 — momentum paramétrable, symbols restreints, filtre vol seul
+# --------------------------------------------------------------------------- #
+class TestCycle8Extensions:
+    def test_momentum_kwargs_passed(self):
+        """Les paramètres momentum (roc long) sont transmis au générateur."""
+        from core.research_experiments import run_experiment
+        db = FakeDB()
+        db.add_experiment("Momentum lent", status="RESEARCH")
+        r = run_experiment(db, 1, timeframe="4h", signal_family="momentum",
+                           momentum_kwargs={"roc_period": 48,
+                                            "min_momentum": 0.02})
+        assert r["recorded"] is True
+
+    def test_symbols_restricted(self):
+        """symbols=("AAPL",) ne traite QUE AAPL (per_symbol)."""
+        from core.research_experiments import run_experiment
+        db = FakeDB500()
+        db.add_experiment("Actions only", status="RESEARCH")
+        r = run_experiment(db, 1, symbols=("AAPL",), timeframe="1h")
+        assert set(r["per_symbol"].keys()) == {"AAPL"}
+
+    def test_symbols_none_default(self):
+        from core.research_experiments import DEFAULT_SYMBOLS, run_experiment
+        db = FakeDB500()
+        db.add_experiment("Défaut", status="RESEARCH")
+        r = run_experiment(db, 1, symbols=None)
+        assert set(r["per_symbol"].keys()) <= set(DEFAULT_SYMBOLS)
+        assert len(r["per_symbol"]) > 0
+
+    def test_vol_filter_reject_when_no_protection(self):
+        """Filtre vol seul sur données calmes (drawdown hors HIGH_VOL,
+        stress = rallye) : REJECT — aucune protection mesurée."""
+        from core.research_experiments import run_vol_filter_experiment
+        db = FakeDB500()
+        db.add_experiment("Filtre vol seul", status="RESEARCH")
+        r = run_vol_filter_experiment(db, 1, cost_ar_pct=0.213)
+        assert r["decision"] in ("KEEP", "REJECT")
+        assert r["recorded"] is True
+        assert "signal_family" in r
+
+    def test_vol_filter_stress_reduces_pnl_when_rally(self):
+        """Vérification mécanique DÉTERMINISTE : en période de vol haute
+        HAUSSIÈRE pure, le filtre ×0,5 réduit le PnL (il coupe le rallye)."""
+        from core.research_experiments import backtest_signals, high_vol_mask, volatility_ewma
+        ret = np.zeros(200)
+        ret[100:130] = 0.02                      # rallye pur de 30 barres
+        close = pd.Series((1 + ret).cumprod() * 100.0)
+        vol = volatility_ewma(close)
+        thr = vol.quantile(0.8)
+        mask = high_vol_mask(vol, thr)
+        scale = pd.Series(1.0, index=close.index)
+        scale[mask] = 0.5
+        ones = pd.Series(1.0, index=close.index)
+        base = backtest_signals(close, ones)
+        treat = backtest_signals(close, ones, position_scale=scale)
+        assert int(mask.sum()) > 10              # le rallye est bien masqué
+        assert treat["cumulative_pnl_pct"] < base["cumulative_pnl_pct"]
+
+
+class FakeDB500(FakeDB):
+    """FakeDB avec >= 400 barres par symbole (le pipeline exige un minimum
+    d'échantillon ; FakeDB n'en fournit que 100 -> per_symbol vide)."""
+
+    def load_candles(self, symbol, limit=200):
+        n = min(limit, 600)
+        close = np.linspace(100.0, 110.0, n)
+        idx = pd.date_range("2026-01-01", periods=n, freq="h")
+        return pd.DataFrame({"open": close, "high": close + 1,
+                             "low": close - 1, "close": close,
+                             "volume": np.full(n, 1000.0)}, index=idx)

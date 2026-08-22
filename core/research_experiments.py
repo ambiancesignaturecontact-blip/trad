@@ -300,6 +300,7 @@ def run_experiment(db, experiment_id: int,
                    timeframe: str = "1h",
                    signal_family: str = "momentum",
                    flow_z_window: int = 48,
+                   momentum_kwargs: dict | None = None,
                    research_memory=None) -> dict:
     """
     Pipeline complet pour une hypothèse (signal + filtre vol en HIGH_VOL) :
@@ -333,6 +334,7 @@ def run_experiment(db, experiment_id: int,
     assert timeframe in ("1h", "4h", "1d"), f"timeframe inconnu: {timeframe}"
     assert signal_family in ("momentum", "contrarian", "flow"), \
         f"famille inconnue: {signal_family}"
+    symbols = tuple(symbols) if symbols else DEFAULT_SYMBOLS
     from core.research_memory import ResearchMemory
     rm = research_memory or (ResearchMemory(db) if db is not None else None)
 
@@ -381,8 +383,10 @@ def run_experiment(db, experiment_id: int,
             sig = flow_signal_series(close, vol_s, z_window=flow_z_window,
                                      threshold=thr_f)
         else:
-            sig = momentum_signal_series(close, volume=df.get("volume")
-                                         if "volume" in df.columns else None)
+            sig = momentum_signal_series(close,
+                                         volume=df.get("volume")
+                                         if "volume" in df.columns else None,
+                                         **(momentum_kwargs or {}))
 
         # parité avec la production (garde-fou : pas de variante de labo) —
         # seulement sur 1h ET famille momentum (timeframe de production) ;
@@ -604,3 +608,105 @@ def calibrate_threshold_train(close: pd.Series, volume: pd.Series,
     z = ((vol_delta - mean) / std.replace(0, np.nan)).abs()
     q = z.quantile(quantile) if z.notna().sum() > 2 else 1.5
     return float(q) if np.isfinite(q) else 1.5
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 8 — EXPÉRIENCE FILTRE VOL SEUL (Exp#11, risk budgeting).
+# Hors signal : position constante 1,0 (buy & hold proxy) vs × filter_scale
+# quand vol EWMA > percentile train (HIGH_VOL). Mesure si la réduction de
+# taille en régime 3 a une valeur de PROTECTION propre (stress/drawdown)
+# sans détruire le rendement. Décision : KEEP si le traitement réduit le
+# stress ET le drawdown de > 5 % relatif (protection prouvée) ; REJECT si
+# aucune amélioration ; KEEP mixtes sinon. Jamais PROMOTE.
+# --------------------------------------------------------------------------- #
+def run_vol_filter_experiment(db, experiment_id: int,
+                              symbols: tuple = DEFAULT_SYMBOLS,
+                              train_ratio: float = TRAIN_RATIO,
+                              vol_quantile: float = VOL_QUANTILE,
+                              filter_scale: float = FILTER_SCALE,
+                              cost_ar_pct: float = COST_AR_PCT,
+                              research_memory=None) -> dict:
+    from core.research_memory import ResearchMemory
+    rm = research_memory or (ResearchMemory(db) if db is not None else None)
+    per_symbol = {}
+    oos_base, oos_treat, stress_base, stress_treat = [], [], [], []
+    for sym in symbols:
+        df = load_candles(db, sym)
+        if df.empty or len(df) < 400:
+            continue
+        close = df["close"].astype(float)
+        vol = volatility_ewma(close)
+        ones = pd.Series(1.0, index=close.index)
+        split = int(len(df) * train_ratio)
+        thr = vol.iloc[:split].quantile(vol_quantile) \
+            if vol.iloc[:split].notna().sum() > 2 else np.inf
+        mask = high_vol_mask(vol, thr)
+        pos_scale = pd.Series(1.0, index=close.index)
+        pos_scale[mask] = filter_scale
+        oos_close = close.iloc[split:]
+        b = backtest_signals(oos_close, ones.iloc[split:],
+                             cost_ar_pct=cost_ar_pct)
+        t = backtest_signals(oos_close, ones.iloc[split:],
+                             cost_ar_pct=cost_ar_pct,
+                             position_scale=pos_scale.iloc[split:])
+        sb = stress_high_vol(close, ones, vol, cost_ar_pct=cost_ar_pct)
+        st = stress_high_vol(close, ones, vol, cost_ar_pct=cost_ar_pct,
+                             position_scale=pos_scale)
+        oos_base.append(b)
+        oos_treat.append(t)
+        stress_base.append(sb)
+        stress_treat.append(st)
+        per_symbol[sym] = {"n_bars": int(len(df)),
+                           "vol_threshold": round(float(thr), 6)
+                           if np.isfinite(thr) else None,
+                           "baseline_oos": b, "treatment_oos": t,
+                           "baseline_stress": sb, "treatment_stress": st}
+    def _agg(rows, key):
+        n_rt = sum(r.get("n_round_trips", 0) for r in rows)
+        pnl = sum(r.get("cumulative_pnl_pct", 0.0) for r in rows)
+        dd = min((r.get("max_drawdown_pct") or 0.0) for r in rows) if rows else 0.0
+        return {"n_round_trips": n_rt, "cumulative_pnl_pct": round(pnl, 4),
+                "max_drawdown_pct": round(dd, 4)}
+    agg_base, agg_treat = _agg(oos_base, "b"), _agg(oos_treat, "t")
+    st_base, st_treat = _agg(stress_base, "b"), _agg(stress_treat, "t")
+    dd_improve = (agg_treat["max_drawdown_pct"] > agg_base["max_drawdown_pct"] + 1e-9)
+    st_improve = st_treat["cumulative_pnl_pct"] > st_base["cumulative_pnl_pct"] + 1e-9
+    rel_improve = (st_treat["cumulative_pnl_pct"] - st_base["cumulative_pnl_pct"]) \
+        / abs(st_base["cumulative_pnl_pct"]) if st_base["cumulative_pnl_pct"] else 0.0
+    if dd_improve and st_improve and rel_improve > 0.05:
+        decision, conclusion = "KEEP", (
+            f"Le filtre vol seul réduit le stress de {rel_improve*100:.1f} % "
+            f"relatif (cumul {st_treat['cumulative_pnl_pct']} vs "
+            f"{st_base['cumulative_pnl_pct']} %) et améliore le drawdown "
+            f"({agg_treat['max_drawdown_pct']} vs "
+            f"{agg_base['max_drawdown_pct']} %) — protection prouvée, "
+            f"au prix du rendement (buy & hold réduit). KEEP : la réduction "
+            f"de taille en HIGH_VOL a une valeur de protection.")
+    elif dd_improve or st_improve:
+        decision, conclusion = "KEEP", (
+            f"Résultats MIXTES : {'drawdown' if dd_improve else 'stress'} "
+            f"amélioré mais pas l'autre — protection partielle, KEEP sans "
+            f"promotion.")
+    else:
+        decision, conclusion = "REJECT", (
+            f"Le filtre vol seul n'améliore NI le stress NI le drawdown "
+            f"({st_treat['cumulative_pnl_pct']} vs {st_base['cumulative_pnl_pct']} "
+            f"%; dd {agg_treat['max_drawdown_pct']} vs "
+            f"{agg_base['max_drawdown_pct']} %) — aucune valeur de protection "
+            f"mesurée.")
+    results = {"hypothesis": f"experiment#{experiment_id}",
+               "symbols": [s for s in per_symbol],
+               "cost_ar_pct": cost_ar_pct, "filter_scale": filter_scale,
+               "signal_family": "none (position constante 1.0)",
+               "oos": {"baseline": agg_base, "treatment": agg_treat},
+               "stress": {"baseline": st_base, "treatment": st_treat},
+               "per_symbol": per_symbol, "decision": decision}
+    recorded = False
+    if rm is not None:
+        try:
+            recorded = rm.record_experiment_result(experiment_id, results,
+                                                   conclusion, decision)
+        except Exception as e:
+            logger.warning(f"record_experiment_result failed: {e}")
+    results["recorded"] = recorded
+    return results
