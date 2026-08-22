@@ -137,6 +137,7 @@ _DEFAULTS: dict[str, Any] = {
     },
     "execution": {
         "cvar_limit_pct": 0.025,
+        "max_expected_roundtrip_cost_pct": 1.0,
     },
     # LOT 2 (mandat) : Conviction Engine — niveaux, exécution, calibration
     "conviction": {

@@ -213,3 +213,62 @@ def friction_report(db, limit: int = 5000) -> dict:
     except Exception as e:
         out["note"] = f"indisponible ({e})"
     return out
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 5 — GATE DE FRICTION (décision opérateur, EURUSD micro-taille).
+# Friction RÉELLE mesurée (890 fills) : EURUSD p95 157 bps vs AAPL/TSLA ~7 bps.
+# Règle : un trade est refusé si le coût AR ATTENDU (frais réels 2×0,1 % +
+# slippage p95 mesuré par symbole ×2) dépasse un seuil configuré
+# (execution.max_expected_roundtrip_cost_pct, défaut 1,0 %). La production
+# n'est PAS réglée sur le p95 : on refuse les QUEUES LOURDES mesurées.
+# Sans mesure par symbole -> pas de blocage (aucun chiffre inventé).
+# --------------------------------------------------------------------------- #
+def expected_roundtrip_cost_pct(fee_pct: float, slippage_p95_bps: float | None,
+                                default_bps: float = 0.0) -> float | None:
+    """Coût AR attendu en % du notional : 2×frais + 2×slippage p95.
+    Retourne None si le slippage p95 n'est pas mesuré (ni 0 ni inventé)."""
+    if slippage_p95_bps is None:
+        return None
+    return 2.0 * fee_pct + 2.0 * (float(slippage_p95_bps) / 100.0)
+
+
+def friction_gate_blocks(symbol: str, friction_cache: dict,
+                         threshold_pct: float, fee_pct: float = 0.1) -> tuple:
+    """
+    True si le coût AR attendu (frais + slippage p95 mesuré du symbole)
+    dépasse le seuil. Retourne (block, raison, coût_pct).
+    Sans mesure p95 pour le symbole -> (False, None, None) : pas de blocage
+    sans preuve.
+    """
+    p95 = (friction_cache or {}).get(symbol)
+    cost = expected_roundtrip_cost_pct(fee_pct, p95)
+    if cost is None:
+        return False, None, None
+    if cost > threshold_pct:
+        return (True,
+                f"friction: coût AR attendu {cost:.2f}% > seuil "
+                f"{threshold_pct:.2f}% (slippage p95 mesuré {p95:.1f} bps)",
+                round(cost, 4))
+    return False, None, round(cost, 4)
+
+
+def refresh_friction_cache(state: dict, db, max_age_sec: float = 600.0) -> dict:
+    """Cache STATE['friction_p95_bps'] = {symbole: p95} rafraîchi au plus tous
+    les max_age_sec (friction_report lit les events persistés). Jamais
+    bloquant ; sans données -> cache vide (pas de blocage)."""
+    try:
+        cache = state.get("friction_p95_bps") or {}
+        ts = state.get("friction_p95_ts") or 0.0
+        if time.time() - ts < max_age_sec:
+            return cache
+        report = friction_report(db, limit=5000)
+        out = {sym: d["p95"] for sym, d in (report.get("by_symbol") or {}).items()
+               if d.get("p95") is not None}
+        state["friction_p95_bps"] = out
+        state["friction_p95_ts"] = time.time()
+        state["friction_report_n"] = report.get("n_fills", 0)
+        return out
+    except Exception as e:
+        logger.debug(f"refresh_friction_cache failed: {e}")
+        return state.get("friction_p95_bps") or {}

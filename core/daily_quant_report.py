@@ -16,6 +16,8 @@ import logging
 import time
 from datetime import datetime
 
+from core.config import settings
+from core.execution_intel import refresh_friction_cache
 from core.paper_validation import calibration_close_tracking
 from core.system_version import system_version
 
@@ -105,6 +107,26 @@ def build_daily_quant_report(db, state: dict, conviction_calibration: dict | Non
             execution["friction"] = friction_report(db)
         except Exception:
             execution["friction"] = None
+        # PHASE 3 Cycle 5 : état du gate de friction (seuil + symboles bloqués)
+        try:
+            from core.execution_intel import friction_gate_blocks
+            _fg_thr = settings.get_float(
+                "execution", "max_expected_roundtrip_cost_pct", 1.0)
+            _fg_cache = refresh_friction_cache(state, db)
+            _fg_blocked = []
+            for _sym, _p95 in (_fg_cache or {}).items():
+                _b, _r, _c = friction_gate_blocks(_sym, _fg_cache, _fg_thr)
+                if _b:
+                    _fg_blocked.append({"symbol": _sym, "p95_bps": _p95,
+                                        "cost_ar_pct": _c})
+            execution["friction_gate"] = {
+                "threshold_pct": _fg_thr,
+                "blocked_symbols": _fg_blocked,
+                "note": "coût AR attendu = 2×frais réels + 2×slippage p95 mesuré "
+                        "par symbole ; sans mesure, aucun blocage",
+            }
+        except Exception:
+            execution["friction_gate"] = None
 
         # ---- Research ----
         research = {"kill_list": [], "recent_experiments": [], "n_killed": 0}

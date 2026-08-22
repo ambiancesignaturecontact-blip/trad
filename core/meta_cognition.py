@@ -113,6 +113,9 @@ def _no_trade_bucket(reason: str) -> str:
     # (une raison OPP:EDGE_INSUFFICIENT contient aussi "< seuil" dans le préfixe)
     if "edge_insufficient" in r or "edge net" in r or "edge estimé" in r:
         return "edge_insufficient"
+    # PHASE 3 C5 : gate de friction (coût AR attendu > seuil mesuré)
+    if "friction" in r or "coût ar" in r:
+        return "friction"
     if "uncalibrated" in r or "non calibrée" in r:
         return "uncalibrated"
     if "execution_risk" in r or "slippage attendu" in r:

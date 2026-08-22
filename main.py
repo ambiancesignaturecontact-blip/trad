@@ -71,7 +71,7 @@ from core.edge_decay import EdgeDecayEngine
 # LOT 6 : Adversarial Decision Engine (robustesse d'une décision sous stress)
 from core.adversarial_engine import AdversarialDecisionEngine
 # LOT 7 : Execution Intelligence (IS + venue quality)
-from core.execution_intel import ExecutionIntel
+from core.execution_intel import ExecutionIntel, friction_gate_blocks, refresh_friction_cache
 # LOT 9 : gouvernance — version système + hash config (chaque décision l'enregistre)
 from core.system_version import build_system_snapshot
 # LOT 3 (mandat) : Decision Journal / Trade Intelligence Database
@@ -3045,6 +3045,31 @@ async def live_trading_loop():
                                     target_direction = 0.0
                     except Exception as _py:
                         logger.debug(f"Pyramiding/netting check failed: {_py}")
+
+                    # ===== PHASE 3 C5 : GATE DE FRICTION (décision opérateur) =====
+                    # Friction RÉELLE mesurée (890 fills) : queue lourde sur
+                    # micro-trades (EURUSD p95 157 bps, SOL 75 bps) vs
+                    # AAPL/TSLA ~7 bps. Un trade est refusé si le coût AR
+                    # ATTENDU (frais réels 2×0,1 % + slippage p95 mesuré ×2)
+                    # dépasse execution.max_expected_roundtrip_cost_pct
+                    # (défaut 1,0 %). Sans mesure p95 -> pas de blocage
+                    # (aucun chiffre inventé).
+                    if target_direction != 0.0:
+                        try:
+                            _fric_cache = refresh_friction_cache(STATE, db)
+                            _fric_thr = settings.get_float(
+                                "execution", "max_expected_roundtrip_cost_pct", 1.0)
+                            _fric_block, _fric_reason, _fric_cost = \
+                                friction_gate_blocks(symbol, _fric_cache, _fric_thr)
+                            if _fric_block:
+                                _gate_block = _fric_reason
+                                decide_no_trade(symbol, final_signal,
+                                                STATE.get("conviction_threshold", 0.15),
+                                                [_gate_block], STATE["no_trade_stats"], db)
+                                logger.warning(f"🚫 {_gate_block} ({symbol})")
+                                target_direction = 0.0
+                        except Exception as _fe:
+                            logger.debug(f"friction gate failed: {_fe}")
 
                     # PHASE 2 : journal de décision à la décision FINALE (après TOUTES
                     # les gates) — fidélité : TRADE seulement si l'ordre part réellement.

@@ -508,3 +508,59 @@ class TestFrictionReport:
                                                 "regime_name": "Range",
                                                 "regime_id": 2})
         assert "friction" in r["execution"]
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 5 — GATE DE FRICTION (décision opérateur EURUSD micro-taille)
+# --------------------------------------------------------------------------- #
+class TestFrictionGate:
+    def test_expected_cost_formula(self):
+        from core.execution_intel import expected_roundtrip_cost_pct
+        # fee 0,1 %/side ×2 + slippage p95 ×2 : AAPL 7 bps -> 0,34 %
+        assert expected_roundtrip_cost_pct(0.1, 7.01) == \
+            pytest.approx(0.3402, abs=1e-6)
+        # EURUSD 157 bps -> 3,35 %
+        assert expected_roundtrip_cost_pct(0.1, 157.47) == \
+            pytest.approx(3.3494, abs=1e-6)
+        # pas de mesure -> None (jamais 0 inventé)
+        assert expected_roundtrip_cost_pct(0.1, None) is None
+
+    def test_gate_blocks_heavy_tail(self):
+        from core.execution_intel import friction_gate_blocks
+        cache = {"EURUSD": 157.47, "SOLUSDT": 75.26, "AAPL": 7.01}
+        blk, reason, cost = friction_gate_blocks("EURUSD", cache, 1.0)
+        assert blk is True and "friction" in reason and cost > 1.0
+        blk, _, _ = friction_gate_blocks("SOLUSDT", cache, 1.0)
+        assert blk is True
+        blk, _, cost = friction_gate_blocks("AAPL", cache, 1.0)
+        assert blk is False and cost < 1.0
+
+    def test_no_measure_no_block(self):
+        from core.execution_intel import friction_gate_blocks
+        blk, reason, cost = friction_gate_blocks("BTCUSDT", {}, 1.0)
+        assert blk is False and reason is None and cost is None
+
+    def test_gate_wired_in_main_after_netting_before_journal(self):
+        """Le gate friction est APRÈS le netting (dernière gate) et AVANT le
+        journal de décision (fidélité du journal préservée)."""
+        src = (Path(__file__).parent.parent / "main.py").read_text(encoding="utf-8")
+        i_fric = src.find("GATE DE FRICTION")
+        i_net = src.find("netting: retournement sans signal fort")
+        i_journal = src.find("_dj_id = journal_decision(")
+        assert i_fric != -1 and i_net != -1 and i_journal != -1
+        assert i_net < i_fric < i_journal
+        assert "friction_gate_blocks(symbol" in src
+
+    def test_no_trade_bucket_friction(self):
+        from core.meta_cognition import _no_trade_bucket
+        assert _no_trade_bucket("friction: coût AR attendu 3.35% > seuil") == \
+            "friction"
+
+    def test_config_default_present(self):
+        import yaml
+        cfg = yaml.safe_load(open(Path(__file__).parent.parent / "config.yaml",
+                                  encoding="utf-8"))
+        assert cfg["execution"]["max_expected_roundtrip_cost_pct"] == 1.0
+        from core.config import settings
+        assert settings.get_float("execution",
+                                  "max_expected_roundtrip_cost_pct", 1.0) == 1.0

@@ -115,6 +115,7 @@ drift:
 # ===== P1-8 (audit §3) : exécution =====
 execution:
   cvar_limit_pct: 0.025            # limite CVaR quotidienne (2.5%)
+  max_expected_roundtrip_cost_pct: 1.0   # PHASE 3 C5 : gate friction — coût AR attendu (frais + slippage p95 mesuré par symbole) au-delà duquel le trade est refusé (NO_TRADE friction_excessive)
 
 autopilot:
   # P0-6 (audit §5-P0-6) : 4-8 semaines de paper-trading DATÉ et CONTINU avant REAL
