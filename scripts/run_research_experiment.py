@@ -28,7 +28,7 @@ def main():
     signal_family = sys.argv[4] if len(sys.argv) > 4 else "momentum"
     assert filter_mode in ("signal", "position")
     assert timeframe in ("1h", "4h", "1d")
-    assert signal_family in ("momentum", "contrarian")
+    assert signal_family in ("momentum", "contrarian", "flow")
     db = DBManager()
     print(f"🔬 EXPÉRIENCE #{experiment_id} (mode filtre : {filter_mode}, "
           f"timeframe : {timeframe}, famille : {signal_family}) — pipeline "

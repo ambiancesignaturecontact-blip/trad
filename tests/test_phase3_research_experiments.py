@@ -236,3 +236,57 @@ class TestContrarianSignal:
         assert r["recorded"] is True
         for d in r.get("per_symbol", {}).values():
             assert d["parity_checked"] is False  # pas de production équivalente
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 7 — calibrage TRAIN-only + signal flow (micro-structure)
+# --------------------------------------------------------------------------- #
+class TestCalibrageTrainOnly:
+    def test_contrarian_threshold_passed_not_recalibrated(self):
+        """Le seuil contrarian est FOURNI (calibré train) — pas de recalcul
+        sur la série entière dans la fonction de signal."""
+        from core.research_experiments import contrarian_signal_series
+        close = pd.Series([100.0] * 50 + [110.0] + [100.0] * 20)
+        # seuil très bas : les 2 rendements non nuls (+10 %, -9,09 %) sont
+        # extrêmes -> signal opposé sur ces 2 barres exactement
+        sig = contrarian_signal_series(close, threshold=0.0)
+        assert (sig != 0).sum() == 2
+        assert sig.iloc[50] == -1.0 and sig.iloc[51] == 1.0
+        # seuil très haut : aucun signal
+        sig2 = contrarian_signal_series(close, threshold=1e9)
+        assert (sig2 != 0).sum() == 0
+
+    def test_flow_signal_causal_zscore(self):
+        """Le z-score du volume directionnel est causal (rolling) ; un pic de
+        volume directionnel génère un signal de même signe."""
+        from core.research_experiments import flow_signal_series
+        idx = pd.date_range("2026-01-01", periods=120, freq="h")
+        close = pd.Series(100.0, index=idx)
+        # petite tendance haussière -> vol_delta positif en moyenne
+        close = close * (1.0 + np.linspace(0, 0.05, 120))
+        vol = pd.Series(1000.0, index=idx)
+        # énorme pic de volume haussier à la barre 80
+        vol.iloc[80] = 100_000.0
+        sig = flow_signal_series(close, vol, z_window=24, threshold=2.0)
+        assert sig.iloc[80] == 1.0          # flux haussier extrême -> +1
+        assert sig.iloc[70] == 0.0          # pas de signal avant le pic
+
+    def test_calibrate_threshold_train_only(self):
+        """calibrate_threshold_train : seuil = percentile 90 des |z| du TRAIN
+        (split), la valeur est finie et raisonnable."""
+        from core.research_experiments import calibrate_threshold_train
+        rng = np.random.default_rng(11)
+        close = pd.Series((1 + rng.normal(0, 0.01, 500)).cumprod() * 100)
+        vol = pd.Series(rng.integers(100, 3000, 500).astype(float))
+        thr = calibrate_threshold_train(close, vol, split=350, quantile=0.90)
+        assert 0.5 < thr < 5.0
+
+    def test_flow_family_wired_and_no_parity(self):
+        from core.research_experiments import run_experiment
+        db = FakeDB()
+        db.add_experiment("Flow micro-structure", status="RESEARCH")
+        r = run_experiment(db, 1, timeframe="1h", signal_family="flow")
+        assert r["signal_family"] == "flow"
+        assert r["recorded"] is True
+        for d in r.get("per_symbol", {}).values():
+            assert d["parity_checked"] is False

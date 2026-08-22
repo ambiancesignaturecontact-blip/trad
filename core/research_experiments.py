@@ -299,9 +299,10 @@ def run_experiment(db, experiment_id: int,
                    filter_mode: str = "signal",
                    timeframe: str = "1h",
                    signal_family: str = "momentum",
+                   flow_z_window: int = 48,
                    research_memory=None) -> dict:
     """
-    Pipeline complet pour l'hypothèse (Momentum + filtre vol en HIGH_VOL) :
+    Pipeline complet pour une hypothèse (signal + filtre vol en HIGH_VOL) :
     baseline vs traitement, walk-forward 70/30, stress, décision REJECT/KEEP.
     Enregistre le résultat via ResearchMemory si fourni (ou directement db).
 
@@ -312,16 +313,25 @@ def run_experiment(db, experiment_id: int,
         filtre réduit le POIDS FINAL de la position (× filter_scale en
         HIGH_VOL), sans changer les entrées/sorties.
 
+    signal_family :
+      - "momentum"  (production) : parité vérifiée sur 1h ;
+      - "contrarian" : post-extrême (seuil calibré TRAIN-only, Cycle 7) ;
+      - "flow"      (Exp#8) : volume imbalance directionnel (z-score causal,
+        seuil |z| calibré TRAIN-only).
+
     timeframe :
-      - "1h" (production) : parité de signal VÉRIFIÉE avec MomentumStrategy ;
-      - "4h"/"1d" (Cycle 4, Expérience #3) : résampling propre (close =
-        dernière, extrema, volume somme) — variante de RECHERCHE, la parité
-        de signal ne s'applique pas (parity_checked=False documenté), jamais
-        promu sans preuve supplémentaire.
+      - "1h" (production) ; "4h"/"1d" (Cycle 4) : résampling propre —
+        variante de RECHERCHE, parity_checked=False documenté, jamais promu
+        sans preuve supplémentaire.
+
+    PHASE 3 Cycle 7 — CALIBRAGE TRAIN-ONLY (correction de rigueur) : les
+    seuils des familles contrarian/flow sont calibrés sur la partie TRAIN du
+    walk-forward, JAMAIS sur l'OOS (le cycle 6 calibré sur toute la série
+    présentait un biais de calibrage documenté — exp#6 ré-évaluée en #7).
     """
     assert filter_mode in ("signal", "position"), f"mode inconnu: {filter_mode}"
     assert timeframe in ("1h", "4h", "1d"), f"timeframe inconnu: {timeframe}"
-    assert signal_family in ("momentum", "contrarian"), \
+    assert signal_family in ("momentum", "contrarian", "flow"), \
         f"famille inconnue: {signal_family}"
     from core.research_memory import ResearchMemory
     rm = research_memory or (ResearchMemory(db) if db is not None else None)
@@ -351,10 +361,25 @@ def run_experiment(db, experiment_id: int,
             continue
         close = df["close"].astype(float)
         vol = volatility_ewma(close)
-        # PHASE 3 C6 : famille de signal — momentum (production) ou contrarian
-        # post-extrême (Exp#5, contre-hypothèse du momentum killé).
+        # PHASE 3 C6/C7 : famille de signal — momentum (production),
+        # contrarian post-extrême, ou flow micro-structure (Exp#8).
+        split = int(len(df) * train_ratio)
+        parity_checked = (timeframe == "1h" and signal_family == "momentum")
         if signal_family == "contrarian":
-            sig = contrarian_signal_series(close)
+            # Cycle 7 : seuil calibré sur TRAIN uniquement (correction biais)
+            thr_c = close.iloc[:split].pct_change().abs() \
+                .replace([np.inf, -np.inf], np.nan).quantile(0.90)
+            thr_c = float(thr_c) if np.isfinite(thr_c) else np.inf
+            sig = contrarian_signal_series(close, ret_quantile=None,
+                                           threshold=thr_c)
+        elif signal_family == "flow":
+            vol_s = df.get("volume") if "volume" in df.columns else None
+            if vol_s is None:
+                continue
+            thr_f = calibrate_threshold_train(close, vol_s, split,
+                                              z_window=flow_z_window)
+            sig = flow_signal_series(close, vol_s, z_window=flow_z_window,
+                                     threshold=thr_f)
         else:
             sig = momentum_signal_series(close, volume=df.get("volume")
                                          if "volume" in df.columns else None)
@@ -362,13 +387,11 @@ def run_experiment(db, experiment_id: int,
         # parité avec la production (garde-fou : pas de variante de labo) —
         # seulement sur 1h ET famille momentum (timeframe de production) ;
         # sinon parity_checked=False, documenté.
-        parity_checked = (timeframe == "1h" and signal_family == "momentum")
         if parity_checked and not check_signal_parity(df):
             parity_failures.append(sym)
             continue
 
         # walk-forward : seuil de vol calibré sur TRAIN uniquement
-        split = int(len(df) * train_ratio)
         train_vol = vol.iloc[:split]
         thr = train_vol.quantile(vol_quantile) if train_vol.notna().sum() > 2 \
             else np.inf
@@ -527,14 +550,57 @@ def resample_candles(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
 # décalée d'une barre. Pas de stratégie de production équivalente
 # (parity_checked=False documenté). Mêmes coûts AR réels 0,213 %.
 # --------------------------------------------------------------------------- #
-def contrarian_signal_series(close: pd.Series, ret_quantile: float = 0.90) -> pd.Series:
-    """Signal contrarian : -sign(ret_t) si |ret_t| > percentile (série).
-    Le seuil est un PERCENTILE DE LA SÉRIE ENTIÈRE — à calibrer sur TRAIN
-    avant usage (voir run_experiment), jamais sur l'OOS."""
+def contrarian_signal_series(close: pd.Series, threshold: float | None = None,
+                             ret_quantile: float = 0.90) -> pd.Series:
+    """Signal contrarian : -sign(ret_t) si |ret_t| > threshold.
+    PHASE 3 Cycle 7 : le seuil est FOURNI (calibré sur TRAIN par
+    run_experiment — jamais sur l'OOS). Rétro-compat : si threshold est None,
+    percentile de la série (usage déconseillé, biais de calibrage)."""
     ret = close.pct_change().replace([np.inf, -np.inf], np.nan)
-    thr = ret.abs().quantile(ret_quantile) if ret.abs().notna().sum() > 2 \
-        else np.inf
+    if threshold is None:
+        thr = ret.abs().quantile(ret_quantile) if ret.abs().notna().sum() > 2 \
+            else np.inf
+    else:
+        thr = float(threshold)
     sig = pd.Series(0.0, index=close.index)
     extreme = ret.abs() > thr
     sig[extreme] = -np.sign(ret[extreme])
     return sig.fillna(0.0)
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 7 — MICRO-STRUCTURE : VOLUME IMBALANCE DIRECTIONNEL (Exp#8).
+# Hypothèse : un déséquilibre EXTREME de volume directionnel (buying/selling
+# pressure anormal — proxy du flux toxique VPIN) est suivi d'un mouvement
+# significatif de MÊME signe (persistance des flows / herding).
+# Proxy causal sur candles (le VPIN live est non-causal, inutilisable en
+# backtest) : vol_delta_t = sign(ret_t) × volume_t ; z-score glissant causal
+# (fenêtre) ; signal = sign(z) si |z| > seuil calibré sur TRAIN, sinon 0.
+# Mêmes coûts AR réels 0,213 %. Aucune parité possible (parity_checked=False).
+# --------------------------------------------------------------------------- #
+def flow_signal_series(close: pd.Series, volume: pd.Series,
+                       z_window: int = 48, threshold: float = 1.5) -> pd.Series:
+    """Signal de flux : signe du z-score du volume directionnel (causal)."""
+    ret = close.pct_change().replace([np.inf, -np.inf], np.nan)
+    vol_delta = np.sign(ret.fillna(0.0)) * volume.astype(float)
+    mean = vol_delta.rolling(z_window).mean()
+    std = vol_delta.rolling(z_window).std()
+    z = (vol_delta - mean) / std.replace(0, np.nan)
+    sig = pd.Series(0.0, index=close.index)
+    extreme = z.abs() > threshold
+    sig[extreme] = np.sign(z[extreme])
+    return sig.fillna(0.0)
+
+
+def calibrate_threshold_train(close: pd.Series, volume: pd.Series,
+                              split: int, z_window: int = 48,
+                              quantile: float = 0.90) -> float:
+    """Calibre le seuil |z| sur la partie TRAIN uniquement (jamais l'OOS) :
+    percentile `quantile` des |z| du train. Retourne le seuil."""
+    ret = close.iloc[:split].pct_change().replace([np.inf, -np.inf], np.nan)
+    vol_delta = np.sign(ret.fillna(0.0)) * volume.iloc[:split].astype(float)
+    mean = vol_delta.rolling(z_window).mean()
+    std = vol_delta.rolling(z_window).std()
+    z = ((vol_delta - mean) / std.replace(0, np.nan)).abs()
+    q = z.quantile(quantile) if z.notna().sum() > 2 else 1.5
+    return float(q) if np.isfinite(q) else 1.5
