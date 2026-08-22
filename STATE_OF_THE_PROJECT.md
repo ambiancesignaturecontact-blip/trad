@@ -107,6 +107,38 @@ Dernière mise à jour : 2026-08-22
 
 ---
 
+## 1bis. PHASE 4 — INSTITUTIONAL EVOLUTION (vision mandat, 2026-08-22)
+
+Objectif : passer du « bot avancé » à une **infrastructure quantitative durable**.
+Principe directeur (repris du mandat) : le niveau ultime n'est pas +200 fonctionnalités,
+c'est un système qui sait dire « je ne sais pas », « cette stratégie n'a plus d'edge »,
+« cette version n'est pas meilleure », « le portefeuille est déjà trop exposé »,
+« anomalie → je réduis », et surtout **« je ne change rien car les preuves ne le justifient pas »**.
+
+| # | Axe (mandat) | État RÉEL au 2026-08-22 (preuve) | Écart |
+|---|---|---|---|
+| 1 | Multi-marchés (crypto/FX/actions/commodities, puis futures/options) | **Partiel** : 7 actifs (crypto 3, FX 1, commodity 1, actions 2), friction MESURÉE par symbole (friction_report, 890 fills), drift PSI par actif, gate friction par symbole (C5), coûts par marché (C8 : actions 0,34 % vs défaut 0,213 %) | Validation PAR MARCHÉ (universe, contraintes propres) non formalisée ; futures/options = modules ÉDUCATIFS verrouillés (volontaire : pas de prod sans edge prouvé) |
+| 2 | Portfolio Intelligence (refuser un bon trade si portefeuille trop exposé) | **Partiel** : corrélation des SIGNAUX inter-stratégies (P1-10), risk parity, `max_exposure_normal 0.75`, hedging_decision (corr positions), hierarchical (max_weight 0.45) | **MANQUE LE CŒUR** : limite d'exposition FACTORIELLE du portefeuille (bêta BTC/alt, bêta marché, vol, USD) refusant le trade candidat |
+| 3 | Factor Intelligence (quelle part du PnL = décisions vs expositions) | **Partiel** : `attribution.py` (by_factor/by_regime/by_asset/by_strategy), counterfactual_alpha (vs mouvement marché depuis entrée) | Pas de modèle factoriel systématique (bêta estimé, USD exposure, rates) |
+| 4 | Alpha Discovery (auto-détection de sources d'alpha) | **Partiel** : HypothesisGenerator + ResearchMemory + research_experiments (pipeline REJECT/KEEP, kill list, 11 expériences, calibrage TRAIN-only C7) | PROMOTE jamais utilisé (0 edge trouvé — honnête) ; pas de boucle d'auto-discovery continue |
+| 5 | Ensemble de stratégies (quelle COMBINAISON, pas quelle meilleure) | **Partiel** : bandit Thompson non-stationnaire + MoE + regret hiérarchique + corrélation des signaux | La logique « combinaison » existe ; pas de re-balancement de bibliothèque (ajout/retrait de stratégies) formalisé |
+| 6 | Autonomous Quant Research + Promotion Committee | **Partiel** : `decide()` REJECT/KEEP, kill list, scheduler autonomous_ai (6 h) | Pas de « committee » multi-règles indépendantes (expectancy OOS > 0, stress non dégradé, échantillon ≥ 30, friction) votant REJECT/KEEP/PROMOTE |
+| 7 | Digital Twin (environnement miroir) | **MANQUANT** | Gros chantier — à faire APRÈS P4-A/B/C |
+| 8 | CD quant (Candidate → Shadow → Paper → Limited → Full) | **MANQUANT** (pas de shadow mode) | Brique P4-C |
+| 9 | Shadow Trading (v_next vs v_current, mêmes conditions) | **Partiel** : le mode DEMO EST un shadow perpétuel (fills fictifs sur données réelles) ; benchmark bot vs buy&hold | Pas de comparaison version-vs-version côte à côte |
+| 10 | Le système est son propre benchmark (v_next doit battre v_prev après coûts et risque) | **Partiel** : system_version/config_hash (LOT 9), benchmark C1 | Gate « v_next > v_prev après coûts/risque » non formalisé (P4-E) |
+
+**Ordre proposé (défendable par les preuves, pas la complexité)** :
+- **P4-A (Cycle 9)** : Portfolio Intelligence — gate d'exposition factorielle (bêta BTC/alt, vol) : refuse un trade si l'exposition incrémentale dépasse une limite. Matérialise « ce trade est intéressant mais le portefeuille est déjà trop exposé ». Mesurable sur données réelles, testable, réversible.
+- **P4-B** : Factor attribution du PnL (alpha vs bêta marché) — en attente de clôtures du calibrage actuel (0 actuellement) ; utilisable sur les 230 clôtures historiques avec réserve.
+- **P4-C** : Shadow mode (v_next vs v_current, mêmes données) — brique du CD quant.
+- **P4-D** : Promotion Committee multi-règles.
+- **P4-E** : Gate version-vs-version (benchmark).
+- **P4-F (plus tard)** : Digital Twin complet.
+- **Règle absolue P4** : AUCUN scaling multi-marchés ni futures/options tant qu'aucun edge net n'est prouvé (11 expériences, 0 edge — le scaling sans edge = complexité gratuite, interdit par le mandat).
+
+---
+
 ## 2. 🔄 EN COURS / NON TERMINÉ (processus, pas du code)
 
 | Item | État réel au 2026-08-20 | Ce qui manque |
