@@ -147,6 +147,12 @@ def build_daily_quant_report(db, state: dict, conviction_calibration: dict | Non
             intelligence["shadow"] = shadow_compare(db)
         except Exception:
             intelligence["shadow"] = None
+        # PHASE 4 P4-D : vote du Promotion Committee (avis multi-règles)
+        try:
+            from core.promotion_committee import committee_overview
+            intelligence["promotion_committee"] = committee_overview(db)
+        except Exception:
+            intelligence["promotion_committee"] = None
 
         # ---- Research ----
         research = {"kill_list": [], "recent_experiments": [], "n_killed": 0}
