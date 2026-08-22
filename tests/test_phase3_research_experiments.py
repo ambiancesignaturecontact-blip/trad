@@ -207,3 +207,32 @@ class TestResampleAndTimeframe:
         assert r["timeframe"] == "1h"
         for d in r.get("per_symbol", {}).values():
             assert d["parity_checked"] is True
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 6 — contrarian post-extrême (Exp#5, contre-hypothèse momentum)
+# --------------------------------------------------------------------------- #
+class TestContrarianSignal:
+    def test_no_lookahead_shift(self):
+        """Le contrarian capte le rendement APRÈS le mouvement extrême, pas
+        celui de la barre extrême elle-même (shift d'1 barre)."""
+        from core.research_experiments import backtest_signals, contrarian_signal_series
+        # mouvement extrême à la barre 5 (+10 %) ; le signal doit être -1 APRÈS
+        close = pd.Series([100.0] * 5 + [110.0] + [110.0] * 5)
+        sig = contrarian_signal_series(close, ret_quantile=0.90)
+        # le signal est généré SUR la barre extrême (position opposée)…
+        assert sig.iloc[5] == -1.0
+        # …mais le backtest décale d'1 barre : la position s'applique à la
+        # barre 6 — le +10 % de la barre 5 n'est JAMAIS capté
+        res = backtest_signals(close, sig)
+        assert res["cumulative_pnl_pct"] > -0.5   # aucun gain du +10 % capté
+
+    def test_signal_family_wired(self):
+        from core.research_experiments import run_experiment
+        db = FakeDB()
+        db.add_experiment("Contrarian", status="RESEARCH")
+        r = run_experiment(db, 1, timeframe="1h", signal_family="contrarian")
+        assert r["signal_family"] == "contrarian"
+        assert r["recorded"] is True
+        for d in r.get("per_symbol", {}).values():
+            assert d["parity_checked"] is False  # pas de production équivalente

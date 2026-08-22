@@ -335,6 +335,8 @@ def calibration_close_tracking(db, version: str = "") -> dict:
     out = {
         "version": version or None,
         "n_closes": 0,
+        "open_positions": None,       # PHASE 3 C6 : positions ouvertes (0 clôture
+        # cohérente avec 0 position ; positions>0 sans clôture = anomalie)
         "win_rate": None,
         "expectancy_pct": None,
         "cumulative_pnl_pct": None,
@@ -367,6 +369,11 @@ def calibration_close_tracking(db, version: str = "") -> dict:
             n = int(row[0] or 0)
             avg = float(row[1] or 0.0)
             wins = int(row[2] or 0)
+            try:
+                cur.execute("SELECT COUNT(*) FROM positions")
+                out["open_positions"] = int(cur.fetchone()[0] or 0)
+            except Exception:
+                out["open_positions"] = None
         out["n_closes"] = n
         out["progress_pct"] = round(min(100.0, n / MIN_TRADES * 100.0), 1)
         if n:
@@ -374,12 +381,19 @@ def calibration_close_tracking(db, version: str = "") -> dict:
             out["expectancy_pct"] = round(avg * 100.0, 4)
             out["cumulative_pnl_pct"] = round(avg * n * 100.0, 4)
             out["conditions_met"] = n >= MIN_TRADES and avg > 0.0
-        out["note"] = (
-            f"Clôtures du calibrage actuel : {n}/{MIN_TRADES} — "
-            f"expectancy {'> 0' if out['expectancy_pct'] is not None and out['expectancy_pct'] > 0 else 'n/a ou <= 0'}."
-            if n else f"Aucune clôture du calibrage actuel ({n}/{MIN_TRADES}) — "
-                      f"les conditions du CONDITIONAL GO ne sont pas encore mesurables."
-        )
+        if not n and out["open_positions"] in (None, 0):
+            out["note"] = (f"Aucune clôture du calibrage actuel ({n}/{MIN_TRADES}) "
+                           f"et {out['open_positions']} position ouverte — état "
+                           f"cohérent (le journal écrit chaque clôture dès "
+                           f"qu'un trade se termine). Les conditions du "
+                           f"CONDITIONAL GO ne sont pas encore mesurables.")
+        else:
+            out["note"] = (
+                f"Clôtures du calibrage actuel : {n}/{MIN_TRADES} — "
+                f"expectancy {'> 0' if out['expectancy_pct'] is not None and out['expectancy_pct'] > 0 else 'n/a ou <= 0'}."
+                if n else f"Aucune clôture du calibrage actuel ({n}/{MIN_TRADES}) — "
+                          f"les conditions du CONDITIONAL GO ne sont pas encore mesurables."
+            )
     except Exception as e:
         out["note"] = f"indisponible ({e})"
     return out

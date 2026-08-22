@@ -149,3 +149,14 @@ python scripts/restore_backup.py backups/trading_platform_YYYYMMDD_HHMMSS.db
 | Passage DEMO → REAL | ❌ jamais automatique | ⚠️ **manuel uniquement** (paper-validation 28 jours datés requis, P0-6) |
 | Réglage des seuils | ✅ via config.yaml (sans code) | — |
 | Alertes opérationnelles | ✅ Telegram auto (kill switch, drift) | ⚠️ configurer `TELEGRAM_BOT_TOKEN` + `TELEGRAM_CHAT_ID` pour les recevoir |
+
+## 11. ENVIRONNEMENT SANDBOX / PREVIEW (PHASE 3)
+
+| Point | Procédure |
+|---|---|
+| Serveur tué entre les sessions | Le sandbox n'est pas persistant : relancer à chaque session `AUTH_ENABLED=false ACCOUNT_CURRENCY=EUR python -m uvicorn main:app --host 0.0.0.0 --port 8080 --workers 1` (port 8080 = preview). |
+| Dépendances perdues | `pip install -q -r requirements.txt` puis `pip install -q pytest-asyncio pytest-cov pip-audit ruff pytest-timeout` dans `/home/user/trad`. |
+| Identité git perdue | `git config user.name "$(git log -1 --format='%an')"` / `git config user.email "$(git log -1 --format='%ae')"`. |
+| `feature_store.json` modifié à l'exécution | `git checkout feature_store.json` avant tout commit. |
+| Conséquence sur la validation (P0-6) | Le serveur doit tourner CONTINÛMENT pour marquer les jours de paper-validation ; les interruptions du sandbox font stagner le compteur (3-4/28 j.) — c'est une limite d'environnement, pas du code. |
+| Tests pendant que le serveur tourne | Contention SQLite possible → lancer pytest quand le serveur est arrêté, ou sur `tests/test_trading.db` isolée (conftest). |

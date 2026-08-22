@@ -298,6 +298,7 @@ def run_experiment(db, experiment_id: int,
                    cost_ar_pct: float = COST_AR_PCT,
                    filter_mode: str = "signal",
                    timeframe: str = "1h",
+                   signal_family: str = "momentum",
                    research_memory=None) -> dict:
     """
     Pipeline complet pour l'hypothèse (Momentum + filtre vol en HIGH_VOL) :
@@ -320,6 +321,8 @@ def run_experiment(db, experiment_id: int,
     """
     assert filter_mode in ("signal", "position"), f"mode inconnu: {filter_mode}"
     assert timeframe in ("1h", "4h", "1d"), f"timeframe inconnu: {timeframe}"
+    assert signal_family in ("momentum", "contrarian"), \
+        f"famille inconnue: {signal_family}"
     from core.research_memory import ResearchMemory
     rm = research_memory or (ResearchMemory(db) if db is not None else None)
 
@@ -348,13 +351,18 @@ def run_experiment(db, experiment_id: int,
             continue
         close = df["close"].astype(float)
         vol = volatility_ewma(close)
-        sig = momentum_signal_series(close, volume=df.get("volume")
-                                     if "volume" in df.columns else None)
+        # PHASE 3 C6 : famille de signal — momentum (production) ou contrarian
+        # post-extrême (Exp#5, contre-hypothèse du momentum killé).
+        if signal_family == "contrarian":
+            sig = contrarian_signal_series(close)
+        else:
+            sig = momentum_signal_series(close, volume=df.get("volume")
+                                         if "volume" in df.columns else None)
 
         # parité avec la production (garde-fou : pas de variante de labo) —
-        # seulement sur 1h (timeframe de production) ; sur 4h/1d, l'hypothèse
-        # EST un changement d'horizon : parity_checked=False, documenté.
-        parity_checked = (timeframe == "1h")
+        # seulement sur 1h ET famille momentum (timeframe de production) ;
+        # sinon parity_checked=False, documenté.
+        parity_checked = (timeframe == "1h" and signal_family == "momentum")
         if parity_checked and not check_signal_parity(df):
             parity_failures.append(sym)
             continue
@@ -397,7 +405,7 @@ def run_experiment(db, experiment_id: int,
             "n_bars": int(len(df)), "n_oos": int(len(oos_close)),
             "vol_threshold": round(float(thr), 6) if np.isfinite(thr) else None,
             "filter_mode": filter_mode, "timeframe": timeframe,
-            "parity_checked": parity_checked,
+            "signal_family": signal_family, "parity_checked": parity_checked,
             "baseline_oos": b_base, "treatment_oos": b_treat,
             "baseline_stress": s_base, "treatment_stress": s_treat,
         }
@@ -457,6 +465,7 @@ def run_experiment(db, experiment_id: int,
         "train_ratio": train_ratio, "vol_quantile": vol_quantile,
         "filter_scale": filter_scale,
         "filter_mode": filter_mode, "timeframe": timeframe,
+        "signal_family": signal_family,
         "oos": {"baseline": agg_base, "treatment": agg_treat,
                 "n_oos_trades": n_oos},
         "stress": {"baseline": {k: v for k, v in
@@ -506,3 +515,26 @@ def resample_candles(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
     except Exception as e:
         logger.warning(f"resample {timeframe} failed: {e}")
         return df
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 6 — SIGNAL CONTRARIAN POST-EXTRÊME (Expérience #5).
+# Contre-hypothèse naturelle du momentum (killé) : après un mouvement
+# EXTREME (|ret| > percentile 90 calibré sur TRAIN), le marché sur-réagit —
+# le rendement suivant serait en moyenne de signe opposé. Signal : position
+# OPPOSÉE au mouvement extrême, tenue tant que |ret| reste extrême.
+# Aucun look-ahead : le seuil est calibré sur TRAIN seul, la position est
+# décalée d'une barre. Pas de stratégie de production équivalente
+# (parity_checked=False documenté). Mêmes coûts AR réels 0,213 %.
+# --------------------------------------------------------------------------- #
+def contrarian_signal_series(close: pd.Series, ret_quantile: float = 0.90) -> pd.Series:
+    """Signal contrarian : -sign(ret_t) si |ret_t| > percentile (série).
+    Le seuil est un PERCENTILE DE LA SÉRIE ENTIÈRE — à calibrer sur TRAIN
+    avant usage (voir run_experiment), jamais sur l'OOS."""
+    ret = close.pct_change().replace([np.inf, -np.inf], np.nan)
+    thr = ret.abs().quantile(ret_quantile) if ret.abs().notna().sum() > 2 \
+        else np.inf
+    sig = pd.Series(0.0, index=close.index)
+    extreme = ret.abs() > thr
+    sig[extreme] = -np.sign(ret[extreme])
+    return sig.fillna(0.0)

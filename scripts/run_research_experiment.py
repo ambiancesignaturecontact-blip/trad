@@ -25,15 +25,19 @@ def main():
     experiment_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
     filter_mode = sys.argv[2] if len(sys.argv) > 2 else "signal"
     timeframe = sys.argv[3] if len(sys.argv) > 3 else "1h"
+    signal_family = sys.argv[4] if len(sys.argv) > 4 else "momentum"
     assert filter_mode in ("signal", "position")
     assert timeframe in ("1h", "4h", "1d")
+    assert signal_family in ("momentum", "contrarian")
     db = DBManager()
     print(f"🔬 EXPÉRIENCE #{experiment_id} (mode filtre : {filter_mode}, "
-          f"timeframe : {timeframe}) — pipeline de validation\n"
+          f"timeframe : {timeframe}, famille : {signal_family}) — pipeline "
+          f"de validation\n"
           f"   Données : cache DB market_candles (réelles) · coûts AR "
           f"0,213 % (frais réels 0,1 %/side + slippage médian 6,6 bps)")
     results = run_experiment(db, experiment_id, filter_mode=filter_mode,
-                             timeframe=timeframe)
+                             timeframe=timeframe,
+                             signal_family=signal_family)
     print(json.dumps(results, ensure_ascii=False, indent=1, default=str))
     oos = results.get("oos", {})
     print("\n=== DÉCISION ===")
