@@ -146,8 +146,14 @@ class _FakeDB:
 
 @pytest.fixture
 def fake_db(monkeypatch):
+    # PHASE 3 Cycle 2 : `core/auth_helpers.py` fait `from main import db` —
+    # monkeypatcher main.db ne suffit PAS (auth_helpers lit SON `db` global,
+    # la vraie DB : échec pré-existant prouvé par stash, dépendant de l'ordre
+    # des tests). On cible les deux namespaces.
     db = _FakeDB()
     monkeypatch.setattr(main, "db", db)
+    import core.auth_helpers as auth_helpers
+    monkeypatch.setattr(auth_helpers, "db", db)
     return db
 
 
@@ -195,7 +201,11 @@ def test_admin_password_delivered_via_telegram(fake_db, tmp_path, caplog, monkey
         sent["token"], sent["chat_id"], sent["text"] = token, chat_id, text
         return True
 
-    monkeypatch.setattr(main, "_telegram_send_sync", fake_send)
+    # PHASE 3 Cycle 2 : le fake doit viser le namespace réellement appelé
+    # (core.auth_helpers._telegram_send_sync), pas le ré-export de main
+    # (échec pré-existant prouvé par stash — preuve dans STATE_OF_THE_PROJECT.md)
+    import core.auth_helpers as auth_helpers
+    monkeypatch.setattr(auth_helpers, "_telegram_send_sync", fake_send)
     creds_path = tmp_path / ".admin_credentials"
     caplog.set_level(logging.WARNING, logger="InstitutionalTradingBot")
     gen = _run_ensure(str(creds_path))
@@ -209,7 +219,8 @@ def test_admin_password_fallback_file_when_telegram_fails(fake_db, tmp_path, cap
     secret dans les logs."""
     monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "tok123")
     monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
-    monkeypatch.setattr(main, "_telegram_send_sync", lambda *a, **k: False)
+    import core.auth_helpers as auth_helpers
+    monkeypatch.setattr(auth_helpers, "_telegram_send_sync", lambda *a, **k: False)
     creds_path = tmp_path / ".admin_credentials"
     caplog.set_level(logging.WARNING, logger="InstitutionalTradingBot")
     gen = _run_ensure(str(creds_path))

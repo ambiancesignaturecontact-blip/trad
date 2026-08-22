@@ -359,9 +359,9 @@ def calibration_close_tracking(db, version: str = "") -> dict:
                 )
             else:
                 cur.execute(
-                    f"SELECT COUNT(*), AVG(pnl_pct), "
-                    f"SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) "
-                    f"FROM decision_journal WHERE pnl_pct IS NOT NULL"
+                    "SELECT COUNT(*), AVG(pnl_pct), "
+                    "SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) "
+                    "FROM decision_journal WHERE pnl_pct IS NOT NULL"
                 )
             row = cur.fetchone()
             n = int(row[0] or 0)
