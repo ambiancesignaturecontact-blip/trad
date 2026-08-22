@@ -93,3 +93,66 @@ def benchmark_report(db, since_ts: float = 0.0,
                 "l'alpha n'est une preuve qu'avec des fenêtres alignées et n >= 30.",
         "ts": time.time(),
     }
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 3 — BOOTSTRAP SHARPE (limite PHASE 2 : équité en mémoire,
+# non persistée -> bootstrap impossible). L'équité est désormais persistée
+# par `equity_history_scheduler` (toutes les 5 min) ; cette fonction calcule
+# les rendements journaliers et bootstrap le Sharpe (López de Prado, AFML).
+# Honnête : < MIN_DAYS points quotidiens -> « insuffisant », jamais inventé.
+# --------------------------------------------------------------------------- #
+MIN_EQUITY_DAYS = 20
+EQUITY_BOOTSTRAP_SIMS = 10_000
+
+
+def bootstrap_sharpe(db, mode: str = "DEMO", n_sims: int = EQUITY_BOOTSTRAP_SIMS,
+                     min_days: int = MIN_EQUITY_DAYS) -> dict:
+    """
+    Sharpe annualisé OBSERVÉ + intervalle de confiance bootstrap (ré-échantillon
+    avec remise des rendements quotidiens). Retourne un dict honnête :
+    n_days < min_days -> sharpe None + note explicite.
+    """
+    out = {"mode": mode, "n_points": 0, "n_days": 0, "sharpe_obs": None,
+           "sharpe_p5": None, "sharpe_p95": None, "note": None}
+    try:
+        if db is None or not hasattr(db, "load_equity_series"):
+            out["note"] = "persistance équité indisponible"
+            return out
+        series = db.load_equity_series(mode=mode)
+        out["n_points"] = len(series)
+        if len(series) < 3:
+            out["note"] = (f"insuffisant : {len(series)} points d'équité persistés "
+                           "(le scheduler écrit toutes les 5 min)")
+            return out
+        import numpy as np
+        import pandas as pd
+        eq = pd.Series([e for _, e in series],
+                       index=pd.to_datetime([t for t, _ in series], unit="s", utc=True))
+        # rendements journaliers (dernier prix du jour vs dernier du jour préc.)
+        daily = eq.resample("1D").last().dropna()
+        ret = daily.pct_change().dropna()
+        ret = ret[(ret > -1.0) & (ret < 10.0)]  # garde-fou valeurs aberrantes
+        out["n_days"] = int(len(ret))
+        if len(ret) < min_days:
+            out["note"] = (f"insuffisant : {len(ret)} rendements journaliers "
+                           f"(< {min_days}) — le bootstrap n'est pas significatif")
+            return out
+        sr = ret.mean() / ret.std() * np.sqrt(365) if ret.std() > 0 else None
+        out["sharpe_obs"] = round(float(sr), 3) if sr is not None else None
+        # bootstrap : ré-échantillon avec remise de la série quotidienne
+        rng = np.random.default_rng(2026)
+        n = len(ret)
+        boot = []
+        for _ in range(n_sims):
+            s = rng.choice(ret.values, size=n, replace=True)
+            sd = s.std()
+            boot.append(s.mean() / sd * np.sqrt(365) if sd > 0 else 0.0)
+        boot = np.asarray(boot)
+        out["sharpe_p5"] = round(float(np.percentile(boot, 5)), 3)
+        out["sharpe_p95"] = round(float(np.percentile(boot, 95)), 3)
+        out["note"] = (f"bootstrap {n_sims} sims sur {len(ret)} jours "
+                       f"([p5, p95] = [{out['sharpe_p5']}, {out['sharpe_p95']}])")
+    except Exception as e:
+        out["note"] = f"indisponible ({e})"
+    return out

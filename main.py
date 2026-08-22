@@ -1699,6 +1699,10 @@ async def startup_event():
     launch_named(db_backup_scheduler(), "db_backup_scheduler")
     logger.info("✅ LOT 64: Daily DB backup scheduler started")
 
+    # PHASE 3 Cycle 3 : persistance de l'équité (bootstrap Sharpe)
+    launch_named(equity_history_scheduler(), "equity_history_scheduler")
+    logger.info("✅ PHASE 3 C3: equity history scheduler started (every 5 min)")
+
     # Start the autonomous AI self-improvement loop
     launch_named(autonomous_ai_scheduler(), "autonomous_ai_scheduler")
     logger.info("✅ LOT 66: Autonomous AI scheduler started (self-retrain every 6h)")
@@ -3779,6 +3783,7 @@ from schedulers import (  # noqa: F401,E402
     copy_mirror_scheduler,
     copy_trading_refresh_scheduler,
     db_backup_scheduler,
+    equity_history_scheduler,
     final_scale_stats_loop,
     reconciliation_scheduler,
 )

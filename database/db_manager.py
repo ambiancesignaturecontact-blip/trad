@@ -8,6 +8,7 @@ import base64
 import hashlib
 import json
 import logging
+import time
 
 import pandas as pd
 
@@ -16,6 +17,36 @@ logger = logging.getLogger("DBManager")
 DATABASE_URL = os.getenv("SUPABASE_DB_URL") or os.getenv("DATABASE_URL")
 DB_PATH = os.getenv("SQLITE_DB_PATH", os.path.join(os.getcwd(), "trading_platform.db"))
 KEY_PATH = os.getenv("SECRET_KEY_PATH", os.path.join(os.getcwd(), "secret.key"))
+
+class _SQLiteConn:
+    """
+    Wrapper sqlite3 (PHASE 3 Cycle 3) : le context manager natif de
+    sqlite3.Connection COMMIT/ROLLBACK mais ne FERME PAS la connexion. Sous
+    charge (suite de tests, TestClient multi-routes), chaque `get_connection()`
+    sans fermeture fuyait un descripteur -> sqlite3.OperationalError aléatoire
+    (flaky test_routes_health). Ce wrapper ferme TOUJOURS à la sortie du
+    context manager (et `close()` reste disponible, délégué).
+    """
+
+    def __init__(self, conn):
+        object.__setattr__(self, "_conn", conn)
+
+    def __getattr__(self, name):
+        return getattr(self._conn, name)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        try:
+            if exc_type is None:
+                self._conn.commit()
+            else:
+                self._conn.rollback()
+        finally:
+            self._conn.close()
+        return False
+
 
 class _PooledPGConn:
     """
@@ -173,7 +204,10 @@ class DBManager:
             conn.execute("PRAGMA journal_mode=WAL")     # audit B4-2: concurrent writers safe
             conn.execute("PRAGMA busy_timeout=5000")
             conn.execute("PRAGMA synchronous=NORMAL")
-            return conn
+            # PHASE 3 Cycle 3 : le `with sqlite3.connect()` natif COMMIT mais
+            # ne FERME PAS — chaque appel fuyait une connexion (cause racine
+            # du flaky test_routes_health sous charge). Le wrapper ferme.
+            return _SQLiteConn(conn)
 
     def _ensure_indexes(self):
         """Audit B4-4: explicit indexes for hot query paths."""
@@ -1306,3 +1340,80 @@ class DBManager:
             logger.error(f"decision_journal_summary failed: {e}")
             return {"total": 0, "by_decision": {}, "by_reason": {}, "closed_n": 0}
 
+
+    # ------------------------------------------------------------------ #
+    # PHASE 3 Cycle 3 — HISTORIQUE D'ÉQUITÉ PERSISTÉ (bootstrap Sharpe).
+    # L'équité nette (cash + positions valorisées) est écrite périodiquement
+    # par le scheduler equity_history_scheduler : les rendements quotidiens
+    # deviennent calculables après redémarrage (limite PHASE 2 : équité en
+    # mémoire, 100 points, perdue au restart -> bootstrap Sharpe impossible).
+    # ------------------------------------------------------------------ #
+    def ensure_equity_history_table(self):
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS equity_history (
+                            id SERIAL PRIMARY KEY,
+                            ts DOUBLE PRECISION,
+                            mode TEXT,
+                            equity REAL
+                        )
+                    """)
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_equity_hist "
+                                "ON equity_history (mode, ts)")
+                else:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS equity_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            ts REAL,
+                            mode TEXT,
+                            equity REAL
+                        )
+                    """)
+                    cur.execute("CREATE INDEX IF NOT EXISTS idx_equity_hist "
+                                "ON equity_history (mode, ts)")
+        except Exception as e:
+            logger.warning(f"ensure_equity_history_table: {e}")
+
+    def save_equity_point(self, mode: str, equity: float) -> bool:
+        """Persiste un point d'équité (best-effort, jamais bloquant)."""
+        try:
+            self.ensure_equity_history_table()
+            if equity is None or not float(equity) >= 0:
+                return False
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute(
+                        "INSERT INTO equity_history (ts, mode, equity) "
+                        "VALUES (%s, %s, %s)",
+                        (time.time(), str(mode), float(equity)))
+                else:
+                    cur.execute(
+                        "INSERT INTO equity_history (ts, mode, equity) "
+                        "VALUES (?, ?, ?)",
+                        (time.time(), str(mode), float(equity)))
+            return True
+        except Exception as e:
+            logger.debug(f"save_equity_point failed: {e}")
+            return False
+
+    def load_equity_series(self, mode: str = "DEMO", since: float = 0.0,
+                           limit: int = 100000) -> list:
+        """Série (ts, equity) du mode donné, chronologique. [] si vide."""
+        try:
+            self.ensure_equity_history_table()
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                ph = "%s" if self.is_postgres else "?"
+                cur.execute(
+                    f"SELECT ts, equity FROM equity_history "
+                    f"WHERE mode = {ph} AND ts >= {ph} "
+                    f"ORDER BY ts ASC LIMIT {int(limit)}",
+                    (str(mode), float(since)))
+                return [(float(r[0]), float(r[1])) for r in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"load_equity_series failed: {e}")
+            return []

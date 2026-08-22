@@ -56,7 +56,16 @@ def build_daily_quant_report(db, state: dict, conviction_calibration: dict | Non
             "no_trade_total": int((state.get("no_trade_stats") or {}).get("count", 0)),
             "no_trade_by_reason": (state.get("no_trade_stats") or {}).get("reasons", {}),
             "drawdown_pct": None,
+            "equity_bootstrap": None,
         }
+        # PHASE 3 Cycle 3 : bootstrap Sharpe sur l'équité persistée (honnête :
+        # None tant que < 20 jours quotidiens)
+        try:
+            from core.benchmark import bootstrap_sharpe
+            trading["equity_bootstrap"] = bootstrap_sharpe(
+                db, mode=str(state.get("mode", "DEMO")).upper())
+        except Exception:
+            pass
         try:
             eq = state.get("equity_history_demo", []) or state.get("equity_history_real", [])
             if eq:

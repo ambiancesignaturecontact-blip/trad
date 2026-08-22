@@ -759,6 +759,13 @@ async def get_history_endpoint(timeframe: str = "1h", limit: int = 120, offset: 
     # Check persistent database cache
     cache_symbol = f"BTCUSDT_{timeframe}"
     df = db.load_candles(cache_symbol, limit=120)
+    # PHASE 3 Cycle 3 : le cache principal (seed au boot) stocke les barres
+    # sous "BTCUSDT" — en 1h, c'est le MÊME actif/même timeframe : fallback
+    # sur ce cache plutôt qu'un 503 quand Binance est géobloqué (451) et
+    # Yahoo lent/saturé. (Pour 4h/1d, pas de fallback : mélanger des
+    # timeframes serait malhonnête.)
+    if (df.empty or len(df) < 120) and timeframe == "1h":
+        df = db.load_candles("BTCUSDT", limit=120)
 
     if df.empty or len(df) < 120:
         # Fetch from Binance API

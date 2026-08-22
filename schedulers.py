@@ -303,3 +303,21 @@ async def db_backup_scheduler():
         except Exception as e:
             logger.warning(f"DB backup scheduler error: {e}")
 
+
+
+async def equity_history_scheduler():
+    """PHASE 3 Cycle 3 — persistance périodique de l'équité nette (cash +
+    positions valorisées au dernier prix réel) toutes les 5 minutes, pour le
+    bootstrap Sharpe des rendements quotidiens. Best-effort, jamais bloquant.
+    """
+    while True:
+        await asyncio.sleep(300)
+        try:
+            from main import STATE, db
+            eq = STATE.get("current_equity")
+            mode = str(STATE.get("mode", "DEMO")).upper()
+            if eq is not None and float(eq) > 0:
+                if db is not None and hasattr(db, "save_equity_point"):
+                    db.save_equity_point(mode, float(eq))
+        except Exception as e:
+            logger.warning(f"equity history scheduler error: {e}")

@@ -13,6 +13,7 @@ Vérifié ici :
   5. API : /api/v1/research-memory, /api/v1/capital-allocation,
      /api/v1/benchmark, /api/v1/daily-quant-report répondent.
 """
+import time
 from pathlib import Path
 
 import pytest
@@ -320,3 +321,123 @@ class TestCalibrationTracking:
         db = self._make_db(tmp_path, [(0.01, "v1"), (0.02, "v2")])
         r = calibration_close_tracking(db, version="")
         assert r["n_closes"] == 2
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 3 — persistance de l'équité + bootstrap Sharpe
+# --------------------------------------------------------------------------- #
+class TestEquityHistory:
+    """save/load équité (table equity_history) + bootstrap Sharpe honnête."""
+
+    def _make_db(self, tmp_path):
+        import sqlite3
+
+        class MiniDB:
+            is_postgres = False
+
+            def __init__(self, p):
+                self._conn = sqlite3.connect(str(p))
+                self._conn.execute(
+                    "CREATE TABLE equity_history (id INTEGER PRIMARY KEY "
+                    "AUTOINCREMENT, ts REAL, mode TEXT, equity REAL)")
+
+            def get_connection(self):
+                return self._conn
+
+            def save_equity_point(self, mode, equity):
+                self._conn.execute(
+                    "INSERT INTO equity_history (ts, mode, equity) "
+                    "VALUES (?, ?, ?)", (time.time(), mode, float(equity)))
+                self._conn.commit()
+                return True
+
+            def load_equity_series(self, mode="DEMO", since=0.0, limit=100000):
+                cur = self._conn.execute(
+                    "SELECT ts, equity FROM equity_history "
+                    "WHERE mode = ? AND ts >= ? ORDER BY ts ASC LIMIT ?",
+                    (mode, since, limit))
+                return [(float(r[0]), float(r[1])) for r in cur.fetchall()]
+
+        return MiniDB(tmp_path / "eq.db")
+
+    def test_save_and_load_chronological(self, tmp_path):
+        from database.db_manager import DBManager
+        db = DBManager()
+        db.ensure_equity_history_table()
+        db.save_equity_point("DEMO", 100.0)
+        db.save_equity_point("DEMO", 101.0)
+        db.save_equity_point("REAL", 500.0)
+        s = db.load_equity_series("DEMO")
+        assert len(s) == 2
+        assert [e for _, e in s] == [100.0, 101.0]      # chronologique
+        assert len(db.load_equity_series("REAL")) == 1
+        # mode inconnu : vide (pas de fuite entre modes)
+        assert db.load_equity_series("AUTRE") == []
+
+    def test_bootstrap_insufficient_honest(self, tmp_path):
+        from core.benchmark import bootstrap_sharpe
+        db = self._make_db(tmp_path)
+        r = bootstrap_sharpe(db, mode="DEMO")
+        assert r["sharpe_obs"] is None        # jamais de chiffre inventé
+        assert "insuffisant" in (r["note"] or "")
+
+    def test_bootstrap_with_20_days(self, tmp_path):
+        import numpy as np
+
+        from core.benchmark import bootstrap_sharpe
+        db = self._make_db(tmp_path)
+        rng = np.random.default_rng(3)
+        eq = 100.0
+        t0 = 1_700_000_000
+        for i in range(25):
+            db._conn.execute(
+                "INSERT INTO equity_history (ts, mode, equity) VALUES (?, ?, ?)",
+                (t0 + i * 86400, "DEMO", eq))
+            eq *= 1.0 + float(rng.normal(0.001, 0.01))   # dérive positive
+        db._conn.commit()
+        r = bootstrap_sharpe(db, mode="DEMO", n_sims=500)
+        assert r["n_days"] == 24             # 25 points -> 24 rendements
+        assert r["sharpe_obs"] is not None
+        assert r["sharpe_obs"] > 0.0         # dérive positive mesurable
+        assert r["sharpe_p5"] <= r["sharpe_obs"] <= r["sharpe_p95"]
+        assert r["n_points"] == 25
+
+    def test_daily_report_exposes_equity_bootstrap(self):
+        from core.daily_quant_report import build_daily_quant_report
+        r = build_daily_quant_report(FakeDB(), {"mode": "DEMO",
+                                                "regime_name": "Range",
+                                                "regime_id": 2})
+        assert "equity_bootstrap" in r["trading"]
+        assert r["trading"]["equity_bootstrap"] is not None
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 3 — wrapper SQLite : la connexion est FERMÉE après le `with`
+# (cause racine du flaky test_routes_health : fuite de connexions sous charge)
+# --------------------------------------------------------------------------- #
+class TestSQLiteConnClosed:
+    def test_conn_closed_after_with(self):
+        import sqlite3
+
+        from database.db_manager import DBManager
+        db = DBManager()
+        conn = db.get_connection()
+        with conn:
+            conn.execute("SELECT 1")
+        with pytest.raises(sqlite3.ProgrammingError):
+            conn.execute("SELECT 1")   # fermée : usage post-bloc impossible
+
+    def test_conn_still_usable_without_with(self):
+        from database.db_manager import DBManager
+        db = DBManager()
+        conn = db.get_connection()
+        try:
+            assert conn.execute("SELECT 1").fetchone() is not None
+        finally:
+            conn.close()
+
+    def test_explicit_close_still_works(self):
+        from database.db_manager import DBManager
+        db = DBManager()
+        conn = db.get_connection()
+        conn.close()   # délégation vers sqlite3 : pas d'erreur

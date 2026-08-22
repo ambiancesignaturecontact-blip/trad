@@ -154,20 +154,27 @@ def high_vol_mask(vol: pd.Series, threshold: float) -> pd.Series:
 # Backtest de signaux (transparent, coûts réalistes)
 # --------------------------------------------------------------------------- #
 def backtest_signals(close: pd.Series, signals: pd.Series,
-                     cost_ar_pct: float = COST_AR_PCT) -> dict:
+                     cost_ar_pct: float = COST_AR_PCT,
+                     position_scale: pd.Series | None = None) -> dict:
     """
-    Backtest simple et transparent : position = sign(signal) (0 si nul),
-    coût aller-retour (commission + slippage) à chaque changement de
-    direction. Retourne des métriques par trade et globales — AUCUNE
-    annualisation fantaisiste (le Sharpe est quotidien annualisé ×√365).
+    Backtest simple et transparent : position = intensité du signal bornée
+    [-1, 1] (optionnellement × position_scale — filtre appliqué au POIDS
+    FINAL, pas au signal), coût aller-retour (commission + slippage) à
+    chaque changement de position. Retourne des métriques par trade et
+    globales — AUCUNE annualisation fantaisiste (le Sharpe est quotidien
+    annualisé ×√365).
     """
     close = close.astype(float)
     ret = close.pct_change().replace([np.inf, -np.inf], np.nan).fillna(0.0)
-    # PAS DE LOOK-AHEAD : le signal de la barre t est connu au close_t, la
-    # position s'applique donc au rendement de la barre t+1 (shift de 1).
-    # Position CONTINUE = intensité du signal bornée [-1, 1] : c'est ce que
-    # le filtre vol modifie (poids), pas le signe.
+    # PAS DE LOOK-AHEAD : le signal (et le scale) de la barre t sont connus
+    # au close_t, la position s'applique donc au rendement de la barre t+1
+    # (shift de 1).
+    scale = None
+    if position_scale is not None:
+        scale = position_scale.shift(1).clip(0.0, 1.0).fillna(1.0).values
     pos = signals.shift(1).clip(-1.0, 1.0).fillna(0.0).values
+    if scale is not None:
+        pos = pos * scale
     delta = np.abs(np.diff(pos, prepend=0.0))
     # coût proportionnel à la variation de position (0 -> x -> 0 = 1 AR)
     cost = delta * (cost_ar_pct / 100.0) / 2.0
@@ -224,7 +231,8 @@ def backtest_signals(close: pd.Series, signals: pd.Series,
 
 def stress_high_vol(close: pd.Series, signals: pd.Series,
                     vol: pd.Series, top_quantile: float = STRESS_TOP_QUANTILE,
-                    cost_ar_pct: float = COST_AR_PCT) -> dict:
+                    cost_ar_pct: float = COST_AR_PCT,
+                    position_scale: pd.Series | None = None) -> dict:
     """Stress : sous-échantillon des 10 % de barres de vol maximale réelle du
     dataset (fenêtre continue autour du pic) — PnL des deux bras sur cette
     fenêtre. C'est le scénario que le filtre est censé protéger."""
@@ -236,8 +244,11 @@ def stress_high_vol(close: pd.Series, signals: pd.Series,
     lo, hi = idx.min(), idx.max()
     sub_close = close.loc[lo:hi]
     sub_sig = signals.reindex(sub_close.index).fillna(0.0)
+    sub_scale = position_scale.reindex(sub_close.index) \
+        if position_scale is not None else None
     return {"n_bars": int(len(sub_close)),
-            **backtest_signals(sub_close, sub_sig, cost_ar_pct=cost_ar_pct)}
+            **backtest_signals(sub_close, sub_sig, cost_ar_pct=cost_ar_pct,
+                               position_scale=sub_scale)}
 
 
 # --------------------------------------------------------------------------- #
@@ -285,12 +296,21 @@ def run_experiment(db, experiment_id: int,
                    vol_quantile: float = VOL_QUANTILE,
                    filter_scale: float = FILTER_SCALE,
                    cost_ar_pct: float = COST_AR_PCT,
+                   filter_mode: str = "signal",
                    research_memory=None) -> dict:
     """
-    Pipeline complet pour l'hypothèse #1 (Momentum + filtre vol en HIGH_VOL) :
+    Pipeline complet pour l'hypothèse (Momentum + filtre vol en HIGH_VOL) :
     baseline vs traitement, walk-forward 70/30, stress, décision REJECT/KEEP.
     Enregistre le résultat via ResearchMemory si fourni (ou directement db).
+
+    filter_mode :
+      - "signal"   (Cycle 2)  : le filtre réduit le SIGNAL en HIGH_VOL
+        (les entrées/sorties changent aussi) ;
+      - "position" (Cycle 3)  : AFFINEMENT — le signal reste inchangé, le
+        filtre réduit le POIDS FINAL de la position (× filter_scale en
+        HIGH_VOL), sans changer les entrées/sorties.
     """
+    assert filter_mode in ("signal", "position"), f"mode inconnu: {filter_mode}"
     from core.research_memory import ResearchMemory
     rm = research_memory or (ResearchMemory(db) if db is not None else None)
 
@@ -329,16 +349,29 @@ def run_experiment(db, experiment_id: int,
         thr = train_vol.quantile(vol_quantile) if train_vol.notna().sum() > 2 \
             else np.inf
         mask = high_vol_mask(vol, thr)
-        sig_treat = sig.where(~mask, sig * filter_scale).fillna(0.0)
+        # scale de position : 1.0 partout, × filter_scale en HIGH_VOL
+        pos_scale = pd.Series(1.0, index=close.index)
+        pos_scale[mask] = filter_scale
+        if filter_mode == "signal":
+            sig_treat = sig.where(~mask, sig * filter_scale).fillna(0.0)
+            treat_scale = None
+        else:
+            sig_treat = sig                     # signal INCHANGÉ
+            treat_scale = pos_scale             # poids final réduit
 
         # backtests (sur tout le dataset pour la lecture ; OOS séparé)
         oos_close = close.iloc[split:]
         oos_sig_base = sig.iloc[split:]
         oos_sig_treat = sig_treat.iloc[split:]
+        oos_scale = (treat_scale.iloc[split:]
+                     if treat_scale is not None else None)
         b_base = backtest_signals(oos_close, oos_sig_base, cost_ar_pct=cost_ar_pct)
-        b_treat = backtest_signals(oos_close, oos_sig_treat, cost_ar_pct=cost_ar_pct)
+        b_treat = backtest_signals(oos_close, oos_sig_treat,
+                                   cost_ar_pct=cost_ar_pct,
+                                   position_scale=oos_scale)
         s_base = stress_high_vol(close, sig, vol, cost_ar_pct=cost_ar_pct)
-        s_treat = stress_high_vol(close, sig_treat, vol, cost_ar_pct=cost_ar_pct)
+        s_treat = stress_high_vol(close, sig_treat, vol, cost_ar_pct=cost_ar_pct,
+                                  position_scale=treat_scale)
 
         oos_base.append(b_base)
         oos_treat.append(b_treat)
@@ -393,6 +426,7 @@ def run_experiment(db, experiment_id: int,
         "cost_ar_pct": cost_ar_pct,
         "train_ratio": train_ratio, "vol_quantile": vol_quantile,
         "filter_scale": filter_scale,
+        "filter_mode": filter_mode,
         "oos": {"baseline": agg_base, "treatment": agg_treat,
                 "n_oos_trades": n_oos},
         "stress": {"baseline": {k: v for k, v in
