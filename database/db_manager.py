@@ -898,6 +898,15 @@ class DBManager:
                             result TEXT,
                             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                         )""")
+                    # PHASE 3 : enrichissement Research Memory (migration idempotente)
+                    for col, typ in [
+                        ("modification", "TEXT"), ("dataset", "TEXT"),
+                        ("period", "TEXT"), ("regimes", "TEXT"),
+                        ("params", "TEXT"), ("oos_results", "TEXT"),
+                        ("stress_results", "TEXT"), ("conclusion", "TEXT"),
+                        ("reject_reason", "TEXT"), ("killed", "BOOLEAN DEFAULT FALSE"),
+                    ]:
+                        cur.execute(f"ALTER TABLE experiments ADD COLUMN IF NOT EXISTS {col} {typ}")
                 else:
                     cur.execute("""
                         CREATE TABLE IF NOT EXISTS experiments (
@@ -907,6 +916,16 @@ class DBManager:
                             result TEXT,
                             created_at TEXT DEFAULT CURRENT_TIMESTAMP
                         )""")
+                    cols = [r[1] for r in cur.execute("PRAGMA table_info(experiments)").fetchall()]
+                    for col, typ in [
+                        ("modification", "TEXT"), ("dataset", "TEXT"),
+                        ("period", "TEXT"), ("regimes", "TEXT"),
+                        ("params", "TEXT"), ("oos_results", "TEXT"),
+                        ("stress_results", "TEXT"), ("conclusion", "TEXT"),
+                        ("reject_reason", "TEXT"), ("killed", "INTEGER DEFAULT 0"),
+                    ]:
+                        if col not in cols:
+                            cur.execute(f"ALTER TABLE experiments ADD COLUMN {col} {typ}")
                 conn.commit()
         except Exception as e:
             logger.warning(f"ensure_experiments_table: {e}")
@@ -947,6 +966,72 @@ class DBManager:
         except Exception as e:
             logger.error(f"list_experiments failed: {e}")
             return []
+
+    def update_experiment(self, experiment_id: int, fields: dict) -> bool:
+        """PHASE 3 : complète une expérience (résultats OOS, stress, conclusion,
+        raison de rejet, kill). Jamais bloquant."""
+        self.ensure_experiments_table()
+        allowed = {"status", "result", "modification", "dataset", "period",
+                   "regimes", "params", "oos_results", "stress_results",
+                   "conclusion", "reject_reason", "killed"}
+        set_cols = [c for c in fields if c in allowed and fields[c] is not None]
+        if not set_cols or not experiment_id:
+            return False
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    sets = ", ".join(f"{c} = %s" for c in set_cols)
+                    cur.execute(f"UPDATE experiments SET {sets} WHERE id = %s",
+                                [fields[c] for c in set_cols] + [int(experiment_id)])
+                else:
+                    sets = ", ".join(f"{c} = ?" for c in set_cols)
+                    cur.execute(f"UPDATE experiments SET {sets} WHERE id = ?",
+                                [fields[c] for c in set_cols] + [int(experiment_id)])
+                conn.commit()
+                return True
+        except Exception as e:
+            logger.debug(f"update_experiment failed: {e}")
+            return False
+
+    def get_kill_list(self, limit: int = 100) -> list:
+        """PHASE 3 : les expériences tuées (KILL LIST — ne jamais re-proposer
+        une hypothèse déjà invalidée sans nouvelle preuve)."""
+        self.ensure_experiments_table()
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute(
+                        "SELECT id, hypothesis, status, reject_reason, conclusion, created_at "
+                        "FROM experiments WHERE killed = TRUE ORDER BY id DESC LIMIT %s",
+                        (int(limit),))
+                else:
+                    cur.execute(
+                        "SELECT id, hypothesis, status, reject_reason, conclusion, created_at "
+                        "FROM experiments WHERE killed = 1 ORDER BY id DESC LIMIT ?",
+                        (int(limit),))
+                return [dict(r) for r in cur.fetchall()]
+        except Exception as e:
+            logger.error(f"get_kill_list failed: {e}")
+            return []
+
+    def is_hypothesis_killed(self, hypothesis: str) -> bool:
+        """Vrai si une hypothèse similaire a déjà été tuée (prévention de
+        re-proposition automatique)."""
+        self.ensure_experiments_table()
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute("SELECT COUNT(*) FROM experiments WHERE killed = TRUE AND hypothesis = %s",
+                                (hypothesis,))
+                else:
+                    cur.execute("SELECT COUNT(*) FROM experiments WHERE killed = 1 AND hypothesis = ?",
+                                (hypothesis,))
+                return int(cur.fetchone()[0]) > 0
+        except Exception:
+            return False
 
     # ==================== EVENT JOURNAL (VISION §7.1: replayable) ====================
     def ensure_events_table(self):

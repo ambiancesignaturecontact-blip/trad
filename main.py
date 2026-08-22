@@ -836,6 +836,48 @@ adversarial_engine = AdversarialDecisionEngine()
 execution_intel = ExecutionIntel()
 # LOT 9 : snapshot de version du système (config_hash + git + modèles déployés)
 SYSTEM_SNAPSHOT = build_system_snapshot(db)
+
+# PHASE 3 : plateforme vivante — Research Memory (hypothèses/kill list),
+# Capital Allocation Engine (recommandation seule) et Daily Quant Report.
+from core.research_memory import ResearchMemory  # noqa: E402
+from core.capital_allocation import CapitalAllocationEngine  # noqa: E402
+from core.daily_quant_report import build_daily_quant_report  # noqa: E402
+from core.conviction_engine import ConvictionEngine as _ConvEngine  # noqa: E402
+
+research_memory = ResearchMemory(db)
+capital_engine = CapitalAllocationEngine()
+
+
+def daily_quant_report_route() -> dict:
+    """Rapport quant quotidien (PHASE 3 §17) — agrège les moteurs réels."""
+    try:
+        return build_daily_quant_report(
+            db, STATE, _ConvEngine(STATE).calibration_report(),
+            edge_decay.report(), STATE.get("drift_psi", {}),
+            execution_intel.report(), research_memory, capital_engine)
+    except Exception as e:
+        return {"date": "error", "error": str(e)}
+
+
+def capital_allocation_route() -> dict:
+    """Recommandation de capital (PHASE 3 §3) — avis seulement."""
+    try:
+        j = db.decision_journal_summary()
+        return capital_engine.recommend(
+            validation_status=STATE.get("paper_validation_status", "NOT_READY"),
+            closed_trades=int(j.get("closed_n", 0)),
+            expectancy_pct=(j.get("closed_avg_pnl_pct") or 0.0) / 100.0
+            if j.get("closed_avg_pnl_pct") is not None else None,
+            drawdown_pct=0.0,
+            drift_status=STATE.get("drift_psi", {}).get("status", "STABLE"),
+            disabled_strategies=int(edge_decay.report().get("counts", {}).get("disabled", 0)),
+            total_strategies=int(edge_decay.report().get("counts", {}).get("total", 12)),
+            calibration_n=int(_ConvEngine(STATE).calibration_report().get("n", 0)),
+            calibration_error=_ConvEngine(STATE).calibration_report().get("calibration_error"),
+            kill_switch=bool(STATE.get("kill_switch_active", False)),
+            risk_state=(STATE.get("risk_state") or {}).get("state", "NORMAL"))
+    except Exception as e:
+        return {"recommendation": "MAINTAIN", "error": str(e)}
 # LOT 2 : conviction calibrée + TRADE/WAIT explicite (calibration mesurée dans STATE)
 conviction_engine = ConvictionEngine(STATE)
 trade_opportunity = TradeOpportunityEngine()

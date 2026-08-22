@@ -92,6 +92,7 @@ from main import (  # noqa: F401
     submit_order_via_oms,
     supervisor,
 )
+from main import capital_allocation_route, daily_quant_report_route  # noqa: F401
 from main import (  # noqa: F401
     _alerts_persist,
     _final_scale_report,
@@ -398,6 +399,51 @@ async def api_paper_validation_report():
     dp = main.STATE.get("drift_psi", {}) if hasattr(main, "STATE") else {}
     ei = main.execution_intel.report() if hasattr(main, "execution_intel") else {}
     return build_paper_validation_report(main.db, main.STATE, cc, ed, dp, ei)
+
+
+@router.get("/api/v1/daily-quant-report")
+async def api_daily_quant_report():
+    """PHASE 3 (§17) : rapport quantitatif quotidien complet (market/trading/
+    intelligence/risk/execution/research/recommandation), persisté."""
+    return daily_quant_report_route()
+
+
+@router.get("/api/v1/research-memory")
+async def api_research_memory():
+    """PHASE 3 (§5-7) : Research Memory — expériences récentes + kill list."""
+    return main.research_memory.report() if hasattr(main, "research_memory") \
+        else {"recent_experiments": [], "kill_list": []}
+
+
+@router.post("/api/v1/research/hypothesis")
+async def api_research_hypothesis(payload: dict):
+    """PHASE 3 (§5) : enregistre une hypothèse falsifiable (Research Brain)."""
+    hypothesis = str(payload.get("hypothesis", "")).strip()
+    if len(hypothesis) < 5:
+        return {"error": "hypothèse trop courte", "id": 0}
+    if main.research_memory.is_killed(hypothesis):
+        return {"error": "hypothèse déjà tuée (kill list) — non re-proposée", "id": 0}
+    eid = main.research_memory.record_hypothesis(
+        hypothesis=hypothesis,
+        observation=str(payload.get("observation", "")),
+        modification=str(payload.get("modification", "")),
+        dataset=str(payload.get("dataset", "")),
+        period=str(payload.get("period", "")),
+        regimes=str(payload.get("regimes", "")))
+    return {"id": eid, "status": "RESEARCH"}
+
+
+@router.get("/api/v1/capital-allocation")
+async def api_capital_allocation():
+    """PHASE 3 (§3) : recommandation de niveau de capital (avis seulement)."""
+    return capital_allocation_route()
+
+
+@router.get("/api/v1/benchmark")
+async def api_benchmark():
+    """PHASE 3 (§8) : comparaison bot vs buy & hold (données réelles)."""
+    from core.benchmark import benchmark_report
+    return benchmark_report(main.db, since_ts=0.0)
 
 
 @router.get("/api/v1/ab")
