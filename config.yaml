@@ -70,6 +70,10 @@ shadow:
   threshold_scale: 0.85         # seuil shadow = seuil production x 0.85 (plus permissif)
   notional_pct: 0.02            # notionnel virtuel 2% équité par trade (fictif, comparatif)
 
+# ===== PHASE 4 P4-E : Version Benchmark (le système est son propre benchmark) =====
+version_gate:
+  min_closes: 30               # clôtures minimales par version pour comparer
+
 # ===== P1-8 (audit §3) : risque de contrepartie =====
 counterparty:
   max_capital_per_exchange_pct: 0.40   # jamais > 40% du capital sur 1 exchange

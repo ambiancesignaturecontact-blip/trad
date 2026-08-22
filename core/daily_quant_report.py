@@ -153,6 +153,14 @@ def build_daily_quant_report(db, state: dict, conviction_calibration: dict | Non
             intelligence["promotion_committee"] = committee_overview(db)
         except Exception:
             intelligence["promotion_committee"] = None
+        # PHASE 4 P4-E : version benchmark (le système est son propre benchmark)
+        try:
+            from core.system_version import system_version as _sv
+            from core.version_benchmark import version_benchmark_report
+            intelligence["version_benchmark"] = version_benchmark_report(
+                db, current_version=_sv())
+        except Exception:
+            intelligence["version_benchmark"] = None
 
         # ---- Research ----
         research = {"kill_list": [], "recent_experiments": [], "n_killed": 0}
