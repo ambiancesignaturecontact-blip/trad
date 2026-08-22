@@ -51,10 +51,11 @@ ALLOWED_FILES = {
 }
 
 # Fichiers du CŒUR DÉCISIONNEL : AUCUN import éducatif n'y est toléré.
+# PHASE 3 Cycle 2 (§23 maintenance active) : core/kelly_sizing.py retiré —
+# module jamais importé (DynamicKellySizer sans appelant), purgé du dépôt.
 DECISION_CORE = {
     "core/risk_pipeline.py",
     "core/portfolio_allocator.py",
-    "core/kelly_sizing.py",
     "core/paper_execution.py",
     "core/execution_agent.py",
     "core/execution_router.py",
