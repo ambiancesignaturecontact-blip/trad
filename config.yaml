@@ -64,6 +64,12 @@ portfolio:
   redundant_corr: 0.85             # corrélation = stratégies redondantes
   max_btc_beta_exposure_pct: 50.0  # P4-A : exposition nette max au facteur BTC (% équité)
 
+# ===== PHASE 4 P4-C : Shadow Mode (décisions fictives, jamais exécutées) =====
+shadow:
+  enabled: true                 # active l'instance shadow_vnext (seuil x0.85)
+  threshold_scale: 0.85         # seuil shadow = seuil production x 0.85 (plus permissif)
+  notional_pct: 0.02            # notionnel virtuel 2% équité par trade (fictif, comparatif)
+
 # ===== P1-8 (audit §3) : risque de contrepartie =====
 counterparty:
   max_capital_per_exchange_pct: 0.40   # jamais > 40% du capital sur 1 exchange

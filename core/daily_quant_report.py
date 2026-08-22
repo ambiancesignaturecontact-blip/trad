@@ -141,6 +141,12 @@ def build_daily_quant_report(db, state: dict, conviction_calibration: dict | Non
             intelligence["factor_attribution"] = alpha_beta_report(db)
         except Exception:
             intelligence["factor_attribution"] = None
+        # PHASE 4 P4-C : comparaison shadow (production vs v_next fictif)
+        try:
+            from core.shadow_mode import shadow_compare
+            intelligence["shadow"] = shadow_compare(db)
+        except Exception:
+            intelligence["shadow"] = None
 
         # ---- Research ----
         research = {"kill_list": [], "recent_experiments": [], "n_killed": 0}

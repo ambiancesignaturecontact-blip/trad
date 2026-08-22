@@ -77,6 +77,7 @@ from core.portfolio_intel import (  # noqa: E402
     portfolio_exposures,
     refresh_beta_cache,
 )
+from core.shadow_mode import ShadowInstance  # noqa: E402
 # LOT 9 : gouvernance — version système + hash config (chaque décision l'enregistre)
 from core.system_version import build_system_snapshot
 # LOT 3 (mandat) : Decision Journal / Trade Intelligence Database
@@ -839,6 +840,13 @@ edge_decay = EdgeDecayEngine(strategies=[s.name for s in strategies_list])
 adversarial_engine = AdversarialDecisionEngine()
 # LOT 7 : Execution Intelligence (IS, prévision/réalité, venue quality)
 execution_intel = ExecutionIntel()
+
+# PHASE 4 P4-C : instance shadow par défaut (seuil × config.shadow.threshold_scale)
+shadow_vnext = ShadowInstance(
+    shadow_id="shadow_vnext",
+    threshold_scale=settings.get_float("shadow", "threshold_scale", 0.85),
+    notional_pct=settings.get_float("shadow", "notional_pct", 0.02),
+)
 # LOT 9 : snapshot de version du système (config_hash + git + modèles déployés)
 SYSTEM_SNAPSHOT = build_system_snapshot(db)
 
@@ -2970,6 +2978,26 @@ async def live_trading_loop():
                     # en 19h (les gates aval annulaient). Ici on capture la raison de la
                     # dernière gate bloquante.
                     _gate_block = None
+
+                    # ===== PHASE 4 P4-C : SHADOW MODE (décisions FICTIVES) =====
+                    # L'instance shadow reçoit les MÊMES données que la
+                    # production (mêmes ticks, prix, signal, conviction) et
+                    # applique SA logique (seuil × threshold_scale) — ses
+                    # décisions ne sont JAMAIS exécutées ni bloquantes.
+                    # Test en cours : « une version plus permissive
+                    # (seuil × 0,85) ferait-elle mieux que la production ? »
+                    if settings.get_bool("shadow", "enabled", True):
+                        try:
+                            _shadow_equity = float(
+                                STATE.get("current_equity") or 0.0)
+                            shadow_vnext.feed_bar(
+                                db, symbol, current_price, final_signal,
+                                STATE.get("last_conviction", {}).get(
+                                    "conviction", 0.0),
+                                STATE.get("conviction_threshold", 0.15),
+                                _shadow_equity)
+                        except Exception as _se:
+                            logger.debug(f"shadow feed failed: {_se}")
 
                     # ===== FILTRE D'ENTRÉE « RR MINIMAL » (PDF Pilier F, exigences 3-5) =====
                     # On n'entre que si : RR >= requis (adaptatif régime/vol) ET

@@ -1417,3 +1417,141 @@ class DBManager:
         except Exception as e:
             logger.debug(f"load_equity_series failed: {e}")
             return []
+
+    # ------------------------------------------------------------------ #
+    # PHASE 4 P4-C — SHADOW MODE (décisions fictives, jamais exécutées).
+    # Table shadow_decisions : chaque tick reçu par l'instance shadow.
+    # Table shadow_trades    : trades VIRTUELS clôturés (pnl mark-to-market).
+    # ------------------------------------------------------------------ #
+    def ensure_shadow_tables(self):
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS shadow_decisions (
+                            id SERIAL PRIMARY KEY,
+                            shadow_id TEXT, ts DOUBLE PRECISION,
+                            symbol TEXT, signal REAL, conviction REAL,
+                            decision TEXT, price REAL
+                        )""")
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS shadow_trades (
+                            id SERIAL PRIMARY KEY,
+                            shadow_id TEXT, entry_ts DOUBLE PRECISION,
+                            exit_ts DOUBLE PRECISION, symbol TEXT, side TEXT,
+                            entry_price REAL, exit_price REAL,
+                            pnl_pct REAL, duration_sec REAL
+                        )""")
+                else:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS shadow_decisions (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            shadow_id TEXT, ts REAL,
+                            symbol TEXT, signal REAL, conviction REAL,
+                            decision TEXT, price REAL
+                        )""")
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS shadow_trades (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            shadow_id TEXT, entry_ts REAL, exit_ts REAL,
+                            symbol TEXT, side TEXT, entry_price REAL,
+                            exit_price REAL, pnl_pct REAL, duration_sec REAL
+                        )""")
+        except Exception as e:
+            logger.warning(f"ensure_shadow_tables: {e}")
+
+    def save_shadow_decision(self, shadow_id: str, ts: float, symbol: str,
+                             signal: float, conviction: float,
+                             decision: str, price: float) -> bool:
+        try:
+            self.ensure_shadow_tables()
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute(
+                        "INSERT INTO shadow_decisions (shadow_id, ts, symbol, "
+                        "signal, conviction, decision, price) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                        (shadow_id, ts, symbol, signal, conviction,
+                         decision, price))
+                else:
+                    cur.execute(
+                        "INSERT INTO shadow_decisions (shadow_id, ts, symbol, "
+                        "signal, conviction, decision, price) "
+                        "VALUES (?,?,?,?,?,?,?)",
+                        (shadow_id, ts, symbol, signal, conviction,
+                         decision, price))
+            return True
+        except Exception as e:
+            logger.debug(f"save_shadow_decision failed: {e}")
+            return False
+
+    def save_shadow_trade(self, shadow_id: str, entry_ts: float, exit_ts: float,
+                          symbol: str, side: str, entry_price: float,
+                          exit_price: float, pnl_pct: float,
+                          duration_sec: float) -> bool:
+        try:
+            self.ensure_shadow_tables()
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute(
+                        "INSERT INTO shadow_trades (shadow_id, entry_ts, "
+                        "exit_ts, symbol, side, entry_price, exit_price, "
+                        "pnl_pct, duration_sec) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (shadow_id, entry_ts, exit_ts, symbol, side,
+                         entry_price, exit_price, pnl_pct, duration_sec))
+                else:
+                    cur.execute(
+                        "INSERT INTO shadow_trades (shadow_id, entry_ts, "
+                        "exit_ts, symbol, side, entry_price, exit_price, "
+                        "pnl_pct, duration_sec) "
+                        "VALUES (?,?,?,?,?,?,?,?,?)",
+                        (shadow_id, entry_ts, exit_ts, symbol, side,
+                         entry_price, exit_price, pnl_pct, duration_sec))
+            return True
+        except Exception as e:
+            logger.debug(f"save_shadow_trade failed: {e}")
+            return False
+
+    def load_shadow_trades(self, shadow_id: str, limit: int = 10000) -> list:
+        try:
+            self.ensure_shadow_tables()
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                ph = "%s" if self.is_postgres else "?"
+                cur.execute(
+                    f"SELECT entry_ts, exit_ts, symbol, side, entry_price, "
+                    f"exit_price, pnl_pct, duration_sec FROM shadow_trades "
+                    f"WHERE shadow_id = {ph} ORDER BY exit_ts ASC "
+                    f"LIMIT {int(limit)}", (shadow_id,))
+                return [{"entry_ts": float(r[0]), "exit_ts": float(r[1]),
+                         "symbol": str(r[2]), "side": str(r[3]),
+                         "entry_price": float(r[4]), "exit_price": float(r[5]),
+                         "pnl_pct": float(r[6]),
+                         "duration_sec": float(r[7]) if r[7] is not None else None}
+                        for r in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"load_shadow_trades failed: {e}")
+            return []
+
+    def load_shadow_decisions(self, shadow_id: str,
+                              limit: int = 50000) -> list:
+        try:
+            self.ensure_shadow_tables()
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                ph = "%s" if self.is_postgres else "?"
+                cur.execute(
+                    f"SELECT ts, symbol, signal, conviction, decision, price "
+                    f"FROM shadow_decisions WHERE shadow_id = {ph} "
+                    f"ORDER BY ts ASC LIMIT {int(limit)}", (shadow_id,))
+                return [{"ts": float(r[0]), "symbol": str(r[1]),
+                         "signal": float(r[2]), "conviction": float(r[3]),
+                         "decision": str(r[4]), "price": float(r[5])}
+                        for r in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"load_shadow_decisions failed: {e}")
+            return []
