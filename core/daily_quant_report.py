@@ -16,6 +16,9 @@ import logging
 import time
 from datetime import datetime
 
+from core.paper_validation import calibration_close_tracking
+from core.system_version import system_version
+
 logger = logging.getLogger("InstitutionalTradingBot")
 
 REPORT_HISTORY_KEY = "daily_quant_reports_index"
@@ -125,11 +128,18 @@ def build_daily_quant_report(db, state: dict, conviction_calibration: dict | Non
             except Exception as e:
                 logger.debug(f"capital recommendation failed: {e}")
 
+        # ---- Calibration tracking (PHASE 3 Cycle 2 — clôtures du calibrage actuel) ----
+        try:
+            calibration_tracking = calibration_close_tracking(db, version=system_version())
+        except Exception:
+            calibration_tracking = {"version": None, "n_closes": 0, "note": "indisponible"}
+
         report = {
             "date": _today(),
             "generated_ts": time.time(),
             "market": market,
             "trading": trading,
+            "calibration_tracking": calibration_tracking,
             "intelligence": intelligence,
             "risk": risk,
             "execution": execution,

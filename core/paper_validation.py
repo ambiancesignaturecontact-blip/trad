@@ -312,3 +312,74 @@ def build_paper_validation_report(db, state: dict,
         "note": "Décision finale de passage en REAL : MANUELLE (jamais automatique). "
                 "Ce rapport est une preuve objective, pas une autorisation.",
     }
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 2 — suivi des clôtures du CALIBRAGE ACTUEL.
+#
+# La certification PHASE 2 (CONDITIONAL GO paper) exige, pour un passage REAL
+# potentiel : >= 30 clôtures du calibrage ACTUEL avec expectancy > 0.
+# Cette fonction rend la condition MESURABLE : elle compte les clôtures
+# (pnl_pct non nul) enregistrées avec une system_version donnée (défaut :
+# version courante du système). Aucun chiffre inventé : tout est NULL tant
+# qu'aucune clôture n'existe.
+# --------------------------------------------------------------------------- #
+
+def calibration_close_tracking(db, version: str = "") -> dict:
+    """
+    Clôtures réelles (decision_journal, pnl_pct NOT NULL) attribuées à une
+    version système (défaut : version actuelle). Retourne n, win rate,
+    expectancy moyenne (% par trade), pnl cumulé et la progression vers les
+    conditions du CONDITIONAL GO (>= 30 clôtures, expectancy > 0).
+    """
+    out = {
+        "version": version or None,
+        "n_closes": 0,
+        "win_rate": None,
+        "expectancy_pct": None,
+        "cumulative_pnl_pct": None,
+        "target_n_closes": MIN_TRADES,          # 30 (même seuil que la validation)
+        "progress_pct": 0.0,
+        "conditions_met": False,
+        "note": None,
+    }
+    try:
+        if db is None or not hasattr(db, "get_connection"):
+            return out
+        with db.get_connection() as conn:
+            cur = conn.cursor()
+            ph = "%s" if getattr(db, "is_postgres", False) else "?"
+            if version:
+                cur.execute(
+                    f"SELECT COUNT(*), AVG(pnl_pct), "
+                    f"SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) "
+                    f"FROM decision_journal "
+                    f"WHERE pnl_pct IS NOT NULL AND system_version = {ph}",
+                    [version],
+                )
+            else:
+                cur.execute(
+                    f"SELECT COUNT(*), AVG(pnl_pct), "
+                    f"SUM(CASE WHEN pnl_pct > 0 THEN 1 ELSE 0 END) "
+                    f"FROM decision_journal WHERE pnl_pct IS NOT NULL"
+                )
+            row = cur.fetchone()
+            n = int(row[0] or 0)
+            avg = float(row[1] or 0.0)
+            wins = int(row[2] or 0)
+        out["n_closes"] = n
+        out["progress_pct"] = round(min(100.0, n / MIN_TRADES * 100.0), 1)
+        if n:
+            out["win_rate"] = round(wins / n, 4)
+            out["expectancy_pct"] = round(avg * 100.0, 4)
+            out["cumulative_pnl_pct"] = round(avg * n * 100.0, 4)
+            out["conditions_met"] = n >= MIN_TRADES and avg > 0.0
+        out["note"] = (
+            f"Clôtures du calibrage actuel : {n}/{MIN_TRADES} — "
+            f"expectancy {'> 0' if out['expectancy_pct'] is not None and out['expectancy_pct'] > 0 else 'n/a ou <= 0'}."
+            if n else f"Aucune clôture du calibrage actuel ({n}/{MIN_TRADES}) — "
+                      f"les conditions du CONDITIONAL GO ne sont pas encore mesurables."
+        )
+    except Exception as e:
+        out["note"] = f"indisponible ({e})"
+    return out

@@ -208,8 +208,9 @@ class TestDailyReport:
         from core.daily_quant_report import build_daily_quant_report
         r = build_daily_quant_report(FakeDB(), {"regime_name": "Range",
                                                 "regime_id": 2})
-        for section in ("market", "trading", "intelligence", "risk",
-                        "execution", "research", "recommendation"):
+        for section in ("market", "trading", "calibration_tracking",
+                        "intelligence", "risk", "execution", "research",
+                        "recommendation"):
             assert section in r, f"section {section} manquante"
         assert r["recommendation"]["recommendation"] in (
             "INCREASE", "MAINTAIN", "REDUCE", "FREEZE")
@@ -240,3 +241,82 @@ class TestAPI:
                              "observation": "test unitaire"})
             body = r.json()
             assert body.get("id", 0) > 0 or "déjà tuée" in str(body.get("error", ""))
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 2 — suivi des clôtures du calibrage actuel (item 1)
+# --------------------------------------------------------------------------- #
+class TestCalibrationTracking:
+    """calibration_close_tracking : les clôtures du calibrage ACTUEL (par
+    system_version) deviennent mesurables — condition du CONDITIONAL GO."""
+
+    def _make_db(self, tmp_path, rows):
+        import sqlite3
+
+        path = tmp_path / "dj.db"
+
+        class MiniDB:
+            is_postgres = False
+
+            def __init__(self, p):
+                self._conn = sqlite3.connect(str(p))
+                self._conn.execute(
+                    "CREATE TABLE decision_journal (id INTEGER PRIMARY KEY, "
+                    "pnl_pct REAL, system_version TEXT)"
+                )
+                self._conn.executemany(
+                    "INSERT INTO decision_journal (pnl_pct, system_version) "
+                    "VALUES (?, ?)", rows)
+                self._conn.commit()
+
+            def get_connection(self):
+                return self._conn
+
+        return MiniDB(path)
+
+    def test_zero_closes_honest(self, tmp_path):
+        from core.paper_validation import calibration_close_tracking
+        db = self._make_db(tmp_path, [])
+        r = calibration_close_tracking(db, version="qp-test-00000000")
+        assert r["n_closes"] == 0
+        assert r["expectancy_pct"] is None      # jamais 0.0 inventé
+        assert r["conditions_met"] is False
+        assert r["progress_pct"] == 0.0
+
+    def test_only_current_version_counted(self, tmp_path):
+        from core.paper_validation import calibration_close_tracking
+        db = self._make_db(tmp_path, [
+            (0.01, "qp-old-00000000"),   # autre calibrage : ignoré
+            (-0.005, "qp-old-00000000"),
+            (0.02, "qp-current-11111111"),
+            (-0.01, "qp-current-11111111"),
+            (0.03, "qp-current-11111111"),
+        ])
+        r = calibration_close_tracking(db, version="qp-current-11111111")
+        assert r["n_closes"] == 3
+        assert r["win_rate"] == round(2 / 3, 4)
+        assert r["expectancy_pct"] == round(((0.02 - 0.01 + 0.03) / 3) * 100, 4)
+        assert r["cumulative_pnl_pct"] == round((0.02 - 0.01 + 0.03) * 100, 4)
+
+    def test_conditions_met_at_30_positive(self, tmp_path):
+        from core.paper_validation import calibration_close_tracking
+        rows = [(0.01, "qp-current-22222222")] * 30
+        db = self._make_db(tmp_path, rows)
+        r = calibration_close_tracking(db, version="qp-current-22222222")
+        assert r["n_closes"] == 30
+        assert r["conditions_met"] is True
+        assert r["progress_pct"] == 100.0
+
+    def test_30_closes_negative_expectancy_not_met(self, tmp_path):
+        from core.paper_validation import calibration_close_tracking
+        rows = [(-0.01, "qp-current-33333333")] * 30
+        db = self._make_db(tmp_path, rows)
+        r = calibration_close_tracking(db, version="qp-current-33333333")
+        assert r["n_closes"] == 30
+        assert r["conditions_met"] is False  # expectancy <= 0 : pas de GO
+
+    def test_no_version_counts_all(self, tmp_path):
+        from core.paper_validation import calibration_close_tracking
+        db = self._make_db(tmp_path, [(0.01, "v1"), (0.02, "v2")])
+        r = calibration_close_tracking(db, version="")
+        assert r["n_closes"] == 2
