@@ -95,11 +95,22 @@ _DEFAULTS: dict[str, Any] = {
         "max_participation_pct": 0.01,   # 1 % du volume 24h
         "redundant_corr": 0.85,
         "max_btc_beta_exposure_pct": 50.0,
+    },
     "shadow": {
         "enabled": True,
         "threshold_scale": 0.85,
         "notional_pct": 0.02,
     },
+    "version_gate": {
+        "min_closes": 30,
+    },
+    "digital_twin": {
+        "enabled": True,
+        "threshold_scale": 0.85,
+        "max_exposure_pct": 0.05,
+        "stop_loss_pct": 0.03,
+        "take_profit_rr": 1.8,
+        "max_hold_sec": 86400,
     },
     "counterparty": {
         "max_capital_per_exchange_pct": 0.40,

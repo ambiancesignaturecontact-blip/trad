@@ -1555,3 +1555,121 @@ class DBManager:
         except Exception as e:
             logger.debug(f"load_shadow_decisions failed: {e}")
             return []
+
+    # ------------------------------------------------------------------ #
+    # PHASE 4 P4-F — DIGITAL TWIN (décisions fictives d'une variante testée).
+    # twin_decisions : ticks reçus ; twin_trades : clôtures virtuelles nettes
+    # de frais/slippage (avec raison de sortie SL/TP/signal/max_hold).
+    # ------------------------------------------------------------------ #
+    def ensure_twin_tables(self):
+        try:
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS twin_decisions (
+                            id SERIAL PRIMARY KEY, twin_id TEXT, ts DOUBLE
+                            PRECISION, symbol TEXT, signal REAL,
+                            conviction REAL, decision TEXT, price REAL)""")
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS twin_trades (
+                            id SERIAL PRIMARY KEY, twin_id TEXT,
+                            entry_ts DOUBLE PRECISION, exit_ts DOUBLE
+                            PRECISION, symbol TEXT, side TEXT,
+                            entry_price REAL, exit_price REAL,
+                            pnl_pct REAL, duration_sec REAL,
+                            exit_reason TEXT)""")
+                else:
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS twin_decisions (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            twin_id TEXT, ts REAL, symbol TEXT,
+                            signal REAL, conviction REAL,
+                            decision TEXT, price REAL)""")
+                    cur.execute("""
+                        CREATE TABLE IF NOT EXISTS twin_trades (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            twin_id TEXT, entry_ts REAL, exit_ts REAL,
+                            symbol TEXT, side TEXT, entry_price REAL,
+                            exit_price REAL, pnl_pct REAL,
+                            duration_sec REAL, exit_reason TEXT)""")
+        except Exception as e:
+            logger.warning(f"ensure_twin_tables: {e}")
+
+    def save_twin_decision(self, twin_id, ts, symbol, signal, conviction,
+                           decision, price) -> bool:
+        try:
+            self.ensure_twin_tables()
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute(
+                        "INSERT INTO twin_decisions (twin_id, ts, symbol, "
+                        "signal, conviction, decision, price) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                        (twin_id, ts, symbol, signal, conviction,
+                         decision, price))
+                else:
+                    cur.execute(
+                        "INSERT INTO twin_decisions (twin_id, ts, symbol, "
+                        "signal, conviction, decision, price) "
+                        "VALUES (?,?,?,?,?,?,?)",
+                        (twin_id, ts, symbol, signal, conviction,
+                         decision, price))
+            return True
+        except Exception as e:
+            logger.debug(f"save_twin_decision failed: {e}")
+            return False
+
+    def save_twin_trade(self, twin_id, entry_ts, exit_ts, symbol, side,
+                        entry_price, exit_price, pnl_pct, duration_sec,
+                        exit_reason) -> bool:
+        try:
+            self.ensure_twin_tables()
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                if self.is_postgres:
+                    cur.execute(
+                        "INSERT INTO twin_trades (twin_id, entry_ts, "
+                        "exit_ts, symbol, side, entry_price, exit_price, "
+                        "pnl_pct, duration_sec, exit_reason) "
+                        "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,%s)",
+                        (twin_id, entry_ts, exit_ts, symbol, side,
+                         entry_price, exit_price, pnl_pct, duration_sec,
+                         exit_reason))
+                else:
+                    cur.execute(
+                        "INSERT INTO twin_trades (twin_id, entry_ts, "
+                        "exit_ts, symbol, side, entry_price, exit_price, "
+                        "pnl_pct, duration_sec, exit_reason) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                        (twin_id, entry_ts, exit_ts, symbol, side,
+                         entry_price, exit_price, pnl_pct, duration_sec,
+                         exit_reason))
+            return True
+        except Exception as e:
+            logger.debug(f"save_twin_trade failed: {e}")
+            return False
+
+    def load_twin_trades(self, twin_id: str, limit: int = 10000) -> list:
+        try:
+            self.ensure_twin_tables()
+            with self.get_connection() as conn:
+                cur = conn.cursor()
+                ph = "%s" if self.is_postgres else "?"
+                cur.execute(
+                    f"SELECT entry_ts, exit_ts, symbol, side, entry_price, "
+                    f"exit_price, pnl_pct, duration_sec, exit_reason "
+                    f"FROM twin_trades WHERE twin_id = {ph} "
+                    f"ORDER BY exit_ts ASC LIMIT {int(limit)}", (twin_id,))
+                return [{"entry_ts": float(r[0]), "exit_ts": float(r[1]),
+                         "symbol": str(r[2]), "side": str(r[3]),
+                         "entry_price": float(r[4]),
+                         "exit_price": float(r[5]), "pnl_pct": float(r[6]),
+                         "duration_sec": (float(r[7])
+                                          if r[7] is not None else None),
+                         "exit_reason": str(r[8] or "")}
+                        for r in cur.fetchall()]
+        except Exception as e:
+            logger.debug(f"load_twin_trades failed: {e}")
+            return []

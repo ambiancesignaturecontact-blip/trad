@@ -77,6 +77,7 @@ from core.portfolio_intel import (  # noqa: E402
     portfolio_exposures,
     refresh_beta_cache,
 )
+from core.digital_twin import TwinEngine  # noqa: E402
 from core.shadow_mode import ShadowInstance  # noqa: E402
 # LOT 9 : gouvernance — version système + hash config (chaque décision l'enregistre)
 from core.system_version import build_system_snapshot
@@ -846,6 +847,23 @@ shadow_vnext = ShadowInstance(
     shadow_id="shadow_vnext",
     threshold_scale=settings.get_float("shadow", "threshold_scale", 0.85),
     notional_pct=settings.get_float("shadow", "notional_pct", 0.02),
+)
+
+# PHASE 4 P4-F : instance Digital Twin (variante complète configurable)
+twin_vnext = TwinEngine(
+    twin_id="twin_vnext",
+    params={
+        "threshold_scale": settings.get_float(
+            "digital_twin", "threshold_scale", 0.85),
+        "max_exposure_pct": settings.get_float(
+            "digital_twin", "max_exposure_pct", 0.05),
+        "stop_loss_pct": settings.get_float(
+            "digital_twin", "stop_loss_pct", 0.03),
+        "take_profit_rr": settings.get_float(
+            "digital_twin", "take_profit_rr", 1.8),
+        "max_hold_sec": settings.get_int(
+            "digital_twin", "max_hold_sec", 86400),
+    },
 )
 # LOT 9 : snapshot de version du système (config_hash + git + modèles déployés)
 SYSTEM_SNAPSHOT = build_system_snapshot(db)
@@ -2998,6 +3016,36 @@ async def live_trading_loop():
                                 _shadow_equity)
                         except Exception as _se:
                             logger.debug(f"shadow feed failed: {_se}")
+
+                    # ===== PHASE 4 P4-F : DIGITAL TWIN (variante complète) =====
+                    # Le twin reçoit les MÊMES données + exécute SA logique
+                    # complète (décision → gates → sizing → exécution simulée
+                    # → SL/TP). Jamais exécuté ni bloquant.
+                    if settings.get_bool("digital_twin", "enabled", True):
+                        try:
+                            # caches recalculés ici (cachés 6h/10min donc
+                            # peu coûteux) — le twin a TOUJOURS des données
+                            # fraîches, indépendamment de l'ordre des gates
+                            _twin_betas = refresh_beta_cache(STATE, db)
+                            _twin_fric = refresh_friction_cache(STATE, db)
+                            _twin_pexp = portfolio_exposures(
+                                STATE, db, betas=_twin_betas)
+                            twin_vnext.feed_bar(
+                                db, symbol, current_price, final_signal,
+                                STATE.get("last_conviction", {}).get(
+                                    "conviction", 0.0),
+                                STATE.get("conviction_threshold", 0.15),
+                                _shadow_equity,
+                                betas=_twin_betas,
+                                friction_cache=_twin_fric,
+                                positions=(db.get_positions()
+                                           if hasattr(db, "get_positions")
+                                           else []),
+                                correlations=_twin_pexp.get(
+                                    "correlations", {}),
+                            )
+                        except Exception as _te:
+                            logger.debug(f"twin feed failed: {_te}")
 
                     # ===== FILTRE D'ENTRÉE « RR MINIMAL » (PDF Pilier F, exigences 3-5) =====
                     # On n'entre que si : RR >= requis (adaptatif régime/vol) ET

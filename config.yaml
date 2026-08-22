@@ -74,6 +74,15 @@ shadow:
 version_gate:
   min_closes: 30               # clôtures minimales par version pour comparer
 
+# ===== PHASE 4 P4-F : Digital Twin (miroir configurable, jamais exécuté) =====
+digital_twin:
+  enabled: true                 # instance twin_vnext (feed live + replay journal)
+  threshold_scale: 0.85         # seuil twin = seuil production x 0.85
+  max_exposure_pct: 0.05        # 5% équité max par position virtuelle
+  stop_loss_pct: 0.03           # stop loss 3%
+  take_profit_rr: 1.8           # take profit = 1.8 x stop_loss
+  max_hold_sec: 86400           # durée max de détention (24h)
+
 # ===== P1-8 (audit §3) : risque de contrepartie =====
 counterparty:
   max_capital_per_exchange_pct: 0.40   # jamais > 40% du capital sur 1 exchange

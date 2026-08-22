@@ -161,6 +161,22 @@ def build_daily_quant_report(db, state: dict, conviction_calibration: dict | Non
                 db, current_version=_sv())
         except Exception:
             intelligence["version_benchmark"] = None
+        # PHASE 4 P4-F : Digital Twin — replay de la variante sur le journal
+        try:
+            from core.digital_twin import TwinEngine, replay_journal
+            _twin_rep = TwinEngine(
+                twin_id="twin_vnext_replay",
+                params={"threshold_scale": settings.get_float(
+                    "digital_twin", "threshold_scale", 0.85)})
+            intelligence["digital_twin"] = {
+                "replay": replay_journal(db, _twin_rep, limit=6000),
+                "note": "Le Digital Twin teste une variante COMPLÈTE sur les "
+                        "décisions réelles du journal (prix ≈ candle 1h, "
+                        "approximation) — il classe des variantes, il ne "
+                        "mesure pas un edge précis.",
+            }
+        except Exception:
+            intelligence["digital_twin"] = None
 
         # ---- Research ----
         research = {"kill_list": [], "recent_experiments": [], "n_killed": 0}
