@@ -297,6 +297,7 @@ def run_experiment(db, experiment_id: int,
                    filter_scale: float = FILTER_SCALE,
                    cost_ar_pct: float = COST_AR_PCT,
                    filter_mode: str = "signal",
+                   timeframe: str = "1h",
                    research_memory=None) -> dict:
     """
     Pipeline complet pour l'hypothèse (Momentum + filtre vol en HIGH_VOL) :
@@ -309,8 +310,16 @@ def run_experiment(db, experiment_id: int,
       - "position" (Cycle 3)  : AFFINEMENT — le signal reste inchangé, le
         filtre réduit le POIDS FINAL de la position (× filter_scale en
         HIGH_VOL), sans changer les entrées/sorties.
+
+    timeframe :
+      - "1h" (production) : parité de signal VÉRIFIÉE avec MomentumStrategy ;
+      - "4h"/"1d" (Cycle 4, Expérience #3) : résampling propre (close =
+        dernière, extrema, volume somme) — variante de RECHERCHE, la parité
+        de signal ne s'applique pas (parity_checked=False documenté), jamais
+        promu sans preuve supplémentaire.
     """
     assert filter_mode in ("signal", "position"), f"mode inconnu: {filter_mode}"
+    assert timeframe in ("1h", "4h", "1d"), f"timeframe inconnu: {timeframe}"
     from core.research_memory import ResearchMemory
     rm = research_memory or (ResearchMemory(db) if db is not None else None)
 
@@ -333,13 +342,20 @@ def run_experiment(db, experiment_id: int,
         df = load_candles(db, sym)
         if df.empty or len(df) < 400:
             continue
+        # Cycle 4 : résampling vers l'horizon testé (4h/1d) avant tout calcul
+        df = resample_candles(df, timeframe)
+        if df.empty or len(df) < 200:
+            continue
         close = df["close"].astype(float)
         vol = volatility_ewma(close)
         sig = momentum_signal_series(close, volume=df.get("volume")
                                      if "volume" in df.columns else None)
 
-        # parité avec la production (garde-fou : pas de variante de labo)
-        if not check_signal_parity(df):
+        # parité avec la production (garde-fou : pas de variante de labo) —
+        # seulement sur 1h (timeframe de production) ; sur 4h/1d, l'hypothèse
+        # EST un changement d'horizon : parity_checked=False, documenté.
+        parity_checked = (timeframe == "1h")
+        if parity_checked and not check_signal_parity(df):
             parity_failures.append(sym)
             continue
 
@@ -380,26 +396,40 @@ def run_experiment(db, experiment_id: int,
         per_symbol[sym] = {
             "n_bars": int(len(df)), "n_oos": int(len(oos_close)),
             "vol_threshold": round(float(thr), 6) if np.isfinite(thr) else None,
+            "filter_mode": filter_mode, "timeframe": timeframe,
+            "parity_checked": parity_checked,
             "baseline_oos": b_base, "treatment_oos": b_treat,
             "baseline_stress": s_base, "treatment_stress": s_treat,
         }
 
-    # 2. agrégation OOS (pondérée par le nombre de trades) — les métriques
-    # décisionnelles sont les ROUND-TRIPS (définition standard, entrées
-    # clôturées) ; les métriques par barre restent exposées en transparence.
+    # 2. agrégation OOS — PHASE 3 Cycle 4 : moyenne PONDÉRÉE par le nombre de
+    # round-trips par symbole (la moyenne simple par symbole donnait un poids
+    # égal à AAPL 7 RT et ETH 33 RT — biais mesuré dans Exp#3 : -0,2975 % vs
+    # -0,405 % pondéré). Le cumul inclut les positions encore OUVERTES en fin
+    # d'échantillon (mark-to-market final) : documenté, non comparable à
+    # l'expectancy des RT clôturés.
     def _agg(rows, key):
         n = sum(r.get("n_trades", 0) for r in rows)
         n_rt = sum(r.get("n_round_trips", 0) for r in rows)
-        exps = [r.get("expectancy_rt_pct") for r in rows
-                if r.get("expectancy_rt_pct") is not None]
-        wr = [r.get("win_rate_rt") for r in rows
-              if r.get("win_rate_rt") is not None]
+        exps = [(r.get("expectancy_rt_pct") or 0.0,
+                 r.get("n_round_trips", 0))
+                for r in rows if r.get("expectancy_rt_pct") is not None]
+        wr = [(r.get("win_rate_rt") or 0.0, r.get("n_round_trips", 0))
+              for r in rows if r.get("win_rate_rt") is not None]
         pnl = sum(r.get("cumulative_pnl_pct", 0.0) for r in rows)
-        return {"n_trades": n,
-                "n_round_trips": n_rt,
-                "expectancy_pct": round(sum(exps) / len(exps), 4) if exps else None,
-                "win_rate": round(sum(wr) / len(wr), 4) if wr else None,
-                "cumulative_pnl_pct": round(pnl, 4)}
+        n_rt_w = sum(w for _, w in exps)
+        n_rt_wr = sum(w for _, w in wr)
+        return {
+            "n_trades": n,
+            "n_round_trips": n_rt,
+            "expectancy_pct": round(sum(e * w for e, w in exps) / n_rt_w, 4)
+            if n_rt_w else None,
+            "win_rate": round(sum(rr * w for rr, w in wr) / n_rt_wr, 4)
+            if n_rt_wr else None,
+            "cumulative_pnl_pct": round(pnl, 4),   # inclut positions ouvertes
+            "agg_note": "expectancy/win_rate = moyenne PONDÉRÉE par round-trip; "
+                        "cumul = PnL total (positions ouvertes incluses)",
+        }
 
     agg_base, agg_treat = _agg(oos_base, "baseline"), _agg(oos_treat, "treatment")
     stress_agg_base = _agg(stress_base, "baseline")
@@ -426,7 +456,7 @@ def run_experiment(db, experiment_id: int,
         "cost_ar_pct": cost_ar_pct,
         "train_ratio": train_ratio, "vol_quantile": vol_quantile,
         "filter_scale": filter_scale,
-        "filter_mode": filter_mode,
+        "filter_mode": filter_mode, "timeframe": timeframe,
         "oos": {"baseline": agg_base, "treatment": agg_treat,
                 "n_oos_trades": n_oos},
         "stress": {"baseline": {k: v for k, v in
@@ -447,3 +477,32 @@ def run_experiment(db, experiment_id: int,
             logger.warning(f"record_experiment_result failed: {e}")
     results["recorded"] = recorded
     return results
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 4 — HORIZON LONG (Expérience #3).
+# Le momentum 1h n'a pas d'edge net après coûts réels (exp #1/#2) : l'horizon
+# 4h/1D réduit le turnover (~÷4/÷24) et donc le poids des coûts AR 0,213 %.
+# RÉSAMPLING PROPRE : close = dernière close, high/low = extrema, volume =
+# somme. C'est une variante de RECHERCHE (le signal 4h/1D n'est PAS celui de
+# la production, qui tourne sur 1h) : la parité de signal ne s'applique qu'à
+# 1h, documentée dans les résultats (parity_checked). Jamais promu sans preuve.
+# --------------------------------------------------------------------------- #
+def resample_candles(df: pd.DataFrame, timeframe: str) -> pd.DataFrame:
+    """Résampling de barres 1h vers '4h' ou '1d' (inchangé si '1h')."""
+    rule = {"4h": "4h", "1d": "1D"}.get(timeframe)
+    if rule is None or timeframe == "1h":
+        return df
+    try:
+        out = pd.DataFrame({
+            "open": df["open"].resample(rule).first(),
+            "high": df["high"].resample(rule).max(),
+            "low": df["low"].resample(rule).min(),
+            "close": df["close"].resample(rule).last(),
+        })
+        if "volume" in df.columns:
+            out["volume"] = df["volume"].resample(rule).sum()
+        return out.dropna(subset=["close"])
+    except Exception as e:
+        logger.warning(f"resample {timeframe} failed: {e}")
+        return df

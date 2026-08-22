@@ -160,3 +160,50 @@ class TestOrchestration:
         assert "insuffisante" in e["conclusion"]
         assert "oos_results" in e and e["oos_results"]
         assert "stress_results" in e and e["stress_results"]
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 4 — horizon long (résampling 4h/1d, Expérience #3)
+# --------------------------------------------------------------------------- #
+class TestResampleAndTimeframe:
+    def test_resample_4h_close_volume(self):
+        """Résampling 4h : close = dernière close, high/low = extrema,
+        volume = somme (règle propre, sans look-ahead)."""
+        from core.research_experiments import resample_candles
+        idx = pd.date_range("2026-01-01", periods=8, freq="h")
+        df = pd.DataFrame({
+            "open": [1, 2, 3, 4, 5, 6, 7, 8],
+            "high": [2, 3, 4, 5, 6, 7, 8, 9],
+            "low": [0, 1, 2, 3, 4, 5, 6, 7],
+            "close": [1.5, 2.5, 3.5, 4.5, 5.5, 6.5, 7.5, 8.5],
+            "volume": [10, 10, 10, 10, 10, 10, 10, 10],
+        }, index=idx)
+        r = resample_candles(df, "4h")
+        assert len(r) == 2
+        assert r["close"].iloc[0] == 4.5          # dernière close du 1er bloc
+        assert r["high"].iloc[0] == 5.0
+        assert r["low"].iloc[0] == 0.0
+        assert r["volume"].iloc[0] == 40.0        # somme
+        # 1h = inchangé
+        assert len(resample_candles(df, "1h")) == 8
+
+    def test_experiment_4h_parity_not_checked(self):
+        """En 4h, la parité de signal n'est PAS vérifiée (variante de
+        recherche, documentée parity_checked=False) — le pipeline tourne."""
+        from core.research_experiments import run_experiment
+        db = FakeDB()
+        db.add_experiment("Hypothèse horizon 4h", status="RESEARCH")
+        r = run_experiment(db, 1, timeframe="4h")
+        assert r["timeframe"] == "4h"
+        assert r["recorded"] is True
+        for d in r.get("per_symbol", {}).values():
+            assert d["parity_checked"] is False
+
+    def test_experiment_1h_parity_checked(self):
+        from core.research_experiments import run_experiment
+        db = FakeDB()
+        db.add_experiment("Hypothèse 1h", status="RESEARCH")
+        r = run_experiment(db, 1, timeframe="1h")
+        assert r["timeframe"] == "1h"
+        for d in r.get("per_symbol", {}).values():
+            assert d["parity_checked"] is True

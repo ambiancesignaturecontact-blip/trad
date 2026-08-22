@@ -1,14 +1,16 @@
 """
-PHASE 3 Cycle 2 — Exécution d'une expérience de recherche (item 2).
+PHASE 3 Cycle 2-4 — Exécution d'une expérience de recherche.
 
 Usage :
-    python scripts/run_research_experiment.py [experiment_id] [signal|position]
+    python scripts/run_research_experiment.py [experiment_id] [signal|position] [1h|4h|1d]
 
 Exécute le pipeline de validation (baseline vs traitement isolé, walk-forward
 70/30, stress haute vol réelle) pour l'expérience donnée (défaut : 1) et
 enregistre la décision REJECT/KEEP dans la mémoire de recherche (table
 `experiments`). `filter_mode` : "signal" (Cycle 2) ou "position" (Cycle 3,
-affinement : filtre sur le poids final). Ne modifie JAMAIS la production.
+affinement : filtre sur le poids final). `timeframe` : "1h" (production),
+"4h"/"1d" (Cycle 4, Expérience #3 — horizon long). Ne modifie JAMAIS la
+production.
 """
 import json
 import sys
@@ -22,13 +24,16 @@ from database.db_manager import DBManager  # noqa: E402
 def main():
     experiment_id = int(sys.argv[1]) if len(sys.argv) > 1 else 1
     filter_mode = sys.argv[2] if len(sys.argv) > 2 else "signal"
+    timeframe = sys.argv[3] if len(sys.argv) > 3 else "1h"
     assert filter_mode in ("signal", "position")
+    assert timeframe in ("1h", "4h", "1d")
     db = DBManager()
-    print(f"🔬 EXPÉRIENCE #{experiment_id} (mode filtre : {filter_mode}) — "
-          f"pipeline de validation\n"
+    print(f"🔬 EXPÉRIENCE #{experiment_id} (mode filtre : {filter_mode}, "
+          f"timeframe : {timeframe}) — pipeline de validation\n"
           f"   Données : cache DB market_candles (réelles) · coûts AR "
           f"0,213 % (frais réels 0,1 %/side + slippage médian 6,6 bps)")
-    results = run_experiment(db, experiment_id, filter_mode=filter_mode)
+    results = run_experiment(db, experiment_id, filter_mode=filter_mode,
+                             timeframe=timeframe)
     print(json.dumps(results, ensure_ascii=False, indent=1, default=str))
     oos = results.get("oos", {})
     print("\n=== DÉCISION ===")

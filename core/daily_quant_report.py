@@ -99,6 +99,12 @@ def build_daily_quant_report(db, state: dict, conviction_calibration: dict | Non
             "avg_forecast_error_bps": ei.get("avg_forecast_error_bps"),
             "by_venue": ei.get("by_venue", {}),
         }
+        # PHASE 3 Cycle 4 : friction réelle (slippage p50/p90/p95/p99, fee %)
+        try:
+            from core.execution_intel import friction_report
+            execution["friction"] = friction_report(db)
+        except Exception:
+            execution["friction"] = None
 
         # ---- Research ----
         research = {"kill_list": [], "recent_experiments": [], "n_killed": 0}

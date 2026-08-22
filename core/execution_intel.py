@@ -144,3 +144,72 @@ class ExecutionIntel:
                     "> 0 = le slippage réel dépasse la prévision.",
             "ts": time.time(),
         }
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 4 — RAPPORT DE FRICTION (chantier slippage p95, observabilité).
+# Distribution RÉELLE de la friction d'exécution calculée depuis les fills
+# persistés (events paper_fill : slippage_bps, fee, latency) — p50/p90/p95/p99
+# par symbole. Rien d'inventé : sans échantillon -> dict honnête.
+# La production n'est PAS modifiée : on commence par MESURER en continu.
+# --------------------------------------------------------------------------- #
+def friction_report(db, limit: int = 5000) -> dict:
+    """Distribution réelle de la friction (slippage bps, fee % notional,
+    latence ms) sur les fills persistés, globale et par symbole."""
+    out = {"n_fills": 0, "slippage_bps": {}, "latency_ms": {},
+           "fee_pct": None, "by_symbol": {}, "note": None}
+    try:
+        if db is None or not hasattr(db, "list_events"):
+            out["note"] = "persistance indisponible"
+            return out
+        import numpy as np
+        evs = db.list_events(event_type="paper_fill", limit=limit)
+        rows = []
+        for e in evs:
+            try:
+                d = json.loads(e.get("payload", "{}"))
+                if d.get("slippage_bps") is not None:
+                    rows.append(d)
+            except Exception:
+                continue
+        out["n_fills"] = len(rows)
+        if len(rows) < 10:
+            out["note"] = (f"insuffisant : {len(rows)} fills persistés "
+                           f"(≥ 10 pour une distribution) — la friction "
+                           f"devient mesurable au fil des trades")
+            return out
+        slip = np.array([float(r["slippage_bps"]) for r in rows])
+        lat = np.array([float(r["latency_ms"]) for r in rows
+                        if r.get("latency_ms") is not None])
+        notional = []
+        for r in rows:
+            try:
+                q = float(r.get("qty") or 0.0)
+                p = float(r.get("arrival") or 0.0)
+                f = float(r.get("fee") or 0.0)
+                if q > 0 and p > 0:
+                    notional.append((f, q * p))
+            except Exception:
+                continue
+        def _q(a, p):
+            return round(float(np.percentile(a, p)), 2) if len(a) else None
+        out["slippage_bps"] = {"p50": _q(slip, 50), "p90": _q(slip, 90),
+                               "p95": _q(slip, 95), "p99": _q(slip, 99),
+                               "max": round(float(slip.max()), 2)}
+        out["latency_ms"] = {"p50": _q(lat, 50), "p95": _q(lat, 95)}
+        if notional:
+            fee_pct = 100.0 * sum(f for f, _ in notional) / sum(n for _, n in notional)
+            out["fee_pct"] = round(float(fee_pct), 4)
+        by_sym = {}
+        for sym in sorted({r.get("symbol") for r in rows}):
+            s = np.array([float(r["slippage_bps"]) for r in rows
+                          if r.get("symbol") == sym])
+            if len(s):
+                by_sym[sym] = {"n": int(len(s)), "p50": _q(s, 50),
+                               "p95": _q(s, 95), "p99": _q(s, 99)}
+        out["by_symbol"] = by_sym
+        out["note"] = ("friction mesurée sur les fills PERSISTÉS "
+                       "(events paper_fill) — aucune donnée inventée")
+    except Exception as e:
+        out["note"] = f"indisponible ({e})"
+    return out

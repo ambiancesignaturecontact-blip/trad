@@ -13,6 +13,7 @@ Vérifié ici :
   5. API : /api/v1/research-memory, /api/v1/capital-allocation,
      /api/v1/benchmark, /api/v1/daily-quant-report répondent.
 """
+import json
 import time
 from pathlib import Path
 
@@ -441,3 +442,69 @@ class TestSQLiteConnClosed:
         db = DBManager()
         conn = db.get_connection()
         conn.close()   # délégation vers sqlite3 : pas d'erreur
+
+
+# --------------------------------------------------------------------------- #
+# PHASE 3 Cycle 4 — rapport de friction (chantier slippage p95)
+# --------------------------------------------------------------------------- #
+class TestFrictionReport:
+    def _db_with_fills(self, tmp_path, n=100):
+        import sqlite3
+
+        class MiniDB:
+            is_postgres = False
+
+            def __init__(self, p, rows):
+                self._conn = sqlite3.connect(str(p))
+                self._conn.execute(
+                    "CREATE TABLE events (id INTEGER PRIMARY KEY "
+                    "AUTOINCREMENT, ts REAL, event_type TEXT, payload TEXT)")
+                self._conn.executemany(
+                    "INSERT INTO events (ts, event_type, payload) "
+                    "VALUES (?, 'paper_fill', ?)",
+                    [(i, json.dumps(r)) for i, r in enumerate(rows)])
+                self._conn.commit()
+
+            def get_connection(self):
+                return self._conn
+
+            def list_events(self, event_type="", since=0.0, limit=500):
+                cur = self._conn.execute(
+                    "SELECT ts, event_type, payload FROM events "
+                    "WHERE event_type = ? ORDER BY ts DESC LIMIT ?",
+                    (event_type, limit))
+                return [{"ts": r[0], "event_type": r[1], "payload": r[2]}
+                        for r in cur.fetchall()]
+
+        rows = [{"symbol": "BTCUSDT", "side": "BUY", "qty": 0.001,
+                 "arrival": 100.0, "fill": 100.0 + i * 0.01,
+                 "slippage_bps": float(i % 10), "latency_ms": 70.0 + i % 5,
+                 "fee": 0.0001}
+                for i in range(n)]
+        return MiniDB(tmp_path / "f.db", rows)
+
+    def test_insufficient_honest(self, tmp_path):
+        from core.execution_intel import friction_report
+        db = self._db_with_fills(tmp_path, n=3)
+        r = friction_report(db)
+        assert r["n_fills"] == 3
+        assert "insuffisant" in (r["note"] or "")
+        assert r["slippage_bps"] == {}
+
+    def test_distribution_and_fee(self, tmp_path):
+        from core.execution_intel import friction_report
+        db = self._db_with_fills(tmp_path, n=100)
+        r = friction_report(db)
+        assert r["n_fills"] == 100
+        assert r["slippage_bps"]["p95"] == 9.0        # i%10 -> p95 = 9
+        assert r["slippage_bps"]["max"] == 9.0
+        # notional = 0.001 qty × 100 = 0.1 $ ; fee 0.0001 $ -> 0.1 %
+        assert r["fee_pct"] == pytest.approx(0.1, abs=1e-6)
+        assert "BTCUSDT" in r["by_symbol"]
+
+    def test_daily_report_exposes_friction(self):
+        from core.daily_quant_report import build_daily_quant_report
+        r = build_daily_quant_report(FakeDB(), {"mode": "DEMO",
+                                                "regime_name": "Range",
+                                                "regime_id": 2})
+        assert "friction" in r["execution"]
