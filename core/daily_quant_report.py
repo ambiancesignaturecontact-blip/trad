@@ -135,6 +135,12 @@ def build_daily_quant_report(db, state: dict, conviction_calibration: dict | Non
                 state, db, betas=_px_betas)
         except Exception:
             execution["portfolio_exposure"] = None
+        # PHASE 4 P4-B : attribution factorielle du PnL (alpha vs bêta)
+        try:
+            from core.factor_attribution import alpha_beta_report
+            intelligence["factor_attribution"] = alpha_beta_report(db)
+        except Exception:
+            intelligence["factor_attribution"] = None
 
         # ---- Research ----
         research = {"kill_list": [], "recent_experiments": [], "n_killed": 0}
